@@ -1,0 +1,13 @@
+{
+  "name": "TEST",
+  "entries": [
+    {
+      "name": "SONG1",
+      "stored": true
+    },
+    {
+      "name": "SONG2",
+      "stored": true
+    }
+  ]
+}
