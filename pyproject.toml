@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlrVp"
+version = "0.6.9"
+description = "mlrVp - A modern Python reimplementation of mlrV2, a sampling instrument for grid-based music controllers"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "mlrVp Contributors"},
+]
+keywords = ["monome", "sampling", "grid", "music", "audio", "mlr"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Multimedia :: Sound/Audio",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "PySide6>=6.5",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "sounddevice>=0.4",
+    "soundfile>=0.12",
+    "python-rtmidi>=1.5",
+    "python-osc>=1.8",
+    "pymonome>=0.10",
+    "resampy>=0.4",
+    "librosa>=0.10",
+]
+
+[project.optional-dependencies]
+dev = ["pyinstaller>=6.0", "pytest>=7.0"]
+
+[project.scripts]
+mlrvp = "mlrvp.main:main"
+
+[project.gui-scripts]
+mlrvp-gui = "mlrvp.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mlrvp*"]
+
+[tool.setuptools.package-data]
+mlrvp = ["resources/*.png", "resources/*.ico", "resources/*.icns"]

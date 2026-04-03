@@ -1,0 +1,87 @@
+name: Build mlrVp
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:     # Manual trigger from GitHub UI
+
+permissions:
+  contents: write        # Needed for creating releases
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: mlrVp-windows
+            zip_name: mlrVp-windows.zip
+          - os: macos-latest
+            artifact: mlrVp-macos
+            zip_name: mlrVp-macos.zip
+          - os: ubuntu-22.04
+            artifact: mlrVp-linux
+            zip_name: mlrVp-linux.zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Linux audio dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libportaudio2 portaudio19-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller>=6.0
+
+      - name: Build with PyInstaller
+        run: python build.py
+
+      - name: Zip output (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/mlrVp/* -DestinationPath dist/${{ matrix.zip_name }}
+
+      - name: Zip output (macOS)
+        if: runner.os == 'macOS'
+        run: cd dist && zip -r ${{ matrix.zip_name }} mlrVp.app
+
+      - name: Zip output (Linux)
+        if: runner.os == 'Linux'
+        run: cd dist && zip -r ${{ matrix.zip_name }} mlrVp
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.zip_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.zip
+          generate_release_notes: true
+          draft: true
