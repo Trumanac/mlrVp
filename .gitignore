@@ -35,3 +35,8 @@ installer.iss
 
 # Audio samples / slices (user data)
 data/slices/*.wav
+
+# Test / scratch presets and setlists
+data/presets/test.json
+data/setlists/TEST.json
+data/setlists/TEST/

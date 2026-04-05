@@ -18,8 +18,8 @@ from mlrvp.audio.sample import SampleBuffer
 class Channel:
     """A single playback channel mapped to one grid row."""
 
-    # Crossfade length in samples (~1.5ms at 44100 — eliminates click on retrigger)
-    XFADE_LEN = 64
+    # Crossfade length in samples (~5.8ms at 44100 — eliminates click on retrigger)
+    XFADE_LEN = 256
 
     def __init__(self, index: int, sample_rate: int = SAMPLE_RATE):
         self.index = index
@@ -32,10 +32,17 @@ class Channel:
         self._playing: bool = False
         self._envelope: float = 0.0  # current envelope level (0-1)
         self._releasing: bool = False
-        # Crossfade state for glitch-free retriggering
-        self._xfade_buf: Optional[np.ndarray] = None  # pre-rendered fade-out tail
+        # Crossfade state for glitch-free retriggering / pitch changes
+        self._xfade_buf = np.zeros((self.XFADE_LEN, 2), dtype=np.float32)
+        self._xfade_active: bool = False
         self._xfade_pos: int = 0
         self._xfade_len: int = 0
+        # Equal-power (cosine) crossfade curves — guarantees constant energy
+        # for uncorrelated signals (different positions / different pitches)
+        _t = np.linspace(0.0, 1.0, self.XFADE_LEN, dtype=np.float32)
+        self._xfade_fade = np.cos(_t * (np.pi * 0.5))   # 1→0 fade-out
+        self._fade_in_ramp = np.sin(_t * (np.pi * 0.5))  # 0→1 fade-in
+        self._fade_in_remaining: int = 0
 
         # SLICE mode state
         self._slice_btn1: Optional[int] = None
@@ -61,8 +68,18 @@ class Channel:
         self._output_buf = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
         self._buf_size = BUFFER_SIZE
 
+        # Pre-allocated arange buffer for position computation
+        self._arange_f64 = np.arange(BUFFER_SIZE, dtype=np.float64)
+        self._arange_f32 = np.arange(BUFFER_SIZE, dtype=np.float32)
+
         # Pitch-shift cache (populated by app.py via librosa in a background thread)
         self._pitch_cache: Optional[np.ndarray] = None
+        # Thread-safe pending cache: background thread writes here,
+        # audio thread picks it up in process() to avoid cross-thread
+        # reads of _position/_envelope in _snapshot_xfade_tail.
+        _PITCH_CLEAR = object()  # sentinel meaning "clear the cache"
+        self._PITCH_CLEAR = _PITCH_CLEAR
+        self._pending_pitch_cache = None  # None=no change, _PITCH_CLEAR=clear, ndarray=new data
 
     @property
     def playing(self) -> bool:
@@ -95,12 +112,20 @@ class Channel:
         return self.sample.data
 
     def set_pitch_cache(self, data: np.ndarray):
-        """Store pre-computed pitch-shifted audio (called from background thread)."""
-        self._pitch_cache = data
+        """Stage new pitch-shifted audio from background thread.
+
+        The actual swap + crossfade happens in process() on the audio
+        thread, avoiding unsafe cross-thread reads of playback state.
+        """
+        self._pending_pitch_cache = data
 
     def clear_pitch_cache(self):
-        """Discard cached pitch-shifted audio (transpose set to 0)."""
-        self._pitch_cache = None
+        """Stage pitch cache removal from any thread.
+
+        The actual clear + crossfade happens in process() on the audio
+        thread.
+        """
+        self._pending_pitch_cache = self._PITCH_CLEAR
 
     def trigger(self, column: int, total_columns: int):
         """Trigger playback from a grid column position.
@@ -123,6 +148,12 @@ class Channel:
         # position so we can crossfade into the new trigger without a click.
         if self._playing and self.sample is not None and self._envelope > 0.01:
             self._snapshot_xfade_tail()
+            self._fade_in_remaining = self.XFADE_LEN
+            # Keep envelope at current level — the equal-power crossfade
+            # ramp handles the smooth entry.  Resetting to 0 creates a
+            # volume fight between attack ramp and crossfade.
+        else:
+            self._envelope = 0.0  # first trigger: normal attack from zero
 
         # mlrv step mapping: floor((button / grid_width) * steps) / steps
         # This distributes `state.steps` slices evenly across `total_columns` buttons.
@@ -140,14 +171,20 @@ class Channel:
 
         self._playing = True
         self._releasing = False
-        self._envelope = 0.0  # always ramp up from zero through crossfade
         self.state.playing = True
 
     def _snapshot_xfade_tail(self):
-        """Render a short fade-out snippet from the current position (vectorized)."""
+        """Render a short fade-out snippet from the current position (vectorized).
+
+        Now called only from the audio thread (via queued trigger/force_stop),
+        so all state reads are safe.
+        """
         xlen = self.XFADE_LEN
-        buf = np.zeros((xlen, 2), dtype=np.float32)
+        buf = self._xfade_buf
+        buf[:] = 0
         num_sample_frames = self.sample.num_frames
+        if num_sample_frames < 2:
+            return
         num_channels = self.sample.num_channels
         audio_data = self._get_audio_data()
 
@@ -155,14 +192,14 @@ class Channel:
         if self.state.reverse or self.state.mode == PlaybackMode.REVERSE:
             speed = -speed
 
-        positions = self._position + np.arange(xlen, dtype=np.float64) * speed
+        positions = self._position + self._arange_f64[:xlen] * speed
         np.clip(positions, 0, num_sample_frames - 1.0, out=positions)
         pos_int = positions.astype(np.intp)
         pos_frac = (positions - pos_int).astype(np.float32)
         next_pos = np.minimum(pos_int + 1, num_sample_frames - 1)
 
-        fade = np.linspace(1.0, 0.0, xlen, dtype=np.float32)
-        env_gain = self._envelope * self.state.gain
+        fade = self._xfade_fade
+        env_gain = self._envelope * self.state.gain * self.state.velocity
 
         if num_channels >= 2:
             for ch in range(2):
@@ -174,9 +211,9 @@ class Channel:
             buf[:, 0] = mono
             buf[:, 1] = mono
 
-        self._xfade_buf = buf
         self._xfade_pos = 0
         self._xfade_len = xlen
+        self._xfade_active = True
 
     def stop(self):
         """Stop playback (with release)."""
@@ -184,7 +221,10 @@ class Channel:
             self._releasing = True
 
     def force_stop(self):
-        """Immediately stop playback (with short fade-out to avoid click)."""
+        """Immediately stop playback (with short fade-out to avoid click).
+
+        Called from the audio thread (via queued event).
+        """
         if self._playing and self.sample is not None and self._envelope > 0.01:
             self._snapshot_xfade_tail()
         self._playing = False
@@ -201,20 +241,39 @@ class Channel:
         if num_frames > self._buf_size:
             self._output_buf = np.zeros((num_frames, 2), dtype=np.float32)
             self._buf_size = num_frames
+            self._arange_f64 = np.arange(num_frames, dtype=np.float64)
+            self._arange_f32 = np.arange(num_frames, dtype=np.float32)
         output = self._output_buf[:num_frames]
         output[:] = 0
 
-        # Mix in crossfade tail (must run even when not playing so
-        # force_stop fade-outs are audible)
-        if self._xfade_buf is not None and self._xfade_pos < self._xfade_len:
-            remaining = self._xfade_len - self._xfade_pos
-            n = min(remaining, num_frames)
-            output[:n] += self._xfade_buf[self._xfade_pos:self._xfade_pos + n]
-            self._xfade_pos += n
-            if self._xfade_pos >= self._xfade_len:
-                self._xfade_buf = None
+        # --- Apply pending pitch cache swap (thread-safe) ---
+        # Background thread stages data in _pending_pitch_cache;
+        # we consume it here on the audio thread where state reads are safe.
+        pending = self._pending_pitch_cache
+        if pending is not None:
+            self._pending_pitch_cache = None
+            if pending is self._PITCH_CLEAR:
+                if self._pitch_cache is not None:
+                    if self._playing and self.sample is not None and self._envelope > 0.01:
+                        self._snapshot_xfade_tail()
+                        self._fade_in_remaining = self.XFADE_LEN
+                    self._pitch_cache = None
+            else:
+                if self._playing and self.sample is not None and self._envelope > 0.01:
+                    self._snapshot_xfade_tail()
+                    self._fade_in_remaining = self.XFADE_LEN
+                self._pitch_cache = pending
 
         if not self._playing or self.sample is None:
+            # Mix in crossfade tail even when not playing so
+            # force_stop fade-outs are audible
+            if self._xfade_active and self._xfade_pos < self._xfade_len:
+                remaining = self._xfade_len - self._xfade_pos
+                n = min(remaining, num_frames)
+                output[:n] += self._xfade_buf[self._xfade_pos:self._xfade_pos + n]
+                self._xfade_pos += n
+                if self._xfade_pos >= self._xfade_len:
+                    self._xfade_active = False
             return output
 
         sample_data = self._get_audio_data()
@@ -261,7 +320,7 @@ class Channel:
         if self._releasing:
             frames_to_zero = max(1, int(self._envelope * release_samples) + 1)
             active_frames = min(active_frames, frames_to_zero)
-            env = self._envelope - np.arange(active_frames, dtype=np.float32) / release_samples
+            env = self._envelope - self._arange_f32[:active_frames] / release_samples
             np.maximum(env, 0.0, out=env)
             self._envelope = float(env[-1]) if active_frames > 0 else 0.0
             if self._envelope <= 0:
@@ -273,12 +332,12 @@ class Channel:
                 frames_to_full = max(1, int((1.0 - self._envelope) * attack_samples) + 1)
                 if frames_to_full >= active_frames:
                     # Still ramping at end of block
-                    env = self._envelope + np.arange(active_frames, dtype=np.float32) / attack_samples
+                    env = self._envelope + self._arange_f32[:active_frames] / attack_samples
                     np.minimum(env, 1.0, out=env)
                 else:
                     # Attack -> sustain transition within block
                     env = np.ones(active_frames, dtype=np.float32)
-                    env[:frames_to_full] = self._envelope + np.arange(frames_to_full, dtype=np.float32) / attack_samples
+                    env[:frames_to_full] = self._envelope + self._arange_f32[:frames_to_full] / attack_samples
                     np.minimum(env[:frames_to_full], 1.0, out=env[:frames_to_full])
                 self._envelope = float(env[-1])
             else:
@@ -288,7 +347,7 @@ class Channel:
             return output
 
         # --- Position computation (vectorized) ---
-        positions = self._position + np.arange(active_frames, dtype=np.float64) * speed
+        positions = self._position + self._arange_f64[:active_frames] * speed
 
         # Handle oneshot boundary (ONESHOT and SEQ both play through once then stop)
         stop_after = False
@@ -349,6 +408,26 @@ class Channel:
         else:
             output[:active_frames] *= gain
 
+        # Apply fade-in ramp after pitch cache swap / retrigger (new audio
+        # 0→1 while crossfade tail handles old audio 1→0)
+        if self._fade_in_remaining > 0:
+            n = min(self._fade_in_remaining, active_frames)
+            offset = self.XFADE_LEN - self._fade_in_remaining
+            ramp = self._fade_in_ramp[offset:offset + n]
+            output[:n, 0] *= ramp
+            output[:n, 1] *= ramp
+            self._fade_in_remaining -= n
+
+        # Mix in crossfade tail AFTER all gain/envelope/fade-in processing
+        # so the pre-baked tail doesn't get double-gained
+        if self._xfade_active and self._xfade_pos < self._xfade_len:
+            remaining = self._xfade_len - self._xfade_pos
+            n = min(remaining, num_frames)
+            output[:n] += self._xfade_buf[self._xfade_pos:self._xfade_pos + n]
+            self._xfade_pos += n
+            if self._xfade_pos >= self._xfade_len:
+                self._xfade_active = False
+
         # Update position for next block
         if self._playing:
             next_position = self._position + active_frames * speed
@@ -364,9 +443,9 @@ class Channel:
             self._playing = False
             self.state.playing = False
 
-        # Apply mute
+        # Apply mute (zero entire buffer including crossfade tail)
         if self.state.mute:
-            output[:active_frames] = 0
+            output[:num_frames] = 0
 
         return output
 

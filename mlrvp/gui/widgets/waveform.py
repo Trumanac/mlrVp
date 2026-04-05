@@ -2,7 +2,7 @@
 
 import numpy as np
 from PySide6.QtWidgets import QWidget, QSizePolicy
-from PySide6.QtCore import Qt, Signal, QRectF
+from PySide6.QtCore import Qt, Signal, QRectF, QLine
 from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient, QMouseEvent
 
 from mlrvp.gui.styles import (
@@ -60,6 +60,8 @@ class WaveformWidget(QWidget):
         self.update()
 
     def set_playing(self, playing: bool):
+        if self._playing == playing:
+            return
         self._playing = playing
         if not playing:
             self._active_column = -1
@@ -72,6 +74,8 @@ class WaveformWidget(QWidget):
 
     def set_active_column(self, col: int):
         """Set the currently playing column index (0-based), -1 for none."""
+        if self._active_column == col:
+            return
         self._active_column = col
         self.update()
 
@@ -103,16 +107,21 @@ class WaveformWidget(QWidget):
             base_color = QColor(GROUP_COLORS[self._group_color_idx])
             num_points = len(self._waveform_data)
 
-            # Pass 1: full width at dim alpha so out-of-loop content stays visible
+            # Vectorized: compute all bar heights at once
+            px_arr = np.arange(w)
+            indices = np.minimum((px_arr * num_points // w), num_points - 1)
+            peaks = np.maximum(
+                np.abs(self._waveform_data[indices, 0]),
+                np.abs(self._waveform_data[indices, 1]),
+            )
+            y_tops = (h - (peaks * (h * 0.95)).astype(int)).astype(int)
+
+            # Pass 1: full width at dim alpha
             dim_color = QColor(base_color)
             dim_color.setAlpha(50)
             painter.setPen(QPen(dim_color, 1))
-            for px in range(w):
-                idx = min(int(px * num_points / w), num_points - 1)
-                peak = max(abs(self._waveform_data[idx, 0]),
-                           abs(self._waveform_data[idx, 1]))
-                y_top = h - int(peak * h * 0.95)
-                painter.drawLine(px, y_top, px, h)
+            lines_dim = [QLine(px, int(y_tops[px]), px, h) for px in range(w)]
+            painter.drawLines(lines_dim)
 
             # Pass 2: selection region only at full alpha
             if sel_x1 < sel_x2:
@@ -120,12 +129,11 @@ class WaveformWidget(QWidget):
                 bright_color.setAlpha(185)
                 painter.setPen(QPen(bright_color, 1))
                 painter.setClipRect(sel_x1, 0, sel_x2 - sel_x1, h)
-                for px in range(sel_x1, min(sel_x2, w)):
-                    idx = min(int(px * num_points / w), num_points - 1)
-                    peak = max(abs(self._waveform_data[idx, 0]),
-                               abs(self._waveform_data[idx, 1]))
-                    y_top = h - int(peak * h * 0.95)
-                    painter.drawLine(px, y_top, px, h)
+                lines_bright = [
+                    QLine(px, int(y_tops[px]), px, h)
+                    for px in range(sel_x1, min(sel_x2, w))
+                ]
+                painter.drawLines(lines_bright)
                 painter.setClipping(False)
 
         # Column divider lines within the selection area

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlrVp"
-version = "0.6.9"
+version = "0.6.9.2"
 description = "mlrVp - A modern Python reimplementation of mlrV2, a sampling instrument for grid-based music controllers"
 readme = "README.md"
 license = {text = "MIT"}

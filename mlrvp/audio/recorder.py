@@ -57,10 +57,10 @@ class Recorder:
         Returns:
             Thru audio if monitoring is enabled, else None
         """
-        thru_output = input_data.copy() if self.state.thru else None
-
         if not self._recording or self._buffer is None:
-            return thru_output
+            return input_data if self.state.thru else None
+
+        thru_output = input_data.copy() if self.state.thru else None
 
         frames_to_write = min(len(input_data), self._target_frames - self._write_pos)
 

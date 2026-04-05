@@ -83,5 +83,22 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*.zip
-          generate_release_notes: true
           draft: true
+          body: |
+            ## Downloads
+
+            | Platform | Download |
+            |----------|----------|
+            | **Windows** | [mlrVp-windows.zip](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/mlrVp-windows.zip) |
+            | **macOS** | [mlrVp-macos.zip](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/mlrVp-macos.zip) |
+            | **Linux** | [mlrVp-linux.zip](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/mlrVp-linux.zip) |
+
+            ### Installation
+            1. Download the zip for your platform above
+            2. Extract to a folder of your choice
+            3. Run `mlrVp.exe` (Windows), `mlrVp.app` (macOS), or `./mlrVp` (Linux)
+
+            > **macOS**: If you get a security warning, go to System Settings → Privacy & Security → Allow.
+            > **Linux**: You may need `chmod +x mlrVp` before running.
+
+            ---
