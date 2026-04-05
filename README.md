@@ -4,6 +4,26 @@
 
 mlrVp is a standalone, cross-platform application that recreates the legendary mlrV sampling workflow without requiring Max/MSP. It supports monome grids, Novation Launchpads (all models), generic MIDI controllers, and can operate entirely via its built-in virtual grid.
 
+## Downloads
+
+[![Latest Release](https://img.shields.io/github/v/release/Trumanac/mlrVp?include_prereleases&label=latest%20release)](https://github.com/Trumanac/mlrVp/releases/latest)
+
+| Platform | Download |
+|----------|----------|
+| Windows  | [mlrVp-windows.zip](https://github.com/Trumanac/mlrVp/releases/latest/download/mlrVp-windows.zip) |
+| macOS    | [mlrVp-macos.zip](https://github.com/Trumanac/mlrVp/releases/latest/download/mlrVp-macos.zip) |
+| Linux    | [mlrVp-linux.zip](https://github.com/Trumanac/mlrVp/releases/latest/download/mlrVp-linux.zip) |
+
+> **[All releases & changelogs →](https://github.com/Trumanac/mlrVp/releases)**
+
+### Installation
+1. Download the zip for your platform above
+2. Extract to a folder of your choice
+3. Run `mlrVp.exe` (Windows), `mlrVp.app` (macOS), or `./mlrVp` (Linux)
+
+> **macOS:** If you get a security warning, go to System Settings → Privacy & Security → Allow.
+> **Linux:** You may need `chmod +x mlrVp` before running.
+
 ## Link to original sourcecode:
 https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 
