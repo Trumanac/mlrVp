@@ -7,6 +7,7 @@ Runs the real-time audio callback.
 import numpy as np
 import sounddevice as sd
 import threading
+from collections import deque
 from typing import Optional, Callable
 
 from mlrvp.config import (
@@ -187,6 +188,11 @@ class AudioEngine:
         self._lock = threading.Lock()
         self._running = False
 
+        # Thread-safe event queue — all channel trigger/stop mutations are
+        # deferred to the audio thread to avoid races with process().
+        # deque.append / popleft are atomic in CPython.
+        self._event_queue: deque = deque()
+
         # Callback for UI updates (called from audio thread, should be fast)
         self._meter_callback: Optional[Callable] = None
 
@@ -214,6 +220,33 @@ class AudioEngine:
 
         # Pre-allocated temp buffer for peak metering (avoids allocation in callback)
         self._peak_tmp = np.zeros(self.buffer_size, dtype=np.float32)
+
+        # Meter callback decimation — send every Nth callback (~30 fps)
+        self._meter_skip = max(1, int(self.sample_rate / self.buffer_size / 30))
+        self._meter_counter = 0
+
+        # Pre-allocated channel output list to avoid per-callback allocation
+        self._channel_outputs: list[tuple[int, np.ndarray]] = []
+
+        # Pre-allocated meter dict — reused every meter callback to avoid GC
+        self._meter_dict = {
+            "master": [0.0, 0.0],
+            "groups": [0.0] * NUM_GROUPS,
+            "fx1": [0.0, 0.0],
+            "fx2": [0.0, 0.0],
+            "waveform_l": [],
+            "waveform_r": [],
+            "waveform_fx1_l": [],
+            "waveform_fx1_r": [],
+            "waveform_fx2_l": [],
+            "waveform_fx2_r": [],
+            "compressor_gr_a": 0.0,
+            "compressor_gr_b": 0.0,
+            "compressor_gr_m": 0.0,
+            "glue_compressor_gr_a": 0.0,
+            "glue_compressor_gr_b": 0.0,
+            "glue_compressor_gr_m": 0.0,
+        }
 
     def set_meter_callback(self, callback: Callable):
         self._meter_callback = callback
@@ -277,6 +310,23 @@ class AudioEngine:
     def _audio_callback(self, outdata, frames, time_info, status):
         """Main audio callback - runs in real-time audio thread."""
         try:
+            # ── Process pending trigger/stop events (thread-safe) ──
+            eq = self._event_queue
+            while eq:
+                try:
+                    event = eq.popleft()
+                except IndexError:
+                    break
+                cmd = event[0]
+                if cmd == 'trigger':
+                    self.channels[event[1]].trigger(event[2], event[3])
+                elif cmd == 'stop':
+                    self.channels[event[1]].stop()
+                elif cmd == 'force_stop':
+                    self.channels[event[1]].force_stop()
+                elif cmd == 'set_pos':
+                    self.channels[event[1]]._position = event[2]
+
             # Capture input audio (used for both recording and AUX channel)
             if self._input_ready:
                 input_audio = self._input_buffer[:frames].copy()
@@ -291,7 +341,8 @@ class AudioEngine:
                 thru = None
 
             # Process all active channels
-            channel_outputs = []
+            channel_outputs = self._channel_outputs
+            channel_outputs.clear()
             active_count = self.config.row_count
 
             for i in range(active_count):
@@ -312,7 +363,7 @@ class AudioEngine:
                 main_bus += thru
 
             # --- AUX input channel (external audio source) ---
-            if not self.mixer.aux_mute and input_audio is not None and input_audio.any():
+            if not self.mixer.aux_mute and input_audio is not None:
                 aux_scaled = input_audio * self.mixer.aux_volume
                 # Route AUX to FX bus or main
                 aux_route = self.mixer.aux_fx_route
@@ -431,11 +482,18 @@ class AudioEngine:
             self._fx2_peak[1] = max(self._fx2_peak[1] * 0.95, float(tmp.max()))
 
             # Capture per-bus waveform for oscilloscopes (before summing)
-            _bus_step = max(1, frames // 64)
-            _fx1_wf_l = fx1_bus[::_bus_step, 0].tolist()
-            _fx1_wf_r = fx1_bus[::_bus_step, 1].tolist()
-            _fx2_wf_l = fx2_bus[::_bus_step, 0].tolist()
-            _fx2_wf_r = fx2_bus[::_bus_step, 1].tolist()
+            # Only compute waveform data when we'll actually send it
+            _send_meters = False
+            if self._meter_callback is not None:
+                self._meter_counter += 1
+                if self._meter_counter >= self._meter_skip:
+                    self._meter_counter = 0
+                    _send_meters = True
+                    _bus_step = max(1, frames // 64)
+                    _fx1_wf_l = fx1_bus[::_bus_step, 0].tolist()
+                    _fx1_wf_r = fx1_bus[::_bus_step, 1].tolist()
+                    _fx2_wf_l = fx2_bus[::_bus_step, 0].tolist()
+                    _fx2_wf_r = fx2_bus[::_bus_step, 1].tolist()
 
             main_bus += fx1_bus
             main_bus += fx2_bus
@@ -493,28 +551,33 @@ class AudioEngine:
 
             outdata[:] = output
 
-            # Meter callback for UI — build a snapshot dict so GUI thread
-            # never reads a half-written structure.
-            if self._meter_callback is not None:
+            # Meter callback for UI — decimated to ~30 fps to reduce GC pressure
+            if _send_meters:
                 step = max(1, len(output) // 64)
-                self._meter_callback({
-                    "master": [float(self.output_peak[0]), float(self.output_peak[1])],
-                    "groups": [self.mixer.group_peaks[gi] for gi in range(NUM_GROUPS)],
-                    "fx1": [float(self._fx1_peak[0]), float(self._fx1_peak[1])],
-                    "fx2": [float(self._fx2_peak[0]), float(self._fx2_peak[1])],
-                    "waveform_l": output[::step, 0].tolist(),
-                    "waveform_r": output[::step, 1].tolist(),
-                    "waveform_fx1_l": _fx1_wf_l,
-                    "waveform_fx1_r": _fx1_wf_r,
-                    "waveform_fx2_l": _fx2_wf_l,
-                    "waveform_fx2_r": _fx2_wf_r,
-                    "compressor_gr_a": self.compressor.gr_db,
-                    "compressor_gr_b": self.compressor_b.gr_db,
-                    "compressor_gr_m": self.compressor_m.gr_db,
-                    "glue_compressor_gr_a": self.glue_compressor.gr_db,
-                    "glue_compressor_gr_b": self.glue_compressor_b.gr_db,
-                    "glue_compressor_gr_m": self.glue_compressor_m.gr_db,
-                })
+                md = self._meter_dict
+                md["master"][0] = float(self.output_peak[0])
+                md["master"][1] = float(self.output_peak[1])
+                gp = self.mixer.group_peaks
+                md_groups = md["groups"]
+                for gi in range(NUM_GROUPS):
+                    md_groups[gi] = gp[gi]
+                md["fx1"][0] = float(self._fx1_peak[0])
+                md["fx1"][1] = float(self._fx1_peak[1])
+                md["fx2"][0] = float(self._fx2_peak[0])
+                md["fx2"][1] = float(self._fx2_peak[1])
+                md["waveform_l"] = output[::step, 0].tolist()
+                md["waveform_r"] = output[::step, 1].tolist()
+                md["waveform_fx1_l"] = _fx1_wf_l
+                md["waveform_fx1_r"] = _fx1_wf_r
+                md["waveform_fx2_l"] = _fx2_wf_l
+                md["waveform_fx2_r"] = _fx2_wf_r
+                md["compressor_gr_a"] = self.compressor.gr_db
+                md["compressor_gr_b"] = self.compressor_b.gr_db
+                md["compressor_gr_m"] = self.compressor_m.gr_db
+                md["glue_compressor_gr_a"] = self.glue_compressor.gr_db
+                md["glue_compressor_gr_b"] = self.glue_compressor_b.gr_db
+                md["glue_compressor_gr_m"] = self.glue_compressor_m.gr_db
+                self._meter_callback(md)
 
         except Exception as exc:
             import traceback
@@ -688,25 +751,30 @@ class AudioEngine:
         self._master_lp.set_lowpass(freq, 0.707)
 
     def trigger_channel(self, row: int, column: int, columns: int = 16):
-        """Trigger a channel from the given grid position."""
+        """Queue a channel trigger — processed on the audio thread."""
         if 0 <= row < MAX_ROWS:
-            self.channels[row].trigger(column, columns)
+            self._event_queue.append(('trigger', row, column, columns))
 
     def stop_channel(self, row: int):
-        """Stop a channel (with release envelope)."""
+        """Queue a channel stop (with release) — processed on the audio thread."""
         if 0 <= row < MAX_ROWS:
-            self.channels[row].stop()
+            self._event_queue.append(('stop', row))
 
     def force_stop_channel(self, row: int):
-        """Immediately stop a channel."""
+        """Queue an immediate channel stop — processed on the audio thread."""
         if 0 <= row < MAX_ROWS:
-            self.channels[row].force_stop()
+            self._event_queue.append(('force_stop', row))
 
     def stop_group(self, group: int):
-        """Stop all channels in a group."""
-        for ch in self.channels:
+        """Queue stops for all channels in a group."""
+        for i, ch in enumerate(self.channels):
             if ch.state.group == group:
-                ch.stop()
+                self._event_queue.append(('stop', i))
+
+    def set_channel_position(self, row: int, position: float):
+        """Queue a playback position change — processed on the audio thread."""
+        if 0 <= row < MAX_ROWS:
+            self._event_queue.append(('set_pos', row, position))
 
     def load_sample(self, row: int, sample: SampleBuffer):
         """Load a sample into a channel."""

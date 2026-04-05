@@ -1,6 +1,6 @@
 # mlrVp
 
-**A modern Python reimplementation of mlrV2.2 — the classic sampling instrument for grid-based music controllers.**
+**A modern Python reimplementation of mlrV2 — the classic sampling instrument for grid-based music controllers.**
 
 mlrVp is a standalone, cross-platform application that recreates the legendary mlrV sampling workflow without requiring Max/MSP. It supports monome grids, Novation Launchpads (all models), generic MIDI controllers, and can operate entirely via its built-in virtual grid.
 
@@ -19,7 +19,7 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 - **Snap Speed to Rate**: When loading a sample, speed auto-snaps to the nearest ½× / 2× step of 1.0 (e.g. 0.25×, 0.5×, 1.0×, 2.0×, 4.0×, 8.0×) for clean grid-synced loops — toggle on/off in Setup → Grid
 - **Live sample staging**: Dragging a new sample onto a playing row updates the waveform display immediately but keeps the old audio and grid LEDs looping — the new sample loads on the next trigger, group stop, or ALL stop
 - **Waveform display** with playback cursor, selection markers, grid column dividers, active column highlight, group color coding, and two-pass dim/bright rendering (out-of-loop content shown dim, active loop region shown bright)
-- **Crossfade retrigger**: 64-sample crossfade for click-free re-triggering
+- **Crossfade retrigger**: Equal-power cosine crossfade (~5.8 ms) for click-free re-triggering and pitch changes
 
 ### Effects & Processing
 - **Modular FX Rack UI**: Skeuomorphic rack with three independent effect groups (FX Group A / FX Group B / Master) — add, remove, and reorder effect modules freely; each module has a **power toggle** (green/gray icon) on its right rack ear to enable or bypass the effect without removing it
@@ -289,7 +289,8 @@ MLRVp/
 │       │   ├── fader.py
 │       │   ├── vu_meter.py
 │       │   ├── virtual_grid.py
-│       │   └── rack_container.py   # Scrollable rack + drag-drop
+│       │   ├── rack_container.py   # Scrollable rack + drag-drop
+│       │   └── rack_module_base.py # Base class for rack modules
 │       └── rack_modules/   # Skeuomorphic effect modules
 │           ├── __init__.py         # Module registry
 │           ├── digital_delay.py    # Déjà Vu Delay (1U)
@@ -307,8 +308,9 @@ MLRVp/
 │           ├── vinyl.py            # Wax Poetic (1U)
 │           ├── plate_spring_reverb.py # Spring Fling (2U)
 │           ├── hall_reverb.py      # Echo Chamber (2U)
-            ├── compressor.py       # Thrust Issues — Sidechain Compressor (2U)
-            ├── glue_compressor.py  # Group Hug — Glue Bus Compressor (1U)
+│           ├── compressor.py       # Thrust Issues — Sidechain Compressor (2U)
+│           ├── glue_compressor.py  # Group Hug — Glue Bus Compressor (1U)
+│           ├── ether_drift.py      # Ether Drift — Bipolar Infinite Phaser (1U)
 │           ├── dual_vu_meter.py    # Twin Peaks (1U)
 │           └── oscilloscope.py     # CRT:// Scope (1U)
 ├── data/                   # Runtime data
@@ -563,6 +565,44 @@ On a Launchpad or monome:
 - Group stop LEDs light when their group has playing channels.
 - Pattern LEDs: bright = recording/playing, dim = has events, off = empty.
 
+### Virtual Grid (Pop Out)
+
+The built-in **Virtual Grid** is an on-screen replica of a hardware grid controller. It's always available, even without any external hardware connected, and behaves identically to a monome or Launchpad for triggering, pattern recording, and LED feedback.
+
+#### Opening the Virtual Grid
+
+- Go to **View → Show Virtual Grid** — a floating window pops out as a separate, moveable panel.
+- Alternatively, in **Setup → Grid**, check **Show Virtual Grid**.
+- If **no hardware grid** is detected when the app starts, the Virtual Grid opens automatically.
+
+#### Using the Virtual Grid
+
+- **Click any button** on the grid to trigger that column on that row, exactly as you would press a physical pad on a monome or Launchpad.
+- **Click and release** — pressing sends a "button down" event; releasing sends "button up." Modes like **Slice** (hold-to-play) respond to both press and release.
+- The top row acts as the **control row** (same as hardware): buttons 1–4 are group stops, buttons 5–8 are pattern recorders.
+- All remaining rows correspond to channel strips 1–N, where N is the configured Active Rows count.
+
+#### LED Feedback
+
+- Each button reflects the same LED state that would display on a hardware grid:
+  - **Bright** — active playback column or active step (SEQ mode).
+  - **Dim** — content present (e.g. a loop region or a recorded pattern event) but not the current position.
+  - **Off** — no content / idle.
+- Button colors follow the **group color** assignment for each row (golden, green, salmon, teal), matching the channel strip and mixer group colors.
+- LEDs update in real time at the UI refresh rate (~30 fps) so the playback cursor sweeps across the grid smoothly.
+
+#### Resizing and Configuration
+
+- The grid dimensions are controlled by **Active Rows** and **Grid Columns** in Setup → Grid. Changes resize the Virtual Grid immediately.
+- The Virtual Grid window can be **moved freely** on screen — position it alongside the main window or on a second monitor.
+- The window respects the global **UI Scale** setting (View → UI Scale), so at 150% scale the grid buttons grow proportionally.
+
+#### Tips
+
+- The Virtual Grid is useful for **testing setups** without hardware, building presets on a laptop, or as a visual monitor of what's happening on your physical grid.
+- You can use the Virtual Grid and a hardware grid **simultaneously** — both send identical events, and LED feedback is mirrored to both.
+- In **SEQ mode**, clicking a grid button toggles that step on/off — the Virtual Grid shows active steps as lit buttons, just like hardware.
+
 ### MIDI Mapping
 
 mlrVp features a comprehensive MIDI CC mapping system that lets you control every parameter from an external MIDI controller.
@@ -710,6 +750,7 @@ The effects section uses a modular **FX Rack** interface with three independent 
 | **Group Hug** | Dynamics | Glue bus compressor — threshold, ratio, attack, release, makeup, switchable sidechain HPF |
 | **Twin Peaks** | Metering | Dual VU meter — selectable VU (ballistic), PEAK (fast/slow decay), or RMS (power average) mode; reads per-FX-bus signal |
 | **CRT:// Scope** | Metering | Oscilloscope for waveform visualization; reads per-FX-bus waveform data |
+| **Ether Drift** | Modulation | Bipolar infinite phaser — two allpass chains (RISE/FALL sawtooth LFOs) with stereo spread, SYNC lock, route selector, rate, depth, feedback, and mix |
 
 ##### MIDI MAP Mode
 

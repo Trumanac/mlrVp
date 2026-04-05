@@ -99,12 +99,10 @@ def get_waveform_overview(sample: SampleBuffer, num_points: int = 512) -> np.nda
         mono = points
 
     chunk_size = max(1, len(mono) // num_points)
+    # Truncate to evenly divisible length for reshape
+    usable = chunk_size * num_points
+    reshaped = mono[:usable].reshape(num_points, chunk_size)
     overview = np.zeros((num_points, 2), dtype=np.float32)
-    for i in range(num_points):
-        start = i * chunk_size
-        end = start + chunk_size
-        chunk = mono[start:end]
-        if len(chunk) > 0:
-            overview[i, 0] = chunk.min()
-            overview[i, 1] = chunk.max()
+    overview[:, 0] = reshaped.min(axis=1)
+    overview[:, 1] = reshaped.max(axis=1)
     return overview

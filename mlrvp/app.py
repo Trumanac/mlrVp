@@ -58,6 +58,10 @@ class AppController:
     def __init__(self):
         self.config = AppConfig()
 
+        # Pre-warm librosa in a background thread so the first pitch-shift
+        # call doesn't stall on a cold import (librosa → numba JIT is slow).
+        threading.Thread(target=self._preload_librosa, daemon=True).start()
+
         # Subsystems
         self.engine: Optional[AudioEngine] = None
         self.clock: Optional[MasterClock] = None
@@ -95,6 +99,20 @@ class AppController:
     # ------------------------------------------------------------------ #
     #  Initialization                                                     #
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _preload_librosa():
+        """Import librosa (and its numba JIT backend) so the first
+        pitch-shift request doesn't block on a cold import."""
+        try:
+            import librosa  # noqa: F401
+            import librosa.effects  # noqa: F401
+            # Run a tiny no-op pitch shift to trigger numba JIT compilation
+            import numpy as np
+            _dummy = np.zeros(4096, dtype=np.float32)
+            librosa.effects.pitch_shift(_dummy, sr=44100, n_steps=1)
+        except Exception:
+            pass  # non-critical, will just be slow on first use
 
     def init_audio(self):
         """Initialize the audio engine."""
@@ -283,7 +301,7 @@ class AppController:
         group = self.engine.channels[row].state.group
         for i, ch in enumerate(self.engine.channels[:self.config.row_count]):
             if i != row and ch.state.group == group and ch.playing:
-                ch.force_stop()
+                self.engine.force_stop_channel(i)
                 # Reset any SLICE state on the stopped channel
                 if ch.state.mode == PlaybackMode.SLICE:
                     ch._slice_btn1 = None
@@ -323,14 +341,14 @@ class AppController:
                 pending = getattr(ch, '_pending_sample_path', None)
                 if pending:
                     ch._pending_sample_path = None
-                    ch.stop()
+                    self.engine.stop_channel(i)
                     self.grid.clear_row_leds(i, self.config.grid_columns)
                     self.load_sample_to_channel(i, pending)
                 col = beat_int % columns
                 ch._seq_column = col
                 if col in ch._seq_steps:
                     # Retrigger sample from the beginning on each active step
-                    ch.trigger(0, 1)
+                    self.engine.trigger_channel(i, 0, 1)
                     ch._seq_playing_step = True
                 else:
                     # Inactive step — let the sample keep playing until it
@@ -351,7 +369,7 @@ class AppController:
         if self.engine:
             ch = self.engine.channels[row]
             if event_type == 'stop':
-                ch.stop()
+                self.engine.stop_channel(row)
                 self.grid.clear_row_leds(row, self.config.grid_columns)
             else:
                 self._stop_group_siblings(row, self.config.grid_columns)
@@ -385,7 +403,7 @@ class AppController:
                     held.discard(column)
                     # If no buttons held and not latched, stop playback
                     if not held and not getattr(ch, '_slice_latched', False):
-                        ch.stop()
+                        self.engine.stop_channel(row)
                         ch._slice_btn1 = None
                         ch._slice_loop_start = None
                         ch._slice_loop_end = None
@@ -436,7 +454,7 @@ class AppController:
                 ch._pending_sample_path = None
                 # Stop current playback so the engine load goes through the
                 # idle branch (direct load, not re-staged as pending).
-                ch.stop()
+                self.engine.stop_channel(row)
                 self.grid.clear_row_leds(row, self.config.grid_columns)
                 self.load_sample_to_channel(row, pending)
 
@@ -448,7 +466,7 @@ class AppController:
 
                 # If latched (sub-loop active), any press stops and clears
                 if getattr(ch, '_slice_latched', False):
-                    ch.stop()
+                    self.engine.stop_channel(row)
                     ch._slice_btn1 = None
                     ch._slice_btn2 = None
                     ch._slice_loop_start = None
@@ -482,7 +500,7 @@ class AppController:
                         ch._slice_reverse = column < btn1
                         # Reposition if cursor is outside the sub-loop
                         if ch._position < sub_start_frames or ch._position >= sub_end_frames:
-                            ch._position = sub_start_frames
+                            self.engine.set_channel_position(row, sub_start_frames)
                         return
                     # Same button pressed again while held — ignore
                     if column == btn1:
@@ -608,7 +626,7 @@ class AppController:
                 for r in triggered_rows:
                     ch = self.engine.channels[r]
                     if ch.playing:
-                        ch.stop()
+                        self.engine.stop_channel(r)
                         self.grid.clear_row_leds(r, self.config.grid_columns)
             pr._playing = False
             gui_state = "idle"
@@ -785,7 +803,7 @@ class AppController:
         """Remove the sample from a channel, restoring it to empty state."""
         if self.engine and 0 <= row < len(self.engine.channels):
             ch = self.engine.channels[row]
-            ch.stop()
+            self.engine.stop_channel(row)
             ch.sample = None
             ch._position = 0.0
             self.config.channels[row].filename = ""
@@ -1009,7 +1027,7 @@ class AppController:
                 for r in triggered_rows:
                     ch = self.engine.channels[r]
                     if ch.playing:
-                        ch.stop()
+                        self.engine.stop_channel(r)
                         self.grid.clear_row_leds(r, self.config.grid_columns)
             pr.clear()
         else:
@@ -1019,7 +1037,7 @@ class AppController:
                 for r in triggered_rows:
                     ch = self.engine.channels[r]
                     if ch.playing:
-                        ch.stop()
+                        self.engine.stop_channel(r)
                         self.grid.clear_row_leds(r, self.config.grid_columns)
             pr.stop()
 
@@ -1033,7 +1051,7 @@ class AppController:
         # Stop all playback
         if self.engine:
             for i in range(self.config.row_count):
-                self.engine.channels[i].stop()
+                self.engine.stop_channel(i)
 
         # Clear all grid LEDs
         for i in range(self.config.row_count):
@@ -1313,7 +1331,7 @@ class AppController:
         elif param == "stop":
             if self.engine:
                 ech = self.engine.channels[row]
-                ech.force_stop()
+                self.engine.force_stop_channel(row)
                 # Reset SEQ state and clear pattern
                 if ech.state.mode == PlaybackMode.SEQ:
                     ech._seq_steps.clear()
@@ -1401,7 +1419,7 @@ class AppController:
         if self.engine:
             for i, ch in enumerate(self.engine.channels[:self.config.row_count]):
                 if ch.state.group == group and (ch.playing or ch.state.mode == PlaybackMode.SEQ):
-                    ch.force_stop()
+                    self.engine.force_stop_channel(i)
                     # Reset slice state
                     if ch.state.mode == PlaybackMode.SLICE:
                         ch._slice_btn1 = None
@@ -1424,8 +1442,8 @@ class AppController:
     def _gui_stop_all(self):
         """Stop all channels and clear all grid LEDs."""
         if self.engine:
-            for ch in self.engine.channels:
-                ch.force_stop()
+            for i, ch in enumerate(self.engine.channels):
+                self.engine.force_stop_channel(i)
                 if ch.state.mode == PlaybackMode.SLICE:
                     ch._slice_btn1 = None
                     ch._slice_loop_start = None
@@ -2647,6 +2665,7 @@ class AppController:
             ech.state.sel_end = ch.sel_end
             ech.state.attack = ch.attack
             ech.state.release = ch.release
+            ech.state.transpose = ch.transpose
 
     def _apply_config_to_engine_live(self, playing_rows: set[int]):
         """Push config to engine, but protect playing channels from state
@@ -2742,6 +2761,7 @@ class AppController:
                 ech.state.sel_end = ch.sel_end
                 ech.state.attack = ch.attack
                 ech.state.release = ch.release
+            ech.state.transpose = ch.transpose
 
     def _apply_pitch_shift_async(self, row: int, semitones: int):
         """Pitch-shift the channel's sample in a background thread using librosa.

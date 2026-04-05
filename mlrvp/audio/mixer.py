@@ -57,8 +57,6 @@ class Mixer:
         # Zero pre-allocated buffers
         for gb in self._group_buses:
             gb[:] = 0
-        for ga in self._group_audio:
-            ga[:] = 0
         self._main_bus[:] = 0
         self._aux_send[:] = 0
         self._fx1_bus[:] = 0
@@ -80,14 +78,12 @@ class Mixer:
                 self.group_peaks[i] = self.group_peaks[i] * 0.95
                 continue
 
-            # Apply group volume
-            scaled = bus * group.volume
+            # Apply group volume in-place into pre-allocated buffer
+            scaled = self._group_audio[i]
+            np.multiply(bus, group.volume, out=scaled)
 
-            # Store post-volume group audio for compressor sidechain access
-            self._group_audio[i][:num_frames] = scaled[:num_frames]
-
-            # Track peak level (with decay)
-            peak = float(np.abs(scaled).max()) if scaled.any() else 0.0
+            # Track peak level (with decay) — use pre-allocated tmp for max
+            peak = float(np.abs(scaled).max())
             self.group_peaks[i] = max(self.group_peaks[i] * 0.95, peak)
 
             # Route to FX bus or main using send fader as wet/dry mix

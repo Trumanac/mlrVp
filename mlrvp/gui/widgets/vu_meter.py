@@ -11,6 +11,36 @@ from PySide6.QtGui import QPainter, QColor, QLinearGradient
 from mlrvp.gui.styles import BG_BLACK, BG_PANEL, VU_COLOR
 
 
+# ── Shared decay timer for all VU meters ──────────────────────────────
+_all_meters: list = []
+_shared_timer: QTimer | None = None
+
+
+def _tick_all_meters():
+    for m in _all_meters:
+        m._decay()
+
+
+def _register_meter(meter):
+    global _shared_timer
+    _all_meters.append(meter)
+    if _shared_timer is None:
+        _shared_timer = QTimer()
+        _shared_timer.timeout.connect(_tick_all_meters)
+        _shared_timer.start(30)
+
+
+def _unregister_meter(meter):
+    global _shared_timer
+    try:
+        _all_meters.remove(meter)
+    except ValueError:
+        pass
+    if not _all_meters and _shared_timer is not None:
+        _shared_timer.stop()
+        _shared_timer = None
+
+
 class VUMeter(QWidget):
     """Vertical or horizontal VU meter with peak hold — monochrome gray."""
 
@@ -28,9 +58,15 @@ class VUMeter(QWidget):
             self.setMinimumSize(40, 8)
             self.setMaximumHeight(14)
 
-        self._decay_timer = QTimer(self)
-        self._decay_timer.timeout.connect(self._decay)
-        self._decay_timer.start(30)
+        # Cache gradients (created once on first paint when size is known)
+        self._cached_gradient = None
+        self._cached_gradient_size = (0, 0)
+
+        _register_meter(self)
+
+    def closeEvent(self, event):
+        _unregister_meter(self)
+        super().closeEvent(event)
 
     def set_level(self, level: float):
         self._level = max(0.0, min(1.0, level))
@@ -78,14 +114,16 @@ class VUMeter(QWidget):
     def _paint_vertical(self, painter: QPainter, w: int, h: int):
         bar_h = int(self._level * h)
         if bar_h > 0:
-            # Monochrome gray gradient with varying alpha (matching original meter~)
-            gradient = QLinearGradient(0, h, 0, 0)
-            gradient.setColorAt(0.0, QColor(0x42, 0x42, 0x42, 80))    # cold
-            gradient.setColorAt(0.3, QColor(0x42, 0x42, 0x42, 130))   # tepid
-            gradient.setColorAt(0.6, QColor(0x42, 0x42, 0x42, 180))   # warm
-            gradient.setColorAt(0.85, QColor(0x42, 0x42, 0x42, 220))  # hot
-            gradient.setColorAt(1.0, QColor(0x42, 0x42, 0x42, 240))   # overload
-            painter.fillRect(0, h - bar_h, w, bar_h, gradient)
+            if self._cached_gradient_size != (w, h):
+                gradient = QLinearGradient(0, h, 0, 0)
+                gradient.setColorAt(0.0, QColor(0x42, 0x42, 0x42, 80))
+                gradient.setColorAt(0.3, QColor(0x42, 0x42, 0x42, 130))
+                gradient.setColorAt(0.6, QColor(0x42, 0x42, 0x42, 180))
+                gradient.setColorAt(0.85, QColor(0x42, 0x42, 0x42, 220))
+                gradient.setColorAt(1.0, QColor(0x42, 0x42, 0x42, 240))
+                self._cached_gradient = gradient
+                self._cached_gradient_size = (w, h)
+            painter.fillRect(0, h - bar_h, w, bar_h, self._cached_gradient)
 
         # Peak indicator
         if self._peak > 0.01:
@@ -96,13 +134,16 @@ class VUMeter(QWidget):
     def _paint_horizontal(self, painter: QPainter, w: int, h: int):
         bar_w = int(self._level * w)
         if bar_w > 0:
-            gradient = QLinearGradient(0, 0, w, 0)
-            gradient.setColorAt(0.0, QColor(0x42, 0x42, 0x42, 80))
-            gradient.setColorAt(0.3, QColor(0x42, 0x42, 0x42, 130))
-            gradient.setColorAt(0.6, QColor(0x42, 0x42, 0x42, 180))
-            gradient.setColorAt(0.85, QColor(0x42, 0x42, 0x42, 220))
-            gradient.setColorAt(1.0, QColor(0x42, 0x42, 0x42, 240))
-            painter.fillRect(0, 0, bar_w, h, gradient)
+            if self._cached_gradient_size != (w, h):
+                gradient = QLinearGradient(0, 0, w, 0)
+                gradient.setColorAt(0.0, QColor(0x42, 0x42, 0x42, 80))
+                gradient.setColorAt(0.3, QColor(0x42, 0x42, 0x42, 130))
+                gradient.setColorAt(0.6, QColor(0x42, 0x42, 0x42, 180))
+                gradient.setColorAt(0.85, QColor(0x42, 0x42, 0x42, 220))
+                gradient.setColorAt(1.0, QColor(0x42, 0x42, 0x42, 240))
+                self._cached_gradient = gradient
+                self._cached_gradient_size = (w, h)
+            painter.fillRect(0, 0, bar_w, h, self._cached_gradient)
 
         # Peak indicator
         if self._peak > 0.01:
