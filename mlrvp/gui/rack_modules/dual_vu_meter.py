@@ -195,6 +195,9 @@ class DualVUMeterModule(RackModuleBase):
             "QComboBox QAbstractItemView { background: #1a1a1a; color: #ccaa44; }"
         )
         self._mode_combo.currentIndexChanged.connect(self._on_mode_change)
+        self._mode_combo.setToolTip(
+            "Metering mode \u2014 VU (weighted average), Peak (instantaneous), or RMS (power level)"
+        )
         row.addWidget(self._mode_combo)
 
         self._faceplate_layout.addLayout(row)

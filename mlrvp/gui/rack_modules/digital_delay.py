@@ -144,12 +144,17 @@ class DigitalDelayModule(RackModuleBase):
         self._mode = _TactSwitch(["SYNC", "MS"])
         self._mode.setFixedWidth(52)
         self._mode.currentIndexChanged.connect(self._on_mode_changed)
+        self._mode.setToolTip(
+            "SYNC: lock delay time to BPM grid divisions\n"
+            "MS: set delay time manually in milliseconds"
+        )
         row.addWidget(self._mode)
 
         # ── Rate knob ─────────────────────────────────────────────────────
         self._rate_knob = RotaryKnob(color=_ACCENT)
         self._rate_knob.set_value(self._sync_knob_val)
         self._rate_knob.value_changed.connect(self._on_rate_changed)
+        self._rate_knob.setToolTip("Delay time — note division in SYNC mode or milliseconds in MS mode")
         row.addWidget(self._rate_knob)
         rate_lbl = QLabel("RATE")
         rate_lbl.setStyleSheet(
@@ -163,6 +168,7 @@ class DigitalDelayModule(RackModuleBase):
         self._fb_gain.value_changed.connect(
             lambda v: self.param_changed.emit("gain", v)
         )
+        self._fb_gain.setToolTip("Echo feedback level — controls how many repeats are generated")
         row.addWidget(self._fb_gain)
         fb_lbl = QLabel("ECHO")
         fb_lbl.setStyleSheet(f"color: {_DIM}; font-size: 7px; font-weight: bold;")
@@ -175,6 +181,7 @@ class DigitalDelayModule(RackModuleBase):
         self._lp.value_changed.connect(
             lambda v: self.param_changed.emit("filter_freq_lp", v * 19900.0 + 100.0)
         )
+        self._lp.setToolTip("Low-pass filter for the feedback loop — lower = darker, warmer repeats")
         row.addWidget(self._lp)
         lp_lbl = QLabel("LP")
         lp_lbl.setStyleSheet(f"color: {_DIM}; font-size: 7px; font-weight: bold;")

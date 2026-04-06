@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer, QtMsgType, qInstallMessageHandler, QObject, Signal, Qt
 from PySide6.QtGui import QIcon
 
-from mlrvp.config import AppConfig, PlaybackMode, MAX_ROWS, NUM_GROUPS, NUM_PATTERN_RECORDERS, LED_OFF, LED_DIM, LED_BRIGHT
+from mlrvp.config import AppConfig, PlaybackMode, MAX_ROWS, NUM_GROUPS, NUM_PATTERN_RECORDERS, LED_OFF, LED_DIM, LED_BRIGHT, PITCH_SCALE_MAPS, PITCH_SCALE_NAMES
 from mlrvp.audio.engine import AudioEngine
 from mlrvp.audio.sample import load_sample, get_waveform_overview
 from mlrvp.transport.clock import MasterClock
@@ -375,7 +375,10 @@ class AppController:
                 self._stop_group_siblings(row, self.config.grid_columns)
                 self.engine.trigger_channel(row, column, self.config.grid_columns)
                 grp = ch.state.group
-                self.grid.update_playback_leds(row, column, self.config.grid_columns, color=grp)
+                if ch.state.mode == PlaybackMode.PITCH:
+                    self._update_pitch_mode_leds(row, active_col=column)
+                else:
+                    self.grid.update_playback_leds(row, column, self.config.grid_columns, color=grp)
 
     # ------------------------------------------------------------------ #
     #  Grid callbacks                                                     #
@@ -531,7 +534,10 @@ class AppController:
 
         # Update grid LEDs for the row
         grp = self.config.channels[row].group if row < len(self.config.channels) else 0
-        self.grid.update_playback_leds(row, column, columns, color=grp)
+        if self.engine and self.engine.channels[row].state.mode == PlaybackMode.PITCH:
+            self._update_pitch_mode_leds(row, active_col=column)
+        else:
+            self.grid.update_playback_leds(row, column, columns, color=grp)
 
         # Mirror via OSC
         if self.osc:
@@ -549,6 +555,22 @@ class AppController:
         cur = ch._seq_column
         if 0 <= cur < columns:
             values[cur] = LED_BRIGHT
+        self.grid.set_row(row, values, grp)
+
+    def _update_pitch_mode_leds(self, row: int, active_col: int = -1):
+        """Update grid LEDs for a PITCH-mode row.
+
+        All columns show DIM (every button is a playable pitch).
+        The currently-sounding column shows BRIGHT.
+        """
+        if not self.engine:
+            return
+        ch = self.engine.channels[row]
+        columns = self.config.grid_columns
+        grp = ch.state.group
+        values = [LED_DIM] * columns
+        if 0 <= active_col < columns:
+            values[active_col] = LED_BRIGHT
         self.grid.set_row(row, values, grp)
 
     def _on_led_update(self, led_state):
@@ -1362,7 +1384,7 @@ class AppController:
                     strip._waveform.set_grid_columns(cols)
                 else:
                     # Restore the BPM speed when leaving SEQ mode
-                    if old_mode == PlaybackMode.SEQ:
+                    if old_mode == PlaybackMode.SEQ or old_mode == PlaybackMode.PITCH:
                         restored = ch.normal_speed
                         ch.speed = restored
                         if self.engine:
@@ -1371,7 +1393,14 @@ class AppController:
                         strip._speed_spin.blockSignals(True)
                         strip._speed_spin.setValue(restored)
                         strip._speed_spin.blockSignals(False)
-                    strip._steps_spin.setEnabled(True)
+                    strip._steps_spin.setEnabled(value != PlaybackMode.PITCH)
+                # PITCH mode: show all buttons as DIM (available pitch triggers)
+                if value == PlaybackMode.PITCH:
+                    if self.engine:
+                        self._update_pitch_mode_leds(row)
+                elif old_mode == PlaybackMode.PITCH:
+                    # Leaving PITCH mode — clear the DIM LEDs
+                    self.grid.clear_row_leds(row, self.config.grid_columns)
         elif param == "stop":
             if self.engine:
                 ech = self.engine.channels[row]
@@ -1391,7 +1420,11 @@ class AppController:
                     ech._slice_held = set()
                     ech._slice_col_start = -1
                     ech._slice_col_end = -1
-                self.grid.clear_row_leds(row, self.config.grid_columns)
+                # PITCH mode: restore DIM LEDs (all buttons remain available)
+                if ech.state.mode == PlaybackMode.PITCH:
+                    self._update_pitch_mode_leds(row)
+                else:
+                    self.grid.clear_row_leds(row, self.config.grid_columns)
         elif param == "group":
             ch.group = value
             # Sync group to audio engine state
@@ -1416,6 +1449,18 @@ class AppController:
             if self.engine:
                 self.engine.channels[row].state.transpose = value
                 self._apply_pitch_shift_async(row, value)
+        elif param == "pitch_scale":
+            ch.pitch_scale = int(value)
+            if self.engine:
+                self.engine.channels[row].state.pitch_scale = int(value)
+        elif param == "pitch_root":
+            ch.pitch_root = int(value)
+            if self.engine:
+                self.engine.channels[row].state.pitch_root = int(value)
+        elif param == "pitch_hold":
+            ch.pitch_hold = bool(value)
+            if self.engine:
+                self.engine.channels[row].state.pitch_hold = bool(value)
         elif param == "mute":
             ch.mute = value
             if self.engine:
@@ -3018,6 +3063,22 @@ class AppController:
                 self._row_was_playing[i] = True  # prevent clear on next idle frame
                 continue
 
+            # PITCH mode: all buttons stay DIM, active column BRIGHT while playing
+            if ch.state.mode == PlaybackMode.PITCH and ch.sample is not None:
+                active_col = ch._pitch_mode_col if ch.state.playing else -1
+                if ch.state.playing:
+                    strip.set_playback_position(ch.position)
+                    strip.set_playing(True)
+                    grp = ch.state.group
+                    if 0 <= grp < NUM_GROUPS:
+                        group_active[grp] = True
+                else:
+                    strip.set_playing(False)
+                strip._waveform.set_active_column(active_col)
+                self._update_pitch_mode_leds(i, active_col=active_col)
+                self._row_was_playing[i] = True  # keep DIM LEDs persistent
+                continue
+
             if ch.state.playing:
                 strip.set_playback_position(ch.position)
                 strip.set_playing(True)
@@ -3141,6 +3202,31 @@ def run_app(argv=None) -> int:
     app = QApplication(argv or sys.argv)
     app.setApplicationName("mlrVp")
     app.setApplicationVersion("0.6.9")
+
+    # Delay tooltips so they only appear after hovering intentionally.
+    from PySide6.QtWidgets import QProxyStyle, QStyle
+    class _DelayedToolTipStyle(QProxyStyle):
+        def styleHint(self, hint, option=None, widget=None, returnData=None):
+            if hint == QStyle.StyleHint.SH_ToolTip_WakeUpDelay:
+                return 1200
+            if hint == QStyle.StyleHint.SH_ToolTip_FallAsleepDelay:
+                return 200
+            return super().styleHint(hint, option, widget, returnData)
+    app.setStyle(_DelayedToolTipStyle(app.style().objectName()))
+
+    # Force dark tooltip background: intercept the internal QTipLabel widget
+    # when it shows and apply a direct stylesheet on it.  This targets *only*
+    # the actual tooltip label, not any other top-level or child widget.
+    from PySide6.QtCore import QObject, QEvent
+    class _ToolTipStyler(QObject):
+        _SS = ("background-color: #1a1a1a; color: #ffffff;"
+               " border: 1px solid #cc9933; padding: 4px;")
+        def eventFilter(self, obj, event):
+            if event.type() == QEvent.Type.Show and obj.inherits("QTipLabel"):
+                obj.setStyleSheet(self._SS)
+            return False
+    _tt_styler = _ToolTipStyler(app)
+    app.installEventFilter(_tt_styler)
 
     # Set application icon
     _icon_path = Path(__file__).parent / "resources" / "icon.png"

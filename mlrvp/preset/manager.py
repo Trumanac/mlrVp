@@ -282,6 +282,9 @@ class PresetManager:
                 ch.pitch = max(-24.0, min(24.0, float(ch_data.get("pitch", ch.pitch))))
                 ch.velocity = max(0.0, min(1.0, float(ch_data.get("velocity", ch.velocity))))
                 ch.filter_val = max(-1.0, min(1.0, float(ch_data.get("filter_val", ch.filter_val))))
+                ch.pitch_scale = max(0, min(4, int(ch_data.get("pitch_scale", ch.pitch_scale))))
+                ch.pitch_root = max(-24, min(24, int(ch_data.get("pitch_root", ch.pitch_root))))
+                ch.pitch_hold = bool(ch_data.get("pitch_hold", ch.pitch_hold))
 
         # Groups
         groups_data = cfg_data.get("groups", [])
@@ -495,6 +498,9 @@ class PresetManager:
                     "pitch": ch.pitch,
                     "velocity": ch.velocity,
                     "filter_val": ch.filter_val,
+                    "pitch_scale": ch.pitch_scale,
+                    "pitch_root": ch.pitch_root,
+                    "pitch_hold": ch.pitch_hold,
                 }
                 for ch in config.channels
             ],

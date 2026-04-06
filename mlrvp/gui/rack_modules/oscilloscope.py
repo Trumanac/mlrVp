@@ -220,6 +220,7 @@ class OscilloscopeModule(RackModuleBase):
             f"QComboBox QAbstractItemView {{ background: #111; color: {_PHOSPHOR}; }}"
         )
         self._mode_combo.currentIndexChanged.connect(self._on_mode)
+        self._mode_combo.setToolTip("Display mode — WAVEFORM shows L/R audio waveforms over time; LISSAJOUS shows stereo phase relationship")
         ctrl.addWidget(self._mode_combo)
 
         # Zoom knob
@@ -231,6 +232,7 @@ class OscilloscopeModule(RackModuleBase):
         self._zoom_knob.set_formatter(lambda v: f"{0.1 + v * 1.9:.1f}x")
         self._zoom_knob.value_changed.connect(
             lambda v: self._display.set_zoom(0.1 + v * 1.9))
+        self._zoom_knob.setToolTip("Zoom — vertical amplitude scale; increase to see quieter signal detail (0.1–2.0x)")
         ctrl.addWidget(self._zoom_knob, alignment=Qt.AlignmentFlag.AlignCenter)
         ctrl.addStretch()
 

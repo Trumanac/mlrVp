@@ -33,6 +33,7 @@ class AudioSetupPanel(QFrame):
         self._output_combo.currentIndexChanged.connect(
             lambda v: self.setting_changed.emit("output_device", v - 1)
         )
+        self._output_combo.setToolTip("Audio output device used for playback")
         grid.addWidget(QLabel("Output Device:"), 0, 0)
         grid.addWidget(self._output_combo, 0, 1)
 
@@ -42,6 +43,7 @@ class AudioSetupPanel(QFrame):
         self._input_combo.currentIndexChanged.connect(
             lambda v: self.setting_changed.emit("input_device", v - 1)
         )
+        self._input_combo.setToolTip("Audio input device used for recording and monitoring")
         grid.addWidget(QLabel("Input Device:"), 1, 0)
         grid.addWidget(self._input_combo, 1, 1)
 
@@ -50,6 +52,10 @@ class AudioSetupPanel(QFrame):
         self._sr_combo.addItems(["44100", "48000", "88200", "96000"])
         self._sr_combo.currentTextChanged.connect(
             lambda v: self.setting_changed.emit("sample_rate", int(v))
+        )
+        self._sr_combo.setToolTip(
+            "Sample rate in Hz — affects audio quality and CPU load\n"
+            "(requires app restart to take effect)"
         )
         grid.addWidget(QLabel("Sample Rate:"), 2, 0)
         grid.addWidget(self._sr_combo, 2, 1)
@@ -61,6 +67,10 @@ class AudioSetupPanel(QFrame):
         self._buf_combo.currentTextChanged.connect(
             lambda v: self.setting_changed.emit("buffer_size", int(v))
         )
+        self._buf_combo.setToolTip(
+            "Audio buffer size — lower = less latency, higher = more stable\n"
+            "(requires app restart to take effect)"
+        )
         grid.addWidget(QLabel("Buffer Size:"), 3, 0)
         grid.addWidget(self._buf_combo, 3, 1)
 
@@ -69,6 +79,7 @@ class AudioSetupPanel(QFrame):
         # Rescan button
         self._rescan_btn = QPushButton("Rescan Audio Devices")
         self._rescan_btn.setFixedHeight(28)
+        self._rescan_btn.setToolTip("Rescan and refresh the list of available audio devices")
         layout.addWidget(self._rescan_btn)
 
         layout.addStretch()
@@ -119,6 +130,7 @@ class GridSetupPanel(QFrame):
         self._rows_spin.valueChanged.connect(
             lambda v: self.setting_changed.emit("row_count", v)
         )
+        self._rows_spin.setToolTip("Number of active rows on the grid — each row controls one channel")
         grid.addWidget(QLabel("Active Rows:"), 0, 0)
         grid.addWidget(self._rows_spin, 0, 1)
 
@@ -129,12 +141,14 @@ class GridSetupPanel(QFrame):
         self._cols_combo.currentTextChanged.connect(
             lambda v: self.setting_changed.emit("grid_columns", int(v))
         )
+        self._cols_combo.setToolTip("Grid width — 8 or 16 buttons per row")
         grid.addWidget(QLabel("Grid Columns:"), 1, 0)
         grid.addWidget(self._cols_combo, 1, 1)
 
         # Connected grid device
         self._grid_combo = QComboBox()
         self._grid_combo.addItem("Virtual Grid (built-in)")
+        self._grid_combo.setToolTip("Select the hardware grid controller to connect to")
         grid.addWidget(QLabel("Grid Device:"), 2, 0)
         grid.addWidget(self._grid_combo, 2, 1)
 
@@ -147,11 +161,13 @@ class GridSetupPanel(QFrame):
         self._scan_btn = QPushButton("Scan for Controllers")
         self._scan_btn.setFixedHeight(28)
         self._scan_btn.clicked.connect(self.scan_requested.emit)
+        self._scan_btn.setToolTip("Scan for connected hardware grid controllers (monome / MIDI)")
         btn_row.addWidget(self._scan_btn)
 
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.setFixedHeight(28)
         self._connect_btn.clicked.connect(self._on_connect_click)
+        self._connect_btn.setToolTip("Connect to the selected hardware grid controller")
         btn_row.addWidget(self._connect_btn)
 
         layout.addLayout(btn_row)
@@ -167,6 +183,7 @@ class GridSetupPanel(QFrame):
         self._virtual_chk.toggled.connect(
             lambda v: self.setting_changed.emit("show_virtual_grid", v)
         )
+        self._virtual_chk.setToolTip("Show an on-screen virtual grid for testing without physical hardware")
         layout.addWidget(self._virtual_chk)
 
         # Snap speed to nearest 0.5x/2x rate
@@ -212,6 +229,7 @@ class GridSetupPanel(QFrame):
         self._save_default_btn = QPushButton("Save Default")
         self._save_default_btn.setFixedHeight(24)
         self._save_default_btn.clicked.connect(self._on_save_default)
+        self._save_default_btn.setToolTip("Save the current app state as the startup default")
         def_row.addWidget(self._save_default_btn)
 
         layout.addLayout(def_row)
@@ -354,6 +372,7 @@ class MidiSetupPanel(QFrame):
             "QPushButton:hover { background: #2a3a2a; }"
         )
         add_input_btn.clicked.connect(self._on_add_input)
+        add_input_btn.setToolTip("Add another MIDI input port to receive controller messages from")
         layout.addWidget(add_input_btn)
 
         # ── MIDI Output (single) ──
@@ -364,6 +383,7 @@ class MidiSetupPanel(QFrame):
         self._midi_out_combo.currentIndexChanged.connect(
             lambda v: self.setting_changed.emit("midi_out_device", v - 1)
         )
+        self._midi_out_combo.setToolTip("MIDI output device for sending note/CC feedback to external hardware")
         out_grid.addWidget(QLabel("MIDI Output:"), 0, 0)
         out_grid.addWidget(self._midi_out_combo, 0, 1)
         layout.addLayout(out_grid)
@@ -383,11 +403,16 @@ class MidiSetupPanel(QFrame):
             f"QPushButton:checked {{ background: {ACCENT_BLUE}; border-color: {ACCENT_BLUE}; color: {BG_BLACK}; }}"
         )
         self._learn_btn.toggled.connect(self.midi_learn_toggled.emit)
+        self._learn_btn.setToolTip(
+            "Toggle MIDI Learn mode — move a hardware knob or fader\n"
+            "to assign it to the last control you clicked in the app"
+        )
         btn_row.addWidget(self._learn_btn)
 
         # Rescan
         self._rescan_btn = QPushButton("Rescan MIDI Devices")
         self._rescan_btn.setFixedHeight(28)
+        self._rescan_btn.setToolTip("Rescan and refresh the list of available MIDI devices")
         btn_row.addWidget(self._rescan_btn)
 
         layout.addLayout(btn_row)
@@ -435,6 +460,10 @@ class MidiSetupPanel(QFrame):
         self._map_table.setColumnWidth(5, 46)
         self._map_table.setColumnWidth(6, 28)
         self._map_table.verticalHeader().setVisible(False)
+        self._map_table.setToolTip(
+            "Active MIDI CC mappings — each row shows a mapped parameter with its CC number,\n"
+            "channel, value range, and toggle mode. Use Min/Max spinboxes to scale the range."
+        )
         layout.addWidget(self._map_table, stretch=1)
 
         # Clear all button
@@ -446,6 +475,7 @@ class MidiSetupPanel(QFrame):
             "QPushButton:hover { background: #4a2a2a; }"
         )
         self._clear_all_btn.clicked.connect(self._on_clear_all)
+        self._clear_all_btn.setToolTip("Remove all active MIDI CC mappings")
         layout.addWidget(self._clear_all_btn)
 
         # ── Tilt / Accelerometer mapping (hidden by default) ──
@@ -466,6 +496,11 @@ class MidiSetupPanel(QFrame):
         tilt_grid = QGridLayout()
         tilt_grid.setSpacing(4)
         self._tilt_combos: list[QComboBox] = []
+        _TILT_TOOLTIPS = [
+            "Tilt X axis — map left/right tilt to a parameter",
+            "Tilt Y axis — map forward/back tilt to a parameter",
+            "Tilt Z axis — map up/down tilt to a parameter",
+        ]
         for i, axis in enumerate(["Tilt X", "Tilt Y", "Tilt Z"]):
             lbl = QLabel(axis + ":")
             lbl.setStyleSheet("color: #aaa; font-size: 10px;")
@@ -477,6 +512,7 @@ class MidiSetupPanel(QFrame):
             )
             combo.currentIndexChanged.connect(
                 lambda idx, ax=i: self._on_tilt_changed(ax, idx))
+            combo.setToolTip(_TILT_TOOLTIPS[i])
             tilt_grid.addWidget(lbl, i, 0)
             tilt_grid.addWidget(combo, i, 1)
             self._tilt_combos.append(combo)
@@ -720,6 +756,7 @@ class OscSetupPanel(QFrame):
         self._enable_cb = QCheckBox("Enable OSC")
         self._enable_cb.setChecked(False)
         self._enable_cb.toggled.connect(self._on_enable_toggled)
+        self._enable_cb.setToolTip("Enable OSC communication for external control (e.g. TouchOSC, SuperCollider)")
         layout.addWidget(self._enable_cb)
 
         grid = QGridLayout()
@@ -730,6 +767,7 @@ class OscSetupPanel(QFrame):
         self._host_edit.editingFinished.connect(
             lambda: self.setting_changed.emit("osc_host", self._host_edit.text())
         )
+        self._host_edit.setToolTip("Target host IP address for outgoing OSC messages")
         grid.addWidget(QLabel("OSC Host:"), 0, 0)
         grid.addWidget(self._host_edit, 0, 1)
 
@@ -740,6 +778,7 @@ class OscSetupPanel(QFrame):
         self._send_port.valueChanged.connect(
             lambda v: self.setting_changed.emit("osc_send_port", v)
         )
+        self._send_port.setToolTip("UDP port for sending OSC messages to the host")
         grid.addWidget(QLabel("Send Port:"), 1, 0)
         grid.addWidget(self._send_port, 1, 1)
 
@@ -750,6 +789,7 @@ class OscSetupPanel(QFrame):
         self._recv_port.valueChanged.connect(
             lambda v: self.setting_changed.emit("osc_recv_port", v)
         )
+        self._recv_port.setToolTip("UDP port to listen on for incoming OSC messages")
         grid.addWidget(QLabel("Receive Port:"), 2, 0)
         grid.addWidget(self._recv_port, 2, 1)
 

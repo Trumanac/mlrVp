@@ -131,6 +131,7 @@ class TubeOverdriveModule(RackModuleBase):
         self._drive = RotaryKnob(color=_YELLOW)
         self._drive.set_value(0.25)
         self._drive.value_changed.connect(self._on_drive)
+        self._drive.setToolTip("Drive — pre-amp gain into the tube stage; higher = more harmonic saturation and clipping")
         col = QVBoxLayout(); col.setSpacing(0)
         col.addWidget(QLabel("DRIVE"), alignment=Qt.AlignmentFlag.AlignCenter)
         col.addWidget(self._drive, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -142,6 +143,7 @@ class TubeOverdriveModule(RackModuleBase):
         self._tone.value_changed.connect(
             lambda v: self.param_changed.emit("tone", v)
         )
+        self._tone.setToolTip("Tone — low = darker/warmer character; high = brighter/harsher edge on the overdrive")
         col2 = QVBoxLayout(); col2.setSpacing(0)
         col2.addWidget(QLabel("TONE"), alignment=Qt.AlignmentFlag.AlignCenter)
         col2.addWidget(self._tone, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -153,6 +155,7 @@ class TubeOverdriveModule(RackModuleBase):
         self._bias.value_changed.connect(
             lambda v: self.param_changed.emit("tube_bias", v)
         )
+        self._bias.setToolTip("Tube bias — shifts the operating point; affects even/odd harmonic balance and asymmetric clipping character")
         col_bias = QVBoxLayout(); col_bias.setSpacing(0)
         col_bias.addWidget(QLabel("BIAS"), alignment=Qt.AlignmentFlag.AlignCenter)
         col_bias.addWidget(self._bias, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -164,6 +167,7 @@ class TubeOverdriveModule(RackModuleBase):
         self._mix.value_changed.connect(
             lambda v: self.param_changed.emit("mix", v)
         )
+        self._mix.setToolTip("Wet/dry blend — parallel mix of the overdriven signal with the clean dry input")
         col3 = QVBoxLayout(); col3.setSpacing(0)
         col3.addWidget(QLabel("MIX"), alignment=Qt.AlignmentFlag.AlignCenter)
         col3.addWidget(self._mix, alignment=Qt.AlignmentFlag.AlignCenter)

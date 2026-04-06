@@ -144,6 +144,7 @@ class MasterFilterView(QWidget):
         self._hp_knob.set_value(0.0)
         self._hp_knob.set_formatter(lambda v: f"{int(round(20.0 + v * 480.0))} Hz")
         self._hp_knob.value_changed.connect(self._on_hp)
+        self._hp_knob.setToolTip("Master high-pass trim — rolls off low-frequency rumble (20–500 Hz)")
         hp_col.addWidget(self._hp_knob, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addLayout(hp_col)
 
@@ -159,6 +160,7 @@ class MasterFilterView(QWidget):
         self._lp_knob.set_value(1.0)
         self._lp_knob.set_formatter(lambda v: f"{int(round(200.0 + v * 19800.0))} Hz")
         self._lp_knob.value_changed.connect(self._on_lp)
+        self._lp_knob.setToolTip("Master low-pass trim — rolls off high frequencies from the final mix (200Hz–20kHz)")
         lp_col.addWidget(self._lp_knob, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addLayout(lp_col)
 

@@ -89,6 +89,7 @@ class ChorusModule(RackModuleBase):
         self._rate.value_changed.connect(
             lambda v: self.param_changed.emit("chorus_rate", v * 5.0)
         )
+        self._rate.setToolTip("LFO speed for chorus modulation (0–5 Hz)")
         col = QVBoxLayout(); col.setSpacing(0)
         lbl_s = QLabel("SPEED")
         lbl_s.setStyleSheet(f"color: {_CORAL}; font-size: 7px; font-weight: bold;")
@@ -102,6 +103,7 @@ class ChorusModule(RackModuleBase):
         self._depth.value_changed.connect(
             lambda v: self.param_changed.emit("chorus_depth", v)
         )
+        self._depth.setToolTip("Modulation depth — widens the stereo image")
         col2 = QVBoxLayout(); col2.setSpacing(0)
         lbl_w = QLabel("WIDTH")
         lbl_w.setStyleSheet("color: #33dddd; font-size: 7px; font-weight: bold;")
@@ -115,6 +117,7 @@ class ChorusModule(RackModuleBase):
         self._mix.value_changed.connect(
             lambda v: self.param_changed.emit("chorus_mix", v)
         )
+        self._mix.setToolTip("Wet/dry blend of the chorus effect")
         col3 = QVBoxLayout(); col3.setSpacing(0)
         lbl_m = QLabel("MIX")
         lbl_m.setStyleSheet(f"color: {_GOLD}; font-size: 7px; font-weight: bold;")

@@ -12,6 +12,7 @@ class PlaybackMode(IntEnum):
     ONESHOT = 2    # play once then stop
     SLICE = 3      # hold-to-play, supports 2-button slice loop
     SEQ = 4        # step sequencer — grid buttons toggle steps, sample triggers per step
+    PITCH = 5      # pitched one-shot — each button plays the sample at a different pitch
 
 
 class QuantizeMode(IntEnum):
@@ -45,6 +46,17 @@ LED_DIM = 4
 LED_MED = 8
 LED_BRIGHT = 15
 
+# Pitch mode scale definitions — each list has 16 semitone offsets,
+# sliced to [:grid_columns] at runtime for 8/16/etc layouts.
+PITCH_SCALE_NAMES = ["MAJOR", "MINOR", "PENTA", "CHORD", "CHROM"]
+PITCH_SCALE_MAPS: dict[int, list[int]] = {
+    0: [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24, 26],        # MAJOR — 2 octaves diatonic
+    1: [0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19, 20, 22, 24, 26],        # MINOR — natural minor
+    2: [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24, 26, 28, 31, 33, 36],       # PENTA — pentatonic 3 oct
+    3: [0, 1, 2, 3, 5, 7, 9, 10, 12, 13, 14, 15, 17, 19, 21, 22],         # CHORD — common roots ×2 oct
+    4: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],            # CHROM — chromatic
+}
+
 
 @dataclass
 class ChannelState:
@@ -68,6 +80,9 @@ class ChannelState:
     pitch: float = 1.0
     velocity: float = 1.0
     filter_val: float = 0.0  # -1 to 1, 0 = bypass, <0 = LP, >0 = HP
+    pitch_scale: int = 0     # index into PITCH_SCALE_MAPS (0=MAJOR .. 4=CHROM)
+    pitch_root: int = 0      # semitone offset for PITCH mode base note (-24 to +24)
+    pitch_hold: bool = False  # True = loop in PITCH mode, False = one-shot
     playing: bool = False
     playback_pos: float = 0.0
 

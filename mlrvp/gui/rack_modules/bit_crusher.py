@@ -125,6 +125,7 @@ class BitCrusherModule(RackModuleBase):
         self._bits.set_value(12 / 32)
         self._bits.set_formatter(lambda v: f"{max(1, round(v * 32))} bit")
         self._bits.value_changed.connect(self._on_bits)
+        self._bits.setToolTip("Bit depth — lower values add more lo-fi crushing distortion (1–32 bits)")
         col = QVBoxLayout(); col.setSpacing(0)
         col.addWidget(QLabel("BITS"), alignment=Qt.AlignmentFlag.AlignCenter)
         col.addWidget(self._bits, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -136,6 +137,7 @@ class BitCrusherModule(RackModuleBase):
         self._crush.value_changed.connect(
             lambda v: self.param_changed.emit("sample_rate_reduction", v)
         )
+        self._crush.setToolTip("Sample rate reduction — lowers the effective sample rate for harsher digital artifacts")
         col2 = QVBoxLayout(); col2.setSpacing(0)
         col2.addWidget(QLabel("CRUSH"), alignment=Qt.AlignmentFlag.AlignCenter)
         col2.addWidget(self._crush, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -147,6 +149,7 @@ class BitCrusherModule(RackModuleBase):
         self._mix.value_changed.connect(
             lambda v: self.param_changed.emit("mix", v)
         )
+        self._mix.setToolTip("Wet/dry blend of the bit crusher effect")
         col3 = QVBoxLayout(); col3.setSpacing(0)
         col3.addWidget(QLabel("MIX"), alignment=Qt.AlignmentFlag.AlignCenter)
         col3.addWidget(self._mix, alignment=Qt.AlignmentFlag.AlignCenter)

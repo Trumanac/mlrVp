@@ -127,6 +127,13 @@ class VHSModule(RackModuleBase):
         row.addWidget(self._meter)
 
         # Knobs
+        _TIPS = {
+            "wobble":  "Tape wobble — slow speed instability creating low-frequency pitch wavering",
+            "dropout": "Tape dropout — signal gaps and level dips from worn oxide coating",
+            "worn":    "Worn tape — HF loss and increased noise from degraded tape surface",
+            "noise":   "Tape noise — characteristic VHS hiss and static from worn heads",
+            "mix":     "Wet/dry blend — 0%=dry signal, 100%=full VHS degradation character",
+        }
         for name, default, param in [
             ("WOBBLE", 0.20, "wobble"),
             ("DROP", 0.08, "dropout"),
@@ -138,6 +145,7 @@ class VHSModule(RackModuleBase):
             knob.set_value(default)
             knob.value_changed.connect(lambda v, p=param: self.param_changed.emit(p, v))
             setattr(self, f"_{param}", knob)
+            knob.setToolTip(_TIPS.get(param, ""))
             col = QVBoxLayout()
             col.setSpacing(0)
             lbl = QLabel(name)

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QMimeData
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QAction
 
-from mlrvp.config import ChannelState, PlaybackMode, NUM_GROUPS, MAX_ROWS
+from mlrvp.config import ChannelState, PlaybackMode, NUM_GROUPS, MAX_ROWS, PITCH_SCALE_NAMES
 from mlrvp.gui.styles import (
     GROUP_COLORS, BG_PANEL, BG_BLACK, BG_MAIN, SEPARATOR,
     ACCENT_GOLD, TEXT_PRIMARY, TEXT_SECONDARY,
@@ -147,15 +147,15 @@ class ChannelStrip(QFrame):
         top_row.addWidget(_sample_sec, stretch=1)
 
         self._mode_combo = QComboBox()
-        self._mode_combo.addItems(["LOOP", "REV", "SHOT", "SLICE", "SEQ"])
+        self._mode_combo.addItems(["LOOP", "RVRS", "SHOT", "SLCE", "SQNC", "PTCH"])
         self._mode_combo.setFixedHeight(20)
-        self._mode_combo.setMaximumWidth(60)
+        self._mode_combo.setMaximumWidth(48)
         self._mode_combo.setStyleSheet(
-            f"QComboBox {{ font-size: 10px; padding: 2px 6px; color: {TEXT_PRIMARY}; }}"
-            f"QComboBox QAbstractItemView {{ min-width: 70px; }}"
+            f"QComboBox {{ font-size: 10px; padding: 2px 4px; color: {TEXT_PRIMARY}; }}"
+            f"QComboBox QAbstractItemView {{ min-width: 56px; }}"
         )
         self._mode_combo.currentIndexChanged.connect(
-            lambda idx: self.param_changed.emit(self._row, "mode", PlaybackMode(idx))
+            lambda idx: self._on_mode_changed(idx)
         )
 
         top_row.addWidget(_vdiv())
@@ -262,9 +262,67 @@ class ChannelStrip(QFrame):
         self._pitch_spin.valueChanged.connect(
             lambda v: self.param_changed.emit(self._row, "transpose", v)
         )
-        top_row.addWidget(_section("PITCH", self._pitch_spin))
+        self._pitch_section = _section("PITCH", self._pitch_spin)
+        top_row.addWidget(self._pitch_section)
+
+        # ROOT section — same spinner, visible only in PTCH mode (replaces PITCH section)
+        self._pitch_root_spin = QSpinBox()
+        self._pitch_root_spin.setRange(-24, 24)
+        self._pitch_root_spin.setValue(0)
+        self._pitch_root_spin.setFixedWidth(56)
+        self._pitch_root_spin.setFixedHeight(20)
+        self._pitch_root_spin.setSuffix(" st")
+        self._pitch_root_spin.setToolTip("Root pitch offset in semitones")
+        self._pitch_root_spin.setStyleSheet(
+            f"QSpinBox {{ font-size: 10px; color: {TEXT_PRIMARY}; "
+            f"padding-left: 2px; background: {BG_BLACK}; border: 1px solid {SEPARATOR}; }}"
+            f"QSpinBox::up-button {{ width: 16px; background: {BG_BLACK}; "
+            f"border: none; border-left: 1px solid {SEPARATOR}; "
+            f"subcontrol-origin: border; subcontrol-position: top right; }}"
+            f"QSpinBox::down-button {{ width: 16px; background: {BG_BLACK}; "
+            f"border: none; border-left: 1px solid {SEPARATOR}; "
+            f"subcontrol-origin: border; subcontrol-position: bottom right; }}"
+            f"QSpinBox::up-arrow {{ image: url({_ARROW_UP}); width: 8px; height: 5px; }}"
+            f"QSpinBox::down-arrow {{ image: url({_ARROW_DOWN}); width: 8px; height: 5px; }}"
+        )
+        self._pitch_root_spin.valueChanged.connect(
+            lambda v: self.param_changed.emit(self._row, "pitch_root", v)
+        )
+        self._pitch_mode_root = _section("PITCH", self._pitch_root_spin)
+        self._pitch_mode_root.setVisible(False)
+        top_row.addWidget(self._pitch_mode_root)
 
         top_row.addWidget(_vdiv())
+
+        # SCALE section — scale combo + HOLD toggle, visible only in PTCH mode
+        self._pitch_scale_combo = QComboBox()
+        self._pitch_scale_combo.addItems(PITCH_SCALE_NAMES)
+        self._pitch_scale_combo.setFixedHeight(20)
+        self._pitch_scale_combo.setMaximumWidth(72)
+        self._pitch_scale_combo.setStyleSheet(
+            f"QComboBox {{ font-size: 10px; padding: 2px 6px; color: {TEXT_PRIMARY}; }}"
+            f"QComboBox QAbstractItemView {{ min-width: 80px; }}"
+        )
+        self._pitch_scale_combo.currentIndexChanged.connect(
+            lambda idx: self.param_changed.emit(self._row, "pitch_scale", idx)
+        )
+        self._pitch_hold_btn = QPushButton("HOLD")
+        self._pitch_hold_btn.setFixedSize(38, 20)
+        self._pitch_hold_btn.setCheckable(True)
+        self._pitch_hold_btn.setToolTip("Loop sample continuously on each pitch trigger")
+        self._pitch_hold_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {SEPARATOR}; "
+            f"border: 1px solid {SEPARATOR}; font-size: 8px; font-weight: bold; "
+            f"padding: 0px 2px; }}"
+            f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
+            f"QPushButton:checked {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
+        )
+        self._pitch_hold_btn.toggled.connect(
+            lambda v: self.param_changed.emit(self._row, "pitch_hold", v)
+        )
+        self._scale_section = _section("SCALE", self._pitch_scale_combo, self._pitch_hold_btn)
+        self._scale_section.setVisible(False)
+        top_row.addWidget(self._scale_section)
 
         # Step control — number of slices the sample is divided into
         self._steps_spin = QSpinBox()
@@ -288,7 +346,8 @@ class ChannelStrip(QFrame):
         self._steps_spin.valueChanged.connect(
             lambda v: self.param_changed.emit(self._row, "steps", v)
         )
-        top_row.addWidget(_section("STEP", self._steps_spin))
+        self._steps_section = _section("STEP", self._steps_spin)
+        top_row.addWidget(self._steps_section)
 
         top_row.addWidget(_vdiv())
 
@@ -373,6 +432,18 @@ class ChannelStrip(QFrame):
         """Add a filepath to the shared sample library (no duplicates)."""
         if filepath not in cls._sample_library:
             cls._sample_library.append(filepath)
+
+    def _on_mode_changed(self, idx: int):
+        """Handle mode combo change — show/hide PITCH-mode controls."""
+        mode = PlaybackMode(idx)
+        is_pitch = mode == PlaybackMode.PITCH
+        # Show SCALE and ROOT sections only in PTCH mode
+        self._scale_section.setVisible(is_pitch)
+        self._pitch_mode_root.setVisible(is_pitch)
+        # Hide standard PITCH (transpose) and STEP in PTCH mode
+        self._pitch_section.setVisible(not is_pitch)
+        self._steps_section.setVisible(not is_pitch)
+        self.param_changed.emit(self._row, "mode", mode)
 
     def _select_group(self, idx: int):
         for i, btn in enumerate(self._group_btns):
@@ -465,7 +536,25 @@ class ChannelStrip(QFrame):
         self._steps_spin.blockSignals(False)
         self._waveform.set_grid_columns(state.steps)
         # Lock steps to grid width in SEQ mode (SEQ always uses one step per column)
-        self._steps_spin.setEnabled(state.mode != PlaybackMode.SEQ)
+        self._steps_spin.setEnabled(state.mode not in (PlaybackMode.SEQ, PlaybackMode.PITCH))
+
+        # PITCH mode controls
+        self._pitch_scale_combo.blockSignals(True)
+        self._pitch_scale_combo.setCurrentIndex(
+            max(0, min(len(PITCH_SCALE_NAMES) - 1, state.pitch_scale))
+        )
+        self._pitch_scale_combo.blockSignals(False)
+        self._pitch_root_spin.blockSignals(True)
+        self._pitch_root_spin.setValue(state.pitch_root)
+        self._pitch_root_spin.blockSignals(False)
+        self._pitch_hold_btn.blockSignals(True)
+        self._pitch_hold_btn.setChecked(state.pitch_hold)
+        self._pitch_hold_btn.blockSignals(False)
+        is_pitch = state.mode == PlaybackMode.PITCH
+        self._scale_section.setVisible(is_pitch)
+        self._pitch_mode_root.setVisible(is_pitch)
+        self._pitch_section.setVisible(not is_pitch)
+        self._steps_section.setVisible(not is_pitch)
 
         self._mute_btn.blockSignals(True)
         self._mute_btn.setChecked(state.mute)
@@ -493,7 +582,8 @@ class ChannelStrip(QFrame):
             self._sample_name, self._load_btn, self._mode_combo,
             self._gain_fader, self._speed_spin, self._pitch_spin, self._steps_spin,
             self._half_btn, self._double_btn, self._mute_btn, self._stop_btn,
-            self._waveform,
+            self._waveform, self._pitch_scale_combo, self._pitch_root_spin,
+            self._pitch_hold_btn,
         ):
             w.setEnabled(enabled)
         for btn in self._group_btns:
