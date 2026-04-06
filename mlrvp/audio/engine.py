@@ -805,12 +805,15 @@ class AudioEngine:
         self.tape_delay_m.set_tempo(tempo)
         # Scale existing channel speeds proportionally instead of
         # recalculating from scratch, so manual speed overrides are preserved.
+        # SEQ channels use a user-defined speed (default 1.0) that is not
+        # BPM-relative, so skip them here.
         if old_tempo > 0:
             ratio = tempo / old_tempo
             for i in range(self.config.row_count):
                 ch = self.channels[i]
                 if ch.sample is not None:
-                    ch.state.speed *= ratio
+                    if ch.state.mode != PlaybackMode.SEQ:
+                        ch.state.speed *= ratio
 
     def set_group_volume(self, group: int, volume: float):
         if 0 <= group < NUM_GROUPS:

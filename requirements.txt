@@ -8,3 +8,9 @@ python-osc>=1.8
 pymonome>=0.10
 resampy>=0.4
 librosa>=0.10
+
+# Python 3.13+ removed audioop, aifc, chunk, and sunau — these backports restore them
+audioop-lts>=0.2.1; python_version >= "3.13"
+standard-aifc>=3.13.0; python_version >= "3.13"
+standard-chunk>=3.13.0; python_version >= "3.13"
+standard-sunau>=3.13.0; python_version >= "3.13"

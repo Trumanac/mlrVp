@@ -258,6 +258,17 @@ class HallReverbModule(RackModuleBase):
         self._jog.value_changed.connect(
             lambda v: self.param_changed.emit("room_size", v)
         )
+        # Cross-sync: moving jog updates SIZE knob display and vice versa
+        self._jog.value_changed.connect(
+            lambda v: (self._room_size.blockSignals(True),
+                       self._room_size.set_value(v),
+                       self._room_size.blockSignals(False))
+        )
+        self._room_size.value_changed.connect(
+            lambda v: (self._jog.blockSignals(True),
+                       self._jog.set_value(v),
+                       self._jog.blockSignals(False))
+        )
         bot.addWidget(self._jog)
 
         bot.addStretch()

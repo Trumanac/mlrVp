@@ -164,16 +164,16 @@ class DigitalDelayModule(RackModuleBase):
             lambda v: self.param_changed.emit("gain", v)
         )
         row.addWidget(self._fb_gain)
-        fb_lbl = QLabel("FB")
+        fb_lbl = QLabel("ECHO")
         fb_lbl.setStyleSheet(f"color: {_DIM}; font-size: 7px; font-weight: bold;")
         row.addWidget(fb_lbl)
 
         # ── LP-filter knob ────────────────────────────────────────────────
         self._lp = RotaryKnob(color=_ACCENT)
         self._lp.set_value(0.60)
-        self._lp.set_formatter(lambda v: f"{int(v * 10000 + 100)} Hz")
+        self._lp.set_formatter(lambda v: f"{int(v * 19900 + 100)} Hz")
         self._lp.value_changed.connect(
-            lambda v: self.param_changed.emit("filter_freq_lp", v * 10000.0 + 100.0)
+            lambda v: self.param_changed.emit("filter_freq_lp", v * 19900.0 + 100.0)
         )
         row.addWidget(self._lp)
         lp_lbl = QLabel("LP")
@@ -249,7 +249,7 @@ class DigitalDelayModule(RackModuleBase):
 
         self._fb_gain.set_value(state.gain)
         self._lp.set_value(
-            max(0.0, min(1.0, (state.filter_freq_lp - 100.0) / 10000.0))
+            max(0.0, min(1.0, (state.filter_freq_lp - 100.0) / 19900.0))
         )
         self._refresh_led()
 

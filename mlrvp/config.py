@@ -50,6 +50,7 @@ LED_BRIGHT = 15
 class ChannelState:
     """State for a single channel / row."""
     speed: float = 1.0
+    normal_speed: float = 1.0  # BPM-calculated speed; preserved across SEQ mode switches
     mode: PlaybackMode = PlaybackMode.LOOP
     slave: bool = False
     filename: str = ""
@@ -104,14 +105,14 @@ class DelayState:
 class FilterState:
     """State for filter A (SSL-style EQ with LP/HP filters, 4 EQ bands)."""
     enabled: bool = True
-    lp_enabled: bool = True
-    hp_enabled: bool = True
+    lp_enabled: bool = False
+    hp_enabled: bool = False
     lp_freq: float = 8000.0    # Hz
     hp_freq: float = 200.0     # Hz
     lp_q: float = 0.5          # Q factor 0-1 for lowpass
     hp_q: float = 0.5          # Q factor 0-1 for highpass
     # LF band
-    lf_enabled: bool = True
+    lf_enabled: bool = False
     lo_mid_gain: float = 0.5   # 0-1 mapped to -12..+12 dB
     lo_mid_freq: float = 400.0
     lo_mid_q: float = 0.5
@@ -124,7 +125,7 @@ class FilterState:
     hi_mid_freq: float = 3500.0
     hi_mid_q: float = 0.5
     # HF band
-    hf_enabled: bool = True
+    hf_enabled: bool = False
     # Drive + output
     drive: float = 0.0         # 0-1
     output_gain: float = 0.5   # 0-1 mapped to -12..+12 dB
@@ -285,7 +286,6 @@ class CompressorState:
     makeup_gain: float = 0.0    # dB
     sidechain_source: int = 0   # 0=Self, 1-4=Group 1-4
     sc_hp_freq: float = 150.0   # Hz — THRUST detect HP frequency
-    sc_lp_freq: float = 20000.0 # Hz
     thrust_enabled: bool = True # THRUST sidechain HP shelf on/off
     fx_route: int = 1
 
@@ -364,7 +364,7 @@ class AppConfig:
 
     # Aux / Effects
     aux_volume: float = 1.0
-    aux_send_toggle: bool = True
+    aux_send_level: float = 1.0
     aux_mute: bool = False
     aux_fx_route: int = 0  # 0=OFF, 1=FX1, 2=FX2
     aux_input_channel: int = 0  # audio input channel index

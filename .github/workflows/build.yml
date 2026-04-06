@@ -54,6 +54,10 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist/mlrVp/* -DestinationPath dist/${{ matrix.zip_name }}
 
+      - name: Ad-hoc code sign (macOS)
+        if: runner.os == 'macOS'
+        run: codesign --force --deep --sign - dist/mlrVp.app
+
       - name: Zip output (macOS)
         if: runner.os == 'macOS'
         run: cd dist && zip -r ${{ matrix.zip_name }} mlrVp.app
@@ -83,7 +87,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*.zip
-          draft: true
+          draft: false
           body: |
             ## Downloads
 
@@ -98,7 +102,10 @@ jobs:
             2. Extract to a folder of your choice
             3. Run `mlrVp.exe` (Windows), `mlrVp.app` (macOS), or `./mlrVp` (Linux)
 
-            > **macOS**: If you get a security warning, go to System Settings → Privacy & Security → Allow.
+            > **macOS**: If you see "unidentified developer", right-click `mlrVp.app` → **Open** and click Open in the dialog. Or remove the quarantine flag via Terminal:
+            > ```
+            > xattr -dr com.apple.quarantine mlrVp.app
+            > ```
             > **Linux**: You may need `chmod +x mlrVp` before running.
 
             ---

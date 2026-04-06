@@ -264,6 +264,7 @@ class PresetManager:
             if i < len(config.channels):
                 ch = config.channels[i]
                 ch.speed = max(0.125, min(8.0, float(ch_data.get("speed", ch.speed))))
+                ch.normal_speed = max(0.125, min(8.0, float(ch_data.get("normal_speed", ch_data.get("speed", ch.speed)))))
                 ch.mode = PlaybackMode(ch_data.get("mode", ch.mode))
                 ch.slave = ch_data.get("slave", ch.slave)
                 ch.filename = ch_data.get("filename", ch.filename)
@@ -361,7 +362,7 @@ class PresetManager:
                        "wear", "mix", "fx_route"]),
             ("compressor", ["enabled", "threshold", "ratio", "attack",
                             "release", "makeup_gain", "sidechain_source",
-                            "sc_hp_freq", "sc_lp_freq", "thrust_enabled", "fx_route"]),
+                            "sc_hp_freq", "thrust_enabled", "fx_route"]),
             ("hall_reverb", ["enabled", "room_size", "decay", "diffusion",
                              "mix", "room_type", "fx_route"]),
             ("plate_reverb", ["enabled", "decay", "damping", "pre_delay",
@@ -446,7 +447,13 @@ class PresetManager:
         config.aux_volume = max(0.0, min(2.0, float(cfg_data.get("aux_volume", config.aux_volume))))
         config.aux_mute = cfg_data.get("aux_mute", config.aux_mute)
         config.aux_fx_route = max(0, min(2, int(cfg_data.get("aux_fx_route", config.aux_fx_route))))
-        config.aux_send_toggle = cfg_data.get("aux_send_toggle", config.aux_send_toggle)
+        # Support both new float key and legacy bool key from older presets
+        if "aux_send_level" in cfg_data:
+            config.aux_send_level = max(0.0, min(1.0, float(cfg_data["aux_send_level"])))
+        elif "aux_send_toggle" in cfg_data:
+            config.aux_send_level = 1.0 if cfg_data["aux_send_toggle"] else 0.0
+        else:
+            config.aux_send_level = config.aux_send_level
 
         # Grid
         config.grid_columns = max(1, min(16, int(cfg_data.get("grid_columns", config.grid_columns))))
@@ -470,6 +477,7 @@ class PresetManager:
             "channels": [
                 {
                     "speed": ch.speed,
+                    "normal_speed": ch.normal_speed,
                     "mode": int(ch.mode),
                     "slave": ch.slave,
                     "filename": ch.filename,
@@ -562,7 +570,7 @@ class PresetManager:
             "aux_volume": config.aux_volume,
             "aux_mute": config.aux_mute,
             "aux_fx_route": config.aux_fx_route,
-            "aux_send_toggle": config.aux_send_toggle,
+            "aux_send_level": config.aux_send_level,
             "grid_columns": config.grid_columns,
             "osc_host": config.osc_host,
             "osc_send_port": config.osc_send_port,
@@ -615,7 +623,6 @@ class PresetManager:
                 "makeup_gain": config.compressor.makeup_gain,
                 "sidechain_source": config.compressor.sidechain_source,
                 "sc_hp_freq": config.compressor.sc_hp_freq,
-                "sc_lp_freq": config.compressor.sc_lp_freq,
                 "thrust_enabled": config.compressor.thrust_enabled,
                 "fx_route": config.compressor.fx_route,
             },
@@ -776,7 +783,6 @@ class PresetManager:
                 "makeup_gain": config.compressor_b.makeup_gain,
                 "sidechain_source": config.compressor_b.sidechain_source,
                 "sc_hp_freq": config.compressor_b.sc_hp_freq,
-                "sc_lp_freq": config.compressor_b.sc_lp_freq,
                 "thrust_enabled": config.compressor_b.thrust_enabled,
                 "fx_route": config.compressor_b.fx_route,
             },
@@ -907,7 +913,6 @@ class PresetManager:
                 "makeup_gain": config.compressor_m.makeup_gain,
                 "sidechain_source": config.compressor_m.sidechain_source,
                 "sc_hp_freq": config.compressor_m.sc_hp_freq,
-                "sc_lp_freq": config.compressor_m.sc_lp_freq,
                 "thrust_enabled": config.compressor_m.thrust_enabled,
                 "fx_route": config.compressor_m.fx_route,
             },

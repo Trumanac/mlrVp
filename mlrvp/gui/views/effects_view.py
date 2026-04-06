@@ -176,7 +176,7 @@ class DelayPanel(QFrame):
         flt_layout.addWidget(self._filter_hp, 0, 2, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self._hp_freq = RotaryKnob()
-        self._hp_freq.set_value(0.03)
+        self._hp_freq.set_value(0.0582)  # (311.0 - 20.0) / 5000.0 — matches DelayState default
         self._hp_freq.value_changed.connect(
             lambda v: self.param_changed.emit("filter_freq_hp", v * 5000.0 + 20.0)
         )
@@ -215,6 +215,9 @@ class DelayPanel(QFrame):
         self._filter_hp.blockSignals(True)
         self._filter_hp.setChecked(state.filter_hp)
         self._filter_hp.blockSignals(False)
+
+        self._lp_freq.set_value(max(0.0, min(1.0, (state.filter_freq_lp - 100.0) / 10000.0)))
+        self._hp_freq.set_value(max(0.0, min(1.0, (state.filter_freq_hp - 20.0) / 5000.0)))
 
 
 class TapeDelayPanel(QFrame):
