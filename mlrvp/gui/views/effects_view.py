@@ -50,6 +50,7 @@ class DelayPanel(QFrame):
         self._enable_chk.setChecked(True)
         self._enable_chk.toggled.connect(lambda v: self.param_changed.emit("enabled", v))
         hdr.addWidget(self._enable_chk)
+        self._enable_chk.setToolTip("Enable/disable the digital delay effect")
         title = QLabel("DIGITAL DELAY")
         title.setStyleSheet(f"font-weight: bold; font-size: 11px; color: {TEXT_SECONDARY};")
         hdr.addWidget(title)
@@ -70,6 +71,10 @@ class DelayPanel(QFrame):
         )
         time_layout.addWidget(QLabel("Mode:"), 0, 0)
         time_layout.addWidget(self._time_mode, 0, 1)
+        self._time_mode.setToolTip(
+            "Sync: lock delay time to BPM grid divisions\n"
+            "Manual: set delay time in milliseconds"
+        )
 
         # Sync division
         self._sync_combo = QComboBox()
@@ -80,6 +85,7 @@ class DelayPanel(QFrame):
         )
         time_layout.addWidget(QLabel("Sync:"), 1, 0)
         time_layout.addWidget(self._sync_combo, 1, 1)
+        self._sync_combo.setToolTip("Musical note division for synchronized delay time")
 
         # Manual ms time
         self._ms_spin = QDoubleSpinBox()
@@ -91,6 +97,7 @@ class DelayPanel(QFrame):
         )
         time_layout.addWidget(QLabel("Time:"), 2, 0)
         time_layout.addWidget(self._ms_spin, 2, 1)
+        self._ms_spin.setToolTip("Delay time in milliseconds (Manual mode only)")
 
         layout.addWidget(time_group)
 
@@ -108,6 +115,7 @@ class DelayPanel(QFrame):
         )
         fb_layout.addWidget(QLabel("Attack"), 0, 0, alignment=Qt.AlignmentFlag.AlignCenter)
         fb_layout.addWidget(self._fb_attack, 1, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._fb_attack.setToolTip("How quickly the feedback envelope rises when new audio arrives")
 
         # Release
         self._fb_release = RotaryKnob()
@@ -117,6 +125,7 @@ class DelayPanel(QFrame):
         )
         fb_layout.addWidget(QLabel("Release"), 0, 1, alignment=Qt.AlignmentFlag.AlignCenter)
         fb_layout.addWidget(self._fb_release, 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._fb_release.setToolTip("How quickly the feedback envelope falls when audio stops")
 
         # Range low
         self._fb_range_low = RotaryKnob()
@@ -126,6 +135,7 @@ class DelayPanel(QFrame):
         )
         fb_layout.addWidget(QLabel("Rng Lo"), 0, 2, alignment=Qt.AlignmentFlag.AlignCenter)
         fb_layout.addWidget(self._fb_range_low, 1, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._fb_range_low.setToolTip("Minimum feedback level (floor of the envelope)")
 
         # Range high
         self._fb_range_high = RotaryKnob()
@@ -135,6 +145,7 @@ class DelayPanel(QFrame):
         )
         fb_layout.addWidget(QLabel("Rng Hi"), 0, 3, alignment=Qt.AlignmentFlag.AlignCenter)
         fb_layout.addWidget(self._fb_range_high, 1, 3, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._fb_range_high.setToolTip("Maximum feedback level (ceiling of the envelope)")
 
         # Gain knob
         self._fb_gain = RotaryKnob()
@@ -144,6 +155,7 @@ class DelayPanel(QFrame):
         )
         fb_layout.addWidget(QLabel("Gain"), 0, 4, alignment=Qt.AlignmentFlag.AlignCenter)
         fb_layout.addWidget(self._fb_gain, 1, 4, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._fb_gain.setToolTip("Overall feedback send level — controls echo intensity")
 
         layout.addWidget(fb_group)
 
@@ -159,6 +171,7 @@ class DelayPanel(QFrame):
             lambda v: self.param_changed.emit("filter_lp", v)
         )
         flt_layout.addWidget(self._filter_lp, 0, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._filter_lp.setToolTip("Enable low-pass filter on the delay feedback path (darkens repeats)")
 
         self._lp_freq = RotaryKnob()
         self._lp_freq.set_value(0.7)
@@ -167,6 +180,7 @@ class DelayPanel(QFrame):
         )
         flt_layout.addWidget(QLabel("LP Freq"), 0, 1, alignment=Qt.AlignmentFlag.AlignCenter)
         flt_layout.addWidget(self._lp_freq, 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._lp_freq.setToolTip("Low-pass cutoff frequency for the feedback loop")
 
         self._filter_hp = QCheckBox("HP")
         self._filter_hp.setChecked(True)
@@ -174,6 +188,7 @@ class DelayPanel(QFrame):
             lambda v: self.param_changed.emit("filter_hp", v)
         )
         flt_layout.addWidget(self._filter_hp, 0, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._filter_hp.setToolTip("Enable high-pass filter on the delay feedback path (thins repeats)")
 
         self._hp_freq = RotaryKnob()
         self._hp_freq.set_value(0.0582)  # (311.0 - 20.0) / 5000.0 — matches DelayState default
@@ -182,6 +197,7 @@ class DelayPanel(QFrame):
         )
         flt_layout.addWidget(QLabel("HP Freq"), 0, 3, alignment=Qt.AlignmentFlag.AlignCenter)
         flt_layout.addWidget(self._hp_freq, 1, 3, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._hp_freq.setToolTip("High-pass cutoff frequency for the feedback loop")
 
         layout.addWidget(flt_group)
 
@@ -239,6 +255,7 @@ class TapeDelayPanel(QFrame):
         self._enable_chk.setChecked(True)
         self._enable_chk.toggled.connect(lambda v: self.param_changed.emit("enabled", v))
         hdr.addWidget(self._enable_chk)
+        self._enable_chk.setToolTip("Enable/disable the tape delay effect")
         title = QLabel("TAPE DELAY")
         title.setStyleSheet(f"font-weight: bold; font-size: 11px; color: {TEXT_SECONDARY};")
         hdr.addWidget(title)
@@ -257,6 +274,10 @@ class TapeDelayPanel(QFrame):
             lambda v: self.param_changed.emit("time_mode", v))
         time_layout.addWidget(QLabel("Mode:"), 0, 0)
         time_layout.addWidget(self._time_mode, 0, 1)
+        self._time_mode.setToolTip(
+            "Sync: lock delay time to BPM grid divisions\n"
+            "Manual: set delay time in milliseconds"
+        )
 
         self._sync_combo = QComboBox()
         self._sync_combo.addItems(SYNC_DIVISION_NAMES)
@@ -265,6 +286,7 @@ class TapeDelayPanel(QFrame):
             lambda v: self.param_changed.emit("sync_time", v))
         time_layout.addWidget(QLabel("Sync:"), 1, 0)
         time_layout.addWidget(self._sync_combo, 1, 1)
+        self._sync_combo.setToolTip("Musical note division for synchronized tape delay time")
 
         self._ms_spin = QDoubleSpinBox()
         self._ms_spin.setRange(1.0, 5000.0)
@@ -274,6 +296,7 @@ class TapeDelayPanel(QFrame):
             lambda v: self.param_changed.emit("ms_time", v))
         time_layout.addWidget(QLabel("Time:"), 2, 0)
         time_layout.addWidget(self._ms_spin, 2, 1)
+        self._ms_spin.setToolTip("Delay time in milliseconds (Manual mode only)")
 
         layout.addWidget(time_group)
 
@@ -289,6 +312,7 @@ class TapeDelayPanel(QFrame):
             lambda v: self.param_changed.emit("feedback", v))
         tape_layout.addWidget(QLabel("Feedback"), 0, 0, alignment=Qt.AlignmentFlag.AlignCenter)
         tape_layout.addWidget(self._feedback, 1, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._feedback.setToolTip("Amount of signal fed back through the tape loop — controls echo repeats")
 
         self._wow_flutter = RotaryKnob()
         self._wow_flutter.set_value(0.3)
@@ -296,6 +320,7 @@ class TapeDelayPanel(QFrame):
             lambda v: self.param_changed.emit("wow_flutter", v))
         tape_layout.addWidget(QLabel("Wow/Fltr"), 0, 1, alignment=Qt.AlignmentFlag.AlignCenter)
         tape_layout.addWidget(self._wow_flutter, 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._wow_flutter.setToolTip("Tape speed instability — adds pitch wobble and vintage warmth to the repeats")
 
         self._saturation = RotaryKnob()
         self._saturation.set_value(0.4)
@@ -303,6 +328,7 @@ class TapeDelayPanel(QFrame):
             lambda v: self.param_changed.emit("saturation", v))
         tape_layout.addWidget(QLabel("Saturate"), 0, 2, alignment=Qt.AlignmentFlag.AlignCenter)
         tape_layout.addWidget(self._saturation, 1, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._saturation.setToolTip("Tape saturation — adds warmth and harmonic distortion to the repeats")
 
         self._tone = RotaryKnob()
         self._tone.set_value(0.6)
@@ -310,6 +336,7 @@ class TapeDelayPanel(QFrame):
             lambda v: self.param_changed.emit("tone", v))
         tape_layout.addWidget(QLabel("Tone"), 0, 3, alignment=Qt.AlignmentFlag.AlignCenter)
         tape_layout.addWidget(self._tone, 1, 3, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._tone.setToolTip("Tape tone — higher = brighter presence, lower = darker bass-heavy sound")
 
         self._gain = RotaryKnob()
         self._gain.set_value(0.6)
@@ -317,6 +344,7 @@ class TapeDelayPanel(QFrame):
             lambda v: self.param_changed.emit("gain", v))
         tape_layout.addWidget(QLabel("Gain"), 0, 4, alignment=Qt.AlignmentFlag.AlignCenter)
         tape_layout.addWidget(self._gain, 1, 4, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._gain.setToolTip("Output level of the tape delay effect")
 
         layout.addWidget(tape_group)
 
@@ -370,6 +398,7 @@ class RecorderPanel(QFrame):
         self._buffer_combo.currentIndexChanged.connect(
             lambda v: self.param_changed.emit("buffer_idx", v)
         )
+        self._buffer_combo.setToolTip("Which channel slot the recording will load into")
         grid.addWidget(QLabel("Target:"), 0, 0)
         grid.addWidget(self._buffer_combo, 0, 1)
 
@@ -379,6 +408,7 @@ class RecorderPanel(QFrame):
         self._input_combo.currentIndexChanged.connect(
             lambda v: self.param_changed.emit("input_device", v)
         )
+        self._input_combo.setToolTip("Audio input device used as the recording source")
         grid.addWidget(QLabel("Input:"), 1, 0)
         grid.addWidget(self._input_combo, 1, 1)
 
@@ -388,6 +418,7 @@ class RecorderPanel(QFrame):
         self._input_ch.valueChanged.connect(
             lambda v: self.param_changed.emit("input_channel", v)
         )
+        self._input_ch.setToolTip("Input channel index on the selected audio device")
         grid.addWidget(QLabel("In Ch:"), 2, 0)
         grid.addWidget(self._input_ch, 2, 1)
 
@@ -399,6 +430,7 @@ class RecorderPanel(QFrame):
         self._length_spin.valueChanged.connect(
             lambda v: self.param_changed.emit("length_bars", v)
         )
+        self._length_spin.setToolTip("Recording buffer length in bars — synced to the current BPM")
         grid.addWidget(QLabel("Length:"), 3, 0)
         grid.addWidget(self._length_spin, 3, 1)
 
@@ -407,6 +439,7 @@ class RecorderPanel(QFrame):
         self._loop_chk.toggled.connect(
             lambda v: self.param_changed.emit("loop", v)
         )
+        self._loop_chk.setToolTip("Continuously overwrite the buffer when it fills (looped recording)")
         grid.addWidget(self._loop_chk, 4, 0, 1, 2)
 
         # Thru monitor
@@ -414,6 +447,7 @@ class RecorderPanel(QFrame):
         self._thru_chk.toggled.connect(
             lambda v: self.param_changed.emit("thru", v)
         )
+        self._thru_chk.setToolTip("Monitor the input audio through the main output while recording")
         grid.addWidget(self._thru_chk, 5, 0, 1, 2)
 
         layout.addLayout(grid)
@@ -428,6 +462,10 @@ class RecorderPanel(QFrame):
             QPushButton:checked {{ background: #cc3333; border-color: #cc3333; color: white; }}
         """)
         self._rec_btn.toggled.connect(self.record_toggled.emit)
+        self._rec_btn.setToolTip(
+            "ARM: ready the recorder — recording starts on the next bar\n"
+            "Click again to stop recording and load to the target channel"
+        )
         layout.addWidget(self._rec_btn)
 
         layout.addStretch()
@@ -619,6 +657,7 @@ class FilterPanel(QFrame):
         self._enable_chk = QCheckBox()
         self._enable_chk.setChecked(True)
         self._enable_chk.toggled.connect(lambda v: self.param_changed.emit("enabled", v))
+        self._enable_chk.setToolTip("Enable/bypass Filter A")
         hdr.addWidget(self._enable_chk)
         title = QLabel(label)
         title.setStyleSheet(f"font-weight: bold; font-size: 11px; color: {accent_color};")
@@ -638,6 +677,7 @@ class FilterPanel(QFrame):
         self._lp_chk.toggled.connect(self._on_param_changed)
         self._lp_chk.toggled.connect(lambda v: self.param_changed.emit("lp_enabled", v))
         ctrl.addWidget(self._lp_chk, 0, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._lp_chk.setToolTip("Enable the low-pass filter section")
 
         self._lp_freq = RotaryKnob()
         self._lp_freq.set_value(0.8)
@@ -645,6 +685,7 @@ class FilterPanel(QFrame):
         self._lp_freq.value_changed.connect(
             lambda v: self.param_changed.emit("lp_freq", v * 19800.0 + 200.0))
         ctrl.addWidget(self._lp_freq, 1, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._lp_freq.setToolTip("Low-pass cutoff frequency (200–20k Hz) — attenuates frequencies above this point")
 
         lp_q_lbl = QLabel("LP Q")
         lp_q_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 9px;")
@@ -655,6 +696,7 @@ class FilterPanel(QFrame):
         self._lp_q.value_changed.connect(self._on_param_changed)
         self._lp_q.value_changed.connect(lambda v: self.param_changed.emit("lp_q", v))
         ctrl.addWidget(self._lp_q, 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._lp_q.setToolTip("Low-pass resonance — adds a peak at the cutoff frequency")
 
         # HP controls
         self._hp_chk = QCheckBox("HP")
@@ -662,6 +704,7 @@ class FilterPanel(QFrame):
         self._hp_chk.toggled.connect(self._on_param_changed)
         self._hp_chk.toggled.connect(lambda v: self.param_changed.emit("hp_enabled", v))
         ctrl.addWidget(self._hp_chk, 0, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._hp_chk.setToolTip("Enable the high-pass filter section")
 
         self._hp_freq = RotaryKnob()
         self._hp_freq.set_value(0.03)
@@ -669,6 +712,7 @@ class FilterPanel(QFrame):
         self._hp_freq.value_changed.connect(
             lambda v: self.param_changed.emit("hp_freq", v * 5000.0 + 20.0))
         ctrl.addWidget(self._hp_freq, 1, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._hp_freq.setToolTip("High-pass cutoff frequency (20–5k Hz) — attenuates frequencies below this point")
 
         hp_q_lbl = QLabel("HP Q")
         hp_q_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 9px;")
@@ -679,6 +723,7 @@ class FilterPanel(QFrame):
         self._hp_q.value_changed.connect(self._on_param_changed)
         self._hp_q.value_changed.connect(lambda v: self.param_changed.emit("hp_q", v))
         ctrl.addWidget(self._hp_q, 1, 3, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._hp_q.setToolTip("High-pass resonance — adds a peak at the cutoff frequency")
 
         layout.addLayout(ctrl)
 
@@ -837,6 +882,7 @@ class MoogFilterPanel(QFrame):
         self._enable_chk = QCheckBox()
         self._enable_chk.setChecked(True)
         self._enable_chk.toggled.connect(lambda v: self.param_changed.emit("enabled", v))
+        self._enable_chk.setToolTip("Enable/bypass Filter B (Moog ladder)")
         hdr.addWidget(self._enable_chk)
         title = QLabel("FILTER B — Moog Ladder")
         title.setStyleSheet(f"font-weight: bold; font-size: 11px; color: {accent_color};")
@@ -860,6 +906,7 @@ class MoogFilterPanel(QFrame):
         self._cutoff.value_changed.connect(
             lambda v: self.param_changed.emit("cutoff", v * 17960.0 + 40.0))
         ctrl.addWidget(self._cutoff, 1, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._cutoff.setToolTip("Low-pass cutoff frequency — 4-pole Moog ladder filter (40Hz–18kHz)")
 
         res_lbl = QLabel("Resonance")
         res_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 9px;")
@@ -871,6 +918,7 @@ class MoogFilterPanel(QFrame):
         self._resonance.value_changed.connect(
             lambda v: self.param_changed.emit("resonance", v))
         ctrl.addWidget(self._resonance, 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._resonance.setToolTip("Resonance (Q) — self-oscillates at maximum")
 
         drv_lbl = QLabel("Drive")
         drv_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 9px;")
@@ -881,6 +929,7 @@ class MoogFilterPanel(QFrame):
         self._drive.value_changed.connect(
             lambda v: self.param_changed.emit("drive", v))
         ctrl.addWidget(self._drive, 1, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._drive.setToolTip("Input drive — adds saturation and harmonic warmth into the filter")
 
         layout.addLayout(ctrl)
 
@@ -926,6 +975,7 @@ class ModPanel(QFrame):
         self._phaser_chk.toggled.connect(
             lambda v: self.param_changed.emit("phaser_enabled", v))
         phaser_layout.addWidget(self._phaser_chk, 0, 0, 1, 2)
+        self._phaser_chk.setToolTip("Enable the phaser modulation effect")
 
         self._phaser_rate = RotaryKnob()
         self._phaser_rate.set_value(0.25)
@@ -933,6 +983,7 @@ class ModPanel(QFrame):
             lambda v: self.param_changed.emit("phaser_rate", v * 10.0))
         phaser_layout.addWidget(QLabel("Rate"), 1, 0, alignment=Qt.AlignmentFlag.AlignCenter)
         phaser_layout.addWidget(self._phaser_rate, 2, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._phaser_rate.setToolTip("LFO speed for the phaser sweep (0–10 Hz)")
 
         self._phaser_depth = RotaryKnob()
         self._phaser_depth.set_value(0.5)
@@ -940,6 +991,7 @@ class ModPanel(QFrame):
             lambda v: self.param_changed.emit("phaser_depth", v))
         phaser_layout.addWidget(QLabel("Depth"), 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
         phaser_layout.addWidget(self._phaser_depth, 2, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._phaser_depth.setToolTip("Depth of the phase sweep")
 
         self._phaser_fb = RotaryKnob()
         self._phaser_fb.set_value(0.3)
@@ -947,6 +999,7 @@ class ModPanel(QFrame):
             lambda v: self.param_changed.emit("phaser_feedback", v))
         phaser_layout.addWidget(QLabel("Feedback"), 1, 2, alignment=Qt.AlignmentFlag.AlignCenter)
         phaser_layout.addWidget(self._phaser_fb, 2, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._phaser_fb.setToolTip("Feedback amount — increases resonance and notch intensity")
 
         layout.addWidget(phaser_group)
 
@@ -960,6 +1013,7 @@ class ModPanel(QFrame):
         self._chorus_chk.toggled.connect(
             lambda v: self.param_changed.emit("chorus_enabled", v))
         chorus_layout.addWidget(self._chorus_chk, 0, 0, 1, 2)
+        self._chorus_chk.setToolTip("Enable the chorus effect")
 
         self._chorus_rate = RotaryKnob()
         self._chorus_rate.set_value(0.1)
@@ -967,6 +1021,7 @@ class ModPanel(QFrame):
             lambda v: self.param_changed.emit("chorus_rate", v * 5.0))
         chorus_layout.addWidget(QLabel("Rate"), 1, 0, alignment=Qt.AlignmentFlag.AlignCenter)
         chorus_layout.addWidget(self._chorus_rate, 2, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._chorus_rate.setToolTip("LFO speed for chorus modulation (0–5 Hz)")
 
         self._chorus_depth = RotaryKnob()
         self._chorus_depth.set_value(0.5)
@@ -974,6 +1029,7 @@ class ModPanel(QFrame):
             lambda v: self.param_changed.emit("chorus_depth", v))
         chorus_layout.addWidget(QLabel("Depth"), 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
         chorus_layout.addWidget(self._chorus_depth, 2, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._chorus_depth.setToolTip("Modulation depth — widens the stereo image")
 
         self._chorus_mix = RotaryKnob()
         self._chorus_mix.set_value(0.5)
@@ -981,6 +1037,7 @@ class ModPanel(QFrame):
             lambda v: self.param_changed.emit("chorus_mix", v))
         chorus_layout.addWidget(QLabel("Mix"), 1, 2, alignment=Qt.AlignmentFlag.AlignCenter)
         chorus_layout.addWidget(self._chorus_mix, 2, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._chorus_mix.setToolTip("Wet/dry blend of the chorus effect")
 
         layout.addWidget(chorus_group)
 
@@ -994,6 +1051,7 @@ class ModPanel(QFrame):
         self._flanger_chk.toggled.connect(
             lambda v: self.param_changed.emit("flanger_enabled", v))
         flanger_layout.addWidget(self._flanger_chk, 0, 0, 1, 2)
+        self._flanger_chk.setToolTip("Enable the flanger effect")
 
         self._flanger_rate = RotaryKnob()
         self._flanger_rate.set_value(0.15)
@@ -1001,6 +1059,7 @@ class ModPanel(QFrame):
             lambda v: self.param_changed.emit("flanger_rate", v * 5.0))
         flanger_layout.addWidget(QLabel("Rate"), 1, 0, alignment=Qt.AlignmentFlag.AlignCenter)
         flanger_layout.addWidget(self._flanger_rate, 2, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._flanger_rate.setToolTip("LFO speed for flanger sweep (0–5 Hz)")
 
         self._flanger_depth = RotaryKnob()
         self._flanger_depth.set_value(0.5)
@@ -1008,6 +1067,7 @@ class ModPanel(QFrame):
             lambda v: self.param_changed.emit("flanger_depth", v))
         flanger_layout.addWidget(QLabel("Depth"), 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
         flanger_layout.addWidget(self._flanger_depth, 2, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._flanger_depth.setToolTip("Modulation depth of the comb filter sweep")
 
         self._flanger_fb = RotaryKnob()
         self._flanger_fb.set_value(0.3)
@@ -1015,6 +1075,7 @@ class ModPanel(QFrame):
             lambda v: self.param_changed.emit("flanger_feedback", v))
         flanger_layout.addWidget(QLabel("Feedback"), 1, 2, alignment=Qt.AlignmentFlag.AlignCenter)
         flanger_layout.addWidget(self._flanger_fb, 2, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._flanger_fb.setToolTip("Feedback amount — more resonance and metallic character")
 
         self._flanger_mix = RotaryKnob()
         self._flanger_mix.set_value(0.5)
@@ -1022,6 +1083,7 @@ class ModPanel(QFrame):
             lambda v: self.param_changed.emit("flanger_mix", v))
         flanger_layout.addWidget(QLabel("Mix"), 1, 3, alignment=Qt.AlignmentFlag.AlignCenter)
         flanger_layout.addWidget(self._flanger_mix, 2, 3, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._flanger_mix.setToolTip("Wet/dry blend of the flanger effect")
 
         layout.addWidget(flanger_group)
 
@@ -1155,6 +1217,9 @@ class EffectsView(QWidget):
         self._tab_a = _GroupTabButton("FX GROUP A", active=True)
         self._tab_b = _GroupTabButton("FX GROUP B", active=False)
         self._tab_m = _GroupTabButton("FX GROUP M", active=False)
+        self._tab_a.setToolTip("FX Group A — independent effects chain routed from mixer channels set to FX1")
+        self._tab_b.setToolTip("FX Group B — independent effects chain routed from mixer channels set to FX2")
+        self._tab_m.setToolTip("FX Group M — master bus effects chain applied to the final mix output")
         self._tab_a.clicked.connect(lambda: self._switch_group(0))
         self._tab_b.clicked.connect(lambda: self._switch_group(1))
         self._tab_m.clicked.connect(lambda: self._switch_group(2))
@@ -1172,6 +1237,10 @@ class EffectsView(QWidget):
             f"color: {BG_BLACK}; }}"
         )
         self._midi_map_btn.toggled.connect(self._toggle_midi_map)
+        self._midi_map_btn.setToolTip(
+            "Toggle MIDI map overlay — hover over any knob or fader\n"
+            "to assign a MIDI CC controller to that parameter"
+        )
 
         tab_bar.addWidget(self._tab_a)
         tab_bar.addWidget(self._tab_b)

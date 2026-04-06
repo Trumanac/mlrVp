@@ -209,6 +209,7 @@ class MoogFilterModule(RackModuleBase):
         self._cutoff.value_changed.connect(
             lambda v: self.param_changed.emit("cutoff", 20 + v * 19980)
         )
+        self._cutoff.setToolTip("Low-pass cutoff frequency — Moog 4-pole ladder filter (20 Hz–20 kHz)")
         row.addWidget(self._cutoff)
 
         # Resonance — standard RotaryKnob
@@ -220,6 +221,7 @@ class MoogFilterModule(RackModuleBase):
         self._resonance.value_changed.connect(
             lambda v: self.param_changed.emit("resonance", v)
         )
+        self._resonance.setToolTip("Resonance — Q at the cutoff point; self-oscillates at maximum (use carefully)")
         row.addWidget(self._resonance)
 
         # Drive — standard RotaryKnob
@@ -231,6 +233,7 @@ class MoogFilterModule(RackModuleBase):
         self._drive.value_changed.connect(
             lambda v: self.param_changed.emit("drive", v)
         )
+        self._drive.setToolTip("Input drive — overdrives the filter input for warm saturation and harmonic coloring")
         row.addWidget(self._drive)
 
         row.addStretch()

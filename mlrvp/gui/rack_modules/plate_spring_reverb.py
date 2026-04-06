@@ -85,6 +85,7 @@ class PlateSpringReverbModule(RackModuleBase):
         self._decay.set_value(0.45)
         self._decay.value_changed.connect(
             lambda v: self.param_changed.emit("decay", v))
+        self._decay.setToolTip("Decay time — how long the reverb tail rings out before fading to silence")
         col_decay = QVBoxLayout(); col_decay.setSpacing(0)
         lbl_decay = QLabel("DECAY"); lbl_decay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col_decay.addWidget(lbl_decay)
@@ -97,6 +98,7 @@ class PlateSpringReverbModule(RackModuleBase):
         self._predelay.set_formatter(lambda v: f"{int(v * 200)} ms")
         self._predelay.value_changed.connect(
             lambda v: self.param_changed.emit("pre_delay", v * 200.0))
+        self._predelay.setToolTip("Pre-delay — time gap before the reverb tail starts, adds space and separation (0–200 ms)")
         col_pre = QVBoxLayout(); col_pre.setSpacing(0)
         lbl_pre = QLabel("PRE"); lbl_pre.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col_pre.addWidget(lbl_pre)
@@ -108,6 +110,7 @@ class PlateSpringReverbModule(RackModuleBase):
         self._damping.set_value(0.55)
         self._damping.value_changed.connect(
             lambda v: self.param_changed.emit("damping", v))
+        self._damping.setToolTip("Damping — absorbs high frequencies as the reverb decays, like soft surfaces in a room")
         col_damp = QVBoxLayout(); col_damp.setSpacing(0)
         lbl_damp = QLabel("DAMP"); lbl_damp.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col_damp.addWidget(lbl_damp)
@@ -119,6 +122,7 @@ class PlateSpringReverbModule(RackModuleBase):
         self._mix.set_value(0.25)
         self._mix.value_changed.connect(
             lambda v: self.param_changed.emit("mix", v))
+        self._mix.setToolTip("Wet/dry blend — 0%=dry signal only, 100%=full reverb wet signal")
         col_mix = QVBoxLayout(); col_mix.setSpacing(0)
         lbl_mix = QLabel("MIX"); lbl_mix.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col_mix.addWidget(lbl_mix)

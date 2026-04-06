@@ -100,9 +100,17 @@ class ReelToReelModule(RackModuleBase):
         self._speed.currentIndexChanged.connect(
             lambda v: self.param_changed.emit("tape_speed", v)
         )
+        self._speed.setToolTip("Tape speed — higher ips = brighter, tighter response; lower ips = warmer, more saturated character")
         row.addWidget(self._speed)
 
         # Knobs
+        _TIPS = {
+            "saturation": "Tape saturation — magnetic tape compression and harmonic coloring; simulates tape overload",
+            "flutter":    "Flutter — rapid speed fluctuation from irregular tape tension; adds pitch wavering",
+            "bias":       "Bias — high-frequency AC bias level; affects HF brightness and saturation character",
+            "tone":       "Tone — high-frequency shelf from the playback head; low = duller, high = brighter",
+            "mix":        "Wet/dry blend — 0%=dry signal, 100%=full tape character",
+        }
         for name, default, param in [
             ("SAT", 0.30, "saturation"),
             ("FLUTTER", 0.15, "flutter"),
@@ -114,6 +122,7 @@ class ReelToReelModule(RackModuleBase):
             knob.set_value(default)
             knob.value_changed.connect(lambda v, p=param: self.param_changed.emit(p, v))
             setattr(self, f"_{param}", knob)
+            knob.setToolTip(_TIPS.get(param, ""))
             col = QVBoxLayout()
             col.setSpacing(0)
             lbl = QLabel(name)

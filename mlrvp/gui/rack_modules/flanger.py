@@ -114,6 +114,7 @@ class FlangerModule(RackModuleBase):
         self._rate.value_changed.connect(
             lambda v: self.param_changed.emit("flanger_rate", v * 5.0)
         )
+        self._rate.setToolTip("LFO speed for flanger sweep (0–5 Hz)")
         col = QVBoxLayout(); col.setSpacing(0)
         lbl_r = QLabel("RATE")
         lbl_r.setStyleSheet(f"color: {_RED}; font-size: 7px; font-weight: bold;")
@@ -127,6 +128,7 @@ class FlangerModule(RackModuleBase):
         self._depth.value_changed.connect(
             lambda v: self.param_changed.emit("flanger_depth", v)
         )
+        self._depth.setToolTip("Modulation depth of the comb filter sweep")
         col2 = QVBoxLayout(); col2.setSpacing(0)
         lbl_d = QLabel("DEPTH")
         lbl_d.setStyleSheet(f"color: {_RED}; font-size: 7px; font-weight: bold;")
@@ -140,6 +142,7 @@ class FlangerModule(RackModuleBase):
         self._fb.value_changed.connect(
             lambda v: self.param_changed.emit("flanger_feedback", v)
         )
+        self._fb.setToolTip("Regeneration/feedback — adds resonance and a metallic, jet-like character")
         col3 = QVBoxLayout(); col3.setSpacing(0)
         lbl_rg = QLabel("REGEN")
         lbl_rg.setStyleSheet(f"color: {_RED}; font-size: 7px; font-weight: bold;")
@@ -153,6 +156,7 @@ class FlangerModule(RackModuleBase):
         self._mix.value_changed.connect(
             lambda v: self.param_changed.emit("flanger_mix", v)
         )
+        self._mix.setToolTip("Wet/dry blend of the flanger effect")
         col4 = QVBoxLayout(); col4.setSpacing(0)
         lbl_m = QLabel("MIX")
         lbl_m.setStyleSheet(f"color: {_RED}; font-size: 7px; font-weight: bold;")

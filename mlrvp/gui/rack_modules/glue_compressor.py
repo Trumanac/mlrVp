@@ -232,6 +232,7 @@ class GlueCompressorModule(RackModuleBase):
         self._threshold.value_changed.connect(
             lambda v: self.param_changed.emit("threshold", -30.0 + v * 45.0)
         )
+        self._threshold.setToolTip("Threshold — signal level above which compression begins (-30 to +15 dB); lower = more compression")
         thresh_col = QVBoxLayout()
         thresh_col.setSpacing(1)
         thresh_col.setContentsMargins(0, 0, 0, 0)
@@ -245,6 +246,11 @@ class GlueCompressorModule(RackModuleBase):
         row.addLayout(thresh_col)
 
         # Stepped selectors: ATK | RATIO | REL
+        _SEL_TIPS = {
+            "attack_idx":  "Attack time — how quickly the compressor clamps down after the signal exceeds threshold (0.1–30 ms)",
+            "ratio_idx":   "Ratio — 2:1=gentle glue, 4:1=classic SSL bus, 10:1=hard limiting character",
+            "release_idx": "Release time — how quickly the compressor lets gain recover after signal drops below threshold",
+        }
         for options, attr, param, label in [
             (_ATTACKS,  "_attack_sel",  "attack_idx",  "ATK ms"),
             (_RATIOS,   "_ratio_sel",   "ratio_idx",   "RATIO"),
@@ -255,6 +261,7 @@ class GlueCompressorModule(RackModuleBase):
                 lambda v, pr=param: self.param_changed.emit(pr, v)
             )
             setattr(self, attr, sel)
+            sel.setToolTip(_SEL_TIPS.get(param, ""))
             col = QVBoxLayout()
             col.setSpacing(0)
             col.setContentsMargins(0, 0, 0, 0)
@@ -268,6 +275,7 @@ class GlueCompressorModule(RackModuleBase):
         self._makeup_gain.value_changed.connect(
             lambda v: self.param_changed.emit("makeup_gain", v * 15.0)
         )
+        self._makeup_gain.setToolTip("Makeup gain — output boost to compensate for the level reduction caused by compression (0–15 dB)")
         gain_col = QVBoxLayout()
         gain_col.setSpacing(1)
         gain_col.setContentsMargins(0, 0, 0, 0)
@@ -291,6 +299,7 @@ class GlueCompressorModule(RackModuleBase):
         self._hpf_sel.value_changed.connect(
             lambda v: self.param_changed.emit("hpf_idx", v)
         )
+        self._hpf_sel.setToolTip("Sidechain HPF — high-pass filter on the detector signal; stops low-end from triggering compression")
         hpf_col = QVBoxLayout()
         hpf_col.setSpacing(0)
         hpf_col.setContentsMargins(0, 0, 0, 0)

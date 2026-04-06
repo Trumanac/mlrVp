@@ -99,24 +99,28 @@ class MultibandFilterModule(RackModuleBase):
         self._hp_chk.setStyleSheet(f"color: {_CREAM}; font-size: 6px;")
         self._hp_chk.toggled.connect(
             lambda v: self.param_changed.emit("hp_enabled", v))
+        self._hp_chk.setToolTip("High-pass filter enable — cuts all frequencies below the HP cutoff frequency")
         filt.addWidget(self._hp_chk, alignment=Qt.AlignmentFlag.AlignCenter)
         self._hp_freq = RotaryKnob(color=_CREAM)
         self._hp_freq.set_value(0.01)
         self._hp_freq.set_formatter(lambda v: f"{int(16 + v * 334)} Hz")
         self._hp_freq.value_changed.connect(
             lambda v: self.param_changed.emit("hp_freq", 16 + v * 334))
+        self._hp_freq.setToolTip("HP cutoff frequency — rolls off everything below this point (16–350 Hz)")
         filt.addWidget(self._hp_freq, alignment=Qt.AlignmentFlag.AlignCenter)
         self._lp_chk = QCheckBox("LP")
         self._lp_chk.setChecked(False)
         self._lp_chk.setStyleSheet(f"color: {_CREAM}; font-size: 6px;")
         self._lp_chk.toggled.connect(
             lambda v: self.param_changed.emit("lp_enabled", v))
+        self._lp_chk.setToolTip("Low-pass filter enable — cuts all frequencies above the LP cutoff frequency")
         filt.addWidget(self._lp_chk, alignment=Qt.AlignmentFlag.AlignCenter)
         self._lp_freq = RotaryKnob(color=_CREAM)
         self._lp_freq.set_value(0.99)
         self._lp_freq.set_formatter(lambda v: f"{int(1500 + v * 18500)} Hz")
         self._lp_freq.value_changed.connect(
             lambda v: self.param_changed.emit("lp_freq", 1500 + v * 18500))
+        self._lp_freq.setToolTip("LP cutoff frequency — rolls off everything above this point (1.5–20 kHz)")
         filt.addWidget(self._lp_freq, alignment=Qt.AlignmentFlag.AlignCenter)
         outer.addLayout(filt)
         outer.addWidget(_sep())
@@ -130,11 +134,13 @@ class MultibandFilterModule(RackModuleBase):
         self._lf_chk.setStyleSheet(f"color: {_BLUE}; font-size: 6px;")
         self._lf_chk.toggled.connect(
             lambda v: self.param_changed.emit("lf_enabled", v))
+        self._lf_chk.setToolTip("LF band enable — engages the low-frequency EQ shelf")
         lf.addWidget(self._lf_chk, alignment=Qt.AlignmentFlag.AlignCenter)
         self._lo_mid_gain = RotaryKnob(color=_BLUE)
         self._lo_mid_gain.set_value(0.5)
         self._lo_mid_gain.value_changed.connect(
             lambda v: self.param_changed.emit("lo_mid_gain", v))
+        self._lo_mid_gain.setToolTip("LF gain — boost or cut at the low-frequency shelf center (±12 dB)")
         lf.addWidget(self._lo_mid_gain, alignment=Qt.AlignmentFlag.AlignCenter)
         lf.addWidget(_lbl("Hz", _DIM, size=5, bold=False))
         self._lo_mid_freq = RotaryKnob(color=_CREAM)
@@ -142,6 +148,7 @@ class MultibandFilterModule(RackModuleBase):
         self._lo_mid_freq.set_formatter(lambda v: f"{int(30 + v * 470)} Hz")
         self._lo_mid_freq.value_changed.connect(
             lambda v: self.param_changed.emit("lo_mid_freq", 30 + v * 470))
+        self._lo_mid_freq.setToolTip("LF center frequency — sets the boost/cut frequency for the LF band (30–500 Hz)")
         lf.addWidget(self._lo_mid_freq, alignment=Qt.AlignmentFlag.AlignCenter)
         outer.addLayout(lf)
 
@@ -153,6 +160,7 @@ class MultibandFilterModule(RackModuleBase):
         self._mid_gain.set_value(0.5)
         self._mid_gain.value_changed.connect(
             lambda v: self.param_changed.emit("mid_gain", v))
+        self._mid_gain.setToolTip("LMF gain — boost or cut at the lower-midrange bell (±12 dB)")
         lmf.addWidget(self._mid_gain, alignment=Qt.AlignmentFlag.AlignCenter)
         lmf.addWidget(_lbl("Hz", _DIM, size=5, bold=False))
         self._mid_freq = RotaryKnob(color=_CREAM)
@@ -160,12 +168,14 @@ class MultibandFilterModule(RackModuleBase):
         self._mid_freq.set_formatter(lambda v: f"{int(200 + v * 2300)} Hz")
         self._mid_freq.value_changed.connect(
             lambda v: self.param_changed.emit("mid_freq", 200 + v * 2300))
+        self._mid_freq.setToolTip("LMF center frequency — bell EQ center for the lower midrange (200 Hz–2.5 kHz)")
         lmf.addWidget(self._mid_freq, alignment=Qt.AlignmentFlag.AlignCenter)
         lmf.addWidget(_lbl("Q", _DIM, size=5, bold=False))
         self._mid_q = RotaryKnob(color=_CREAM)
         self._mid_q.set_value(0.5)
         self._mid_q.value_changed.connect(
             lambda v: self.param_changed.emit("mid_q", v))
+        self._mid_q.setToolTip("LMF Q — bandwidth of the bell curve; high Q = narrow surgical notch, low Q = wide musical boost")
         lmf.addWidget(self._mid_q, alignment=Qt.AlignmentFlag.AlignCenter)
         outer.addLayout(lmf)
 
@@ -199,6 +209,7 @@ class MultibandFilterModule(RackModuleBase):
         self._hi_mid_gain.set_value(0.5)
         self._hi_mid_gain.value_changed.connect(
             lambda v: self.param_changed.emit("hi_mid_gain", v))
+        self._hi_mid_gain.setToolTip("HMF gain — boost or cut at the upper-midrange bell (±12 dB)")
         hmf.addWidget(self._hi_mid_gain, alignment=Qt.AlignmentFlag.AlignCenter)
         hmf.addWidget(_lbl("kHz", _DIM, size=5, bold=False))
         self._hi_mid_freq = RotaryKnob(color=_GREEN)
@@ -206,12 +217,14 @@ class MultibandFilterModule(RackModuleBase):
         self._hi_mid_freq.set_formatter(lambda v: f"{int(600 + v * 7400)} Hz")
         self._hi_mid_freq.value_changed.connect(
             lambda v: self.param_changed.emit("hi_mid_freq", 600 + v * 7400))
+        self._hi_mid_freq.setToolTip("HMF center frequency — bell EQ center for the upper midrange (600 Hz–8 kHz)")
         hmf.addWidget(self._hi_mid_freq, alignment=Qt.AlignmentFlag.AlignCenter)
         hmf.addWidget(_lbl("Q", _DIM, size=5, bold=False))
         self._hi_mid_q = RotaryKnob(color=_GREEN)
         self._hi_mid_q.set_value(0.5)
         self._hi_mid_q.value_changed.connect(
             lambda v: self.param_changed.emit("hi_mid_q", v))
+        self._hi_mid_q.setToolTip("HMF Q — bandwidth of the bell curve; high Q = narrow surgical notch, low Q = wide musical boost")
         hmf.addWidget(self._hi_mid_q, alignment=Qt.AlignmentFlag.AlignCenter)
         outer.addLayout(hmf)
 
@@ -224,17 +237,20 @@ class MultibandFilterModule(RackModuleBase):
         self._hf_chk.setStyleSheet(f"color: {_GREEN}; font-size: 6px;")
         self._hf_chk.toggled.connect(
             lambda v: self.param_changed.emit("hf_enabled", v))
+        self._hf_chk.setToolTip("HF band enable — engages the high-frequency EQ shelf")
         hf.addWidget(self._hf_chk, alignment=Qt.AlignmentFlag.AlignCenter)
         self._hp_q = RotaryKnob(color=_GREEN)
         self._hp_q.set_value(0.5)
         self._hp_q.value_changed.connect(
             lambda v: self.param_changed.emit("hp_q", v))
+        self._hp_q.setToolTip("HF gain — boost or cut at the high-frequency shelf (±12 dB)")
         hf.addWidget(self._hp_q, alignment=Qt.AlignmentFlag.AlignCenter)
         hf.addWidget(_lbl("kHz", _DIM, size=5, bold=False))
         self._lp_q = RotaryKnob(color=_CREAM)
         self._lp_q.set_value(0.5)
         self._lp_q.value_changed.connect(
             lambda v: self.param_changed.emit("lp_q", v))
+        self._lp_q.setToolTip("HF frequency — sets the shelf transition frequency for the high-frequency band")
         hf.addWidget(self._lp_q, alignment=Qt.AlignmentFlag.AlignCenter)
         outer.addLayout(hf)
 
@@ -248,12 +264,14 @@ class MultibandFilterModule(RackModuleBase):
         self._drive.set_value(0.0)
         self._drive.value_changed.connect(
             lambda v: self.param_changed.emit("drive", v))
+        self._drive.setToolTip("Drive — input saturation before the EQ bands; adds harmonic warmth and gentle compression")
         out_sec.addWidget(self._drive, alignment=Qt.AlignmentFlag.AlignCenter)
         out_sec.addWidget(_lbl("OUTPUT", _CREAM, size=6))
         self._output = RotaryKnob(color=_CREAM)
         self._output.set_value(0.5)
         self._output.value_changed.connect(
             lambda v: self.param_changed.emit("output_gain", v))
+        self._output.setToolTip("Output gain — master output level after all EQ processing; use to trim the final loudness")
         out_sec.addWidget(self._output, alignment=Qt.AlignmentFlag.AlignCenter)
         outer.addLayout(out_sec)
 

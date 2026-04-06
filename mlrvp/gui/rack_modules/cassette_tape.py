@@ -83,6 +83,14 @@ class MixtapeModule(RackModuleBase):
         title_col.addWidget(type_lbl)
         row.addLayout(title_col)
 
+        _TIPS = {
+            "saturation": "Tape saturation \u2014 adds warmth and harmonic distortion",
+            "hiss":       "Tape hiss level \u2014 adds authentic cassette noise character",
+            "punch":      "Transient punch \u2014 adds analog compression and impact",
+            "warp":       "Tape speed instability \u2014 pitch wobble for vintage character",
+            "tone":       "Tone shaping \u2014 higher = brighter cassette sound",
+            "mix":        "Wet/dry blend of the cassette tape effect",
+        }
         # Knobs
         for name, default, param in [
             ("SAT", 0.40, "saturation"),
@@ -95,6 +103,7 @@ class MixtapeModule(RackModuleBase):
             knob = RotaryKnob(color=_CREAM)
             knob.set_value(default)
             knob.value_changed.connect(lambda v, p=param: self.param_changed.emit(p, v))
+            knob.setToolTip(_TIPS.get(param, ""))
             setattr(self, f"_{param}", knob)
             col = QVBoxLayout()
             col.setSpacing(0)

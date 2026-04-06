@@ -112,14 +112,17 @@ class _RouteSelector(QWidget):
         self._btn_up = QPushButton("RISE↑")
         self._btn_up.setFixedHeight(16)
         self._btn_up.clicked.connect(lambda: self._select(1))
+        self._btn_up.setToolTip("RISE: trigger only on pitch going up")
 
         self._btn_both = QPushButton("BOTH")
         self._btn_both.setFixedHeight(16)
         self._btn_both.clicked.connect(lambda: self._select(0))
+        self._btn_both.setToolTip("BOTH: trigger on any pitch direction")
 
         self._btn_down = QPushButton("FALL↓")
         self._btn_down.setFixedHeight(16)
         self._btn_down.clicked.connect(lambda: self._select(2))
+        self._btn_down.setToolTip("FALL: trigger only on pitch going down")
 
         self._buttons = [self._btn_both, self._btn_up, self._btn_down]
         self._colors  = [_BOTH, _RISE, _FALL]
@@ -224,6 +227,7 @@ class EtherDriftModule(RackModuleBase):
         self._rate.value_changed.connect(
             lambda v: self.param_changed.emit("rate", v)
         )
+        self._rate.setToolTip("LFO rate for the bipolar phaser sweep")
         row1.addLayout(_knob_col("RATE", self._rate, _ACCENT))
 
         # DEPTH knob
@@ -232,6 +236,7 @@ class EtherDriftModule(RackModuleBase):
         self._depth.value_changed.connect(
             lambda v: self.param_changed.emit("depth", v)
         )
+        self._depth.setToolTip("Depth of the phase sweep — higher = more intense spectral filtering")
         row1.addLayout(_knob_col("DEPTH", self._depth, "#4488ff"))
 
         # FDBK knob
@@ -240,6 +245,7 @@ class EtherDriftModule(RackModuleBase):
         self._fdbk.value_changed.connect(
             lambda v: self.param_changed.emit("feedback", v)
         )
+        self._fdbk.setToolTip("Feedback amount — increases resonance and spectral coloring")
         row1.addLayout(_knob_col("FDBK", self._fdbk, _FALL))
 
         # SPREAD knob
@@ -248,6 +254,7 @@ class EtherDriftModule(RackModuleBase):
         self._spread.value_changed.connect(
             lambda v: self.param_changed.emit("spread", v)
         )
+        self._spread.setToolTip("Stereo spread — separates the LFO phase between left and right channels")
         row1.addLayout(_knob_col("SPREAD", self._spread, _AMBER))
 
         # MIX knob
@@ -256,6 +263,7 @@ class EtherDriftModule(RackModuleBase):
         self._mix.value_changed.connect(
             lambda v: self.param_changed.emit("mix", v)
         )
+        self._mix.setToolTip("Wet/dry blend of the Ether Drift effect")
         row1.addLayout(_knob_col("MIX", self._mix, "#aaaaaa"))
 
         self._faceplate_layout.addLayout(row1)
@@ -279,6 +287,7 @@ class EtherDriftModule(RackModuleBase):
         self._sync_btn.setFixedWidth(64)
         self._sync_btn.toggled.connect(self._on_sync_toggled)
         self._update_sync_style(True)
+        self._sync_btn.setToolTip("Sync the LFO rate to the current project BPM")
         row2.addWidget(self._sync_btn)
 
         # ROUTE selector

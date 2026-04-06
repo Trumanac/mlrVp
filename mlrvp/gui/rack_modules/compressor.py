@@ -237,6 +237,7 @@ class CompressorModule(RackModuleBase):
         self._sc_source.currentIndexChanged.connect(
             lambda v: self.param_changed.emit("sidechain_source", v)
         )
+        self._sc_source.setToolTip("Sidechain source — which group's audio triggers the compressor detect circuit")
         top.addWidget(self._sc_source)
         self._faceplate_layout.addLayout(top)
 
@@ -278,6 +279,13 @@ class CompressorModule(RackModuleBase):
         comp_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
         comp_col.addWidget(comp_hdr)
         knobs_row = QHBoxLayout(); knobs_row.setSpacing(3); knobs_row.setContentsMargins(0,0,0,0)
+        _COMP_TIPS = {
+            "threshold":  "Compression threshold — signal below this dB level passes uncompressed",
+            "ratio":      "Compression ratio — how much gain is reduced above the threshold",
+            "attack":     "Attack time — how quickly the compressor responds to loud transients",
+            "release":    "Release time — how quickly the compressor recovers after the signal drops",
+            "makeup_gain": "Makeup gain — boosts the output to compensate for gain reduction",
+        }
         for name, default, param, scale in [
             ("THRESH", 0.67, "threshold",  (-60.0,   0.0)),
             ("RATIO",  0.16, "ratio",       (1.0,   20.0)),
@@ -292,6 +300,7 @@ class CompressorModule(RackModuleBase):
                     p, s[0] + v * (s[1] - s[0])
                 )
             )
+            knob.setToolTip(_COMP_TIPS.get(param, ""))
             setattr(self, f"_{param}", knob)
             c = QVBoxLayout(); c.setSpacing(0); c.setContentsMargins(0,0,0,0)
             lbl = QLabel(name)
@@ -329,6 +338,10 @@ class CompressorModule(RackModuleBase):
         self._thrust_btn = _ThrustButton()
         self._thrust_btn.toggled.connect(
             lambda on: self.param_changed.emit("thrust_enabled", on)
+        )
+        self._thrust_btn.setToolTip(
+            "THRUST circuit — high-pass filter on the sidechain detect signal\n"
+            "prevents low-frequency content from over-triggering the compressor"
         )
         thrust_ctrl.addWidget(self._thrust_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         freq_c = QVBoxLayout(); freq_c.setSpacing(0); freq_c.setContentsMargins(0,0,0,0)

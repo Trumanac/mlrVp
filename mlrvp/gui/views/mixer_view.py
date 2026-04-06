@@ -95,6 +95,7 @@ class GroupChannel(QFrame):
         self._vol_fader.value_changed.connect(
             lambda v: self.volume_changed.emit(self._group, v)
         )
+        self._vol_fader.setToolTip(f"Group {group_idx + 1} volume fader")
         fader_row.addWidget(self._vol_fader)
 
         self._vu_r = VUMeter(Qt.Orientation.Vertical)
@@ -123,6 +124,7 @@ class GroupChannel(QFrame):
         self._send_fader.value_changed.connect(
             lambda v: self.send_changed.emit(self._group, v)
         )
+        self._send_fader.setToolTip(f"Group {group_idx + 1} aux send level — routes signal to the delay return")
         send_row.addWidget(self._send_fader)
         send_row.addStretch(1)
         layout.addLayout(send_row)
@@ -137,6 +139,12 @@ class GroupChannel(QFrame):
             f"border-radius: 0px; padding: 0px; }}"
         )
         self._fx_route_btn.clicked.connect(self._cycle_fx_route)
+        self._fx_route_btn.setToolTip(
+            "FX routing for this group:\n"
+            "OFF — no FX send\n"
+            "FX1 — route through FX Group A\n"
+            "FX2 — route through FX Group B"
+        )
         layout.addWidget(self._fx_route_btn)
 
         # ── Mute button (textbutton MUTE) ──
@@ -152,6 +160,7 @@ class GroupChannel(QFrame):
             f"border-color: {ACCENT_GOLD}; }}"
         )
         self._mute_btn.toggled.connect(self._on_mute_toggled)
+        self._mute_btn.setToolTip(f"Mute Group {group_idx + 1} — silences this group without stopping playback")
         layout.addWidget(self._mute_btn)
 
 
@@ -282,6 +291,7 @@ class MixerView(QWidget):
         self._aux_fader = VerticalFader(FADER_SLIDER)
         self._aux_fader.set_value(0.78)
         self._aux_fader.value_changed.connect(self.aux_volume_changed.emit)
+        self._aux_fader.setToolTip("AUX return volume — overall level of the delay/FX return channel")
         aux_fader_row.addWidget(self._aux_fader)
 
         self._aux_vu_r = VUMeter(Qt.Orientation.Vertical)
@@ -308,6 +318,7 @@ class MixerView(QWidget):
         self._aux_send_fader.set_value(0.0)
         self._aux_send_fader.setFixedHeight(52)
         self._aux_send_fader.value_changed.connect(self.aux_send_changed.emit)
+        self._aux_send_fader.setToolTip("AUX send master — global send level to the delay return (blends with per-group sends)")
         aux_send_row.addWidget(self._aux_send_fader)
         aux_send_row.addStretch(1)
         aux_layout.addLayout(aux_send_row)
@@ -322,6 +333,12 @@ class MixerView(QWidget):
             f"border-radius: 0px; padding: 0px; }}"
         )
         self._aux_fx_route_btn.clicked.connect(self._cycle_aux_fx_route)
+        self._aux_fx_route_btn.setToolTip(
+            "FX routing for the AUX return:\n"
+            "OFF — no FX send\n"
+            "FX1 — route through FX Group A\n"
+            "FX2 — route through FX Group B"
+        )
         aux_layout.addWidget(self._aux_fx_route_btn)
 
         # AUX mute button
@@ -337,6 +354,7 @@ class MixerView(QWidget):
             f"border-color: {ACCENT_GOLD}; }}"
         )
         self._aux_mute_btn.toggled.connect(self.aux_mute_toggled.emit)
+        self._aux_mute_btn.setToolTip("Mute the AUX return channel")
         aux_layout.addWidget(self._aux_mute_btn)
 
         strip_row.addWidget(aux_frame)
@@ -377,6 +395,7 @@ class MixerView(QWidget):
         self._master_fader = VerticalFader(FADER_SLIDER)
         self._master_fader.set_value(0.78)
         self._master_fader.value_changed.connect(self.master_volume_changed.emit)
+        self._master_fader.setToolTip("Master output volume — controls the final DAC output level")
         master_fader_row.addWidget(self._master_fader)
 
         self._master_vu_r = VUMeter(Qt.Orientation.Vertical)
@@ -405,6 +424,7 @@ class MixerView(QWidget):
             "QPushButton:checked { background: rgba(0,0,0,128); color: white; }"
         )
         self._dac_btn.toggled.connect(self.dac_toggled.emit)
+        self._dac_btn.setToolTip("DAC on/off — enable or disable the audio output (Digital-to-Analog Converter)")
         master_layout.addWidget(self._dac_btn)
 
         strip_row.addWidget(master_frame)

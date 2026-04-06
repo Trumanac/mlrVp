@@ -90,6 +90,7 @@ class PhaserModule(RackModuleBase):
         self._rate.value_changed.connect(
             lambda v: self.param_changed.emit("phaser_rate", v * 5.0)
         )
+        self._rate.setToolTip("LFO rate — controls the speed of the phase sweep (0–5 Hz)")
         col = QVBoxLayout(); col.setSpacing(0)
         lbl_r = QLabel("RATE")
         lbl_r.setStyleSheet("color: #ff4444; font-size: 7px; font-weight: bold;")
@@ -103,6 +104,7 @@ class PhaserModule(RackModuleBase):
         self._depth.value_changed.connect(
             lambda v: self.param_changed.emit("phaser_depth", v)
         )
+        self._depth.setToolTip("Sweep depth — how far the phase notches sweep through the frequency spectrum")
         col2 = QVBoxLayout(); col2.setSpacing(0)
         lbl_d = QLabel("DEPTH")
         lbl_d.setStyleSheet("color: #4488ff; font-size: 7px; font-weight: bold;")
@@ -116,6 +118,7 @@ class PhaserModule(RackModuleBase):
         self._fb.value_changed.connect(
             lambda v: self.param_changed.emit("phaser_feedback", v)
         )
+        self._fb.setToolTip("Feedback — feeds the phased signal back to create more resonant, pronounced notches")
         col3 = QVBoxLayout(); col3.setSpacing(0)
         lbl_f = QLabel("FDBK")
         lbl_f.setStyleSheet("color: #ffcc00; font-size: 7px; font-weight: bold;")

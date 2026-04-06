@@ -178,6 +178,7 @@ class TapeDelayModule(RackModuleBase):
         self._head_mode.currentIndexChanged.connect(
             lambda v: self.param_changed.emit("head_mode", v)
         )
+        self._head_mode.setToolTip("Head mode — selects which playback heads are active; multiple heads create richer, layered echoes")
         hm_col.addWidget(self._head_mode)
         row.addWidget(hm_panel)
 
@@ -216,12 +217,21 @@ class TapeDelayModule(RackModuleBase):
         self._sync.currentIndexChanged.connect(
             lambda v: self.param_changed.emit("sync_time", v)
         )
+        self._sync.setToolTip("Delay time — tempo-synced note division for the base delay time (1/32 to 1 bar)")
         sync_col.addWidget(self._sync)
         row.addLayout(sync_col)
 
         row.addStretch()
 
         # Knobs: param_name, label, default_value — green panel section
+        _TIPS = {
+            "feedback":    "Intensity (feedback) — how much delayed signal feeds back; high values produce many repeats",
+            "wow_flutter": "Wow — slow tape speed fluctuation that creates pitch warble and vintage instability",
+            "tone":        "Tone — treble roll-off on the feedback path; simulates tape head frequency response",
+            "saturation":  "Saturation — tape compression and harmonic coloring that builds with each echo repeat",
+            "gain":        "Echo level — output level of the delayed (echo) signal",
+            "spring_mix":  "Spring reverb mix — built-in spring reverb blended with the echo; adds classic warm ambience",
+        }
         for label, default, param in [
             ("INTENSITY", 0.40, "feedback"),
             ("WOW",       0.20, "wow_flutter"),
@@ -234,6 +244,7 @@ class TapeDelayModule(RackModuleBase):
             knob.set_value(default)
             knob.value_changed.connect(lambda v, p=param: self.param_changed.emit(p, v))
             setattr(self, f"_{param}", knob)
+            knob.setToolTip(_TIPS.get(param, ""))
             col = QVBoxLayout()
             col.setSpacing(1)
             lbl = QLabel(label)

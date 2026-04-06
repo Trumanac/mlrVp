@@ -11,7 +11,7 @@ Each channel represents one row of the grid and handles:
 import numpy as np
 from typing import Optional
 
-from mlrvp.config import PlaybackMode, ChannelState, SAMPLE_RATE, BUFFER_SIZE
+from mlrvp.config import PlaybackMode, ChannelState, SAMPLE_RATE, BUFFER_SIZE, PITCH_SCALE_MAPS
 from mlrvp.audio.sample import SampleBuffer
 
 
@@ -60,6 +60,10 @@ class Channel:
         self._seq_column: int = -1              # current step index (-1 = not started)
         self._seq_columns: int = 8             # total grid columns (set at trigger time)
         self._seq_playing_step: bool = False    # True while the sample is sounding this step
+
+        # PITCH mode state
+        self._pitch_mode_mult: float = 1.0     # rate multiplier from scale degree
+        self._pitch_mode_col: int = -1         # last triggered column (for LED feedback)
 
         # Pending sample for live preset transitions
         self._pending_sample_path: Optional[str] = None
@@ -127,6 +131,16 @@ class Channel:
         """
         self._pending_pitch_cache = self._PITCH_CLEAR
 
+    def _effective_speed(self) -> float:
+        """Combined playback rate including mode-specific pitch.
+
+        PITCH mode uses the per-button scale multiplier instead of
+        the generic pitch knob so each column has its own pitch.
+        """
+        if self.state.mode == PlaybackMode.PITCH:
+            return self.state.speed * self._pitch_mode_mult
+        return self.state.speed * self.state.pitch
+
     def trigger(self, column: int, total_columns: int):
         """Trigger playback from a grid column position.
 
@@ -154,6 +168,19 @@ class Channel:
             # volume fight between attack ramp and crossfade.
         else:
             self._envelope = 0.0  # first trigger: normal attack from zero
+
+        # PITCH mode: each column = different pitch, always play from start
+        if self.state.mode == PlaybackMode.PITCH:
+            scale = PITCH_SCALE_MAPS.get(self.state.pitch_scale, PITCH_SCALE_MAPS[0])
+            col_idx = min(column, len(scale) - 1)
+            semitone = scale[col_idx] + self.state.pitch_root
+            self._pitch_mode_mult = 2.0 ** (semitone / 12.0)
+            self._pitch_mode_col = column
+            self._position = sel_start_samp
+            self._playing = True
+            self._releasing = False
+            self.state.playing = True
+            return
 
         # mlrv step mapping: floor((button / grid_width) * steps) / steps
         # This distributes `state.steps` slices evenly across `total_columns` buttons.
@@ -188,7 +215,7 @@ class Channel:
         num_channels = self.sample.num_channels
         audio_data = self._get_audio_data()
 
-        speed = self.state.speed * self.state.pitch
+        speed = self._effective_speed()
         if self.state.reverse or self.state.mode == PlaybackMode.REVERSE:
             speed = -speed
 
@@ -291,7 +318,8 @@ class Channel:
 
         # Speed calculation (pitch * speed * direction)
         # Note: transpose is handled via pre-shifted audio in _pitch_cache (see set_pitch_cache)
-        speed = self.state.speed * self.state.pitch
+        # PITCH mode uses per-button multiplier via _effective_speed()
+        speed = self._effective_speed()
         is_reverse = self.state.reverse or self.state.mode == PlaybackMode.REVERSE
         # SLICE mode sub-loop reverse
         if self.state.mode == PlaybackMode.SLICE and getattr(self, '_slice_reverse', False):
@@ -350,8 +378,10 @@ class Channel:
         positions = self._position + self._arange_f64[:active_frames] * speed
 
         # Handle oneshot boundary (ONESHOT and SEQ both play through once then stop)
+        # PITCH mode stops at boundary unless pitch_hold is active (loop behaviour)
         stop_after = False
-        if self.state.mode in (PlaybackMode.ONESHOT, PlaybackMode.SEQ):
+        pitch_loops = (self.state.mode == PlaybackMode.PITCH and self.state.pitch_hold)
+        if self.state.mode in (PlaybackMode.ONESHOT, PlaybackMode.SEQ, PlaybackMode.PITCH) and not pitch_loops:
             if speed > 0:
                 out_of_bounds = positions >= loop_end
             elif speed < 0:
@@ -431,11 +461,14 @@ class Channel:
         # Update position for next block
         if self._playing:
             next_position = self._position + active_frames * speed
-            if self.state.mode not in (PlaybackMode.ONESHOT, PlaybackMode.SEQ) and loop_len > 0:
-                if speed >= 0:
-                    self._position = loop_start + ((next_position - loop_start) % loop_len)
+            if self.state.mode not in (PlaybackMode.ONESHOT, PlaybackMode.SEQ, PlaybackMode.PITCH) or pitch_loops:
+                if loop_len > 0:
+                    if speed >= 0:
+                        self._position = loop_start + ((next_position - loop_start) % loop_len)
+                    else:
+                        self._position = loop_end - ((loop_end - next_position) % loop_len)
                 else:
-                    self._position = loop_end - ((loop_end - next_position) % loop_len)
+                    self._position = next_position
             else:
                 self._position = next_position
 

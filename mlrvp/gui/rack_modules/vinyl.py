@@ -126,6 +126,13 @@ class VinylModule(RackModuleBase):
         row.addWidget(self._wear_ind)
 
         # Knobs
+        _TIPS = {
+            "crackle": "Surface crackle — continuous high-frequency noise from groove wear and debris",
+            "pops":    "Record pops — random impulse noise from dust, scratches, and groove damage",
+            "warmth":  "Vinyl warmth — subtle saturation and low-frequency resonance characteristic of vinyl playback",
+            "wear":    "Groove wear — HF rolloff and increased surface noise simulating repeated plays",
+            "mix":     "Wet/dry blend — 0%=dry signal, 100%=full vinyl character",
+        }
         for name, default, param in [
             ("CRACKLE", 0.18, "crackle"),
             ("POPS", 0.10, "pops"),
@@ -137,6 +144,7 @@ class VinylModule(RackModuleBase):
             knob.set_value(default)
             knob.value_changed.connect(lambda v, p=param: self.param_changed.emit(p, v))
             setattr(self, f"_{param}", knob)
+            knob.setToolTip(_TIPS.get(param, ""))
             col = QVBoxLayout()
             col.setSpacing(0)
             lbl = QLabel(name)

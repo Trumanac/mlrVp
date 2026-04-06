@@ -225,6 +225,7 @@ class HallReverbModule(RackModuleBase):
             f"QComboBox QAbstractItemView {{ background: {_LCD_BG}; color: {_LCD_FG}; }}"
         )
         self._room_combo.currentIndexChanged.connect(self._on_room_type)
+        self._room_combo.setToolTip("Room type — selects the reverb character: Hall (large, spacious), Room (natural), Chamber (colored), Studio (tight)")
         top.addWidget(self._room_combo)
         top.addStretch()
         self._faceplate_layout.addLayout(top)
@@ -237,6 +238,12 @@ class HallReverbModule(RackModuleBase):
         self._lcd = _RoomLCD()
         bot.addWidget(self._lcd)
 
+        _TIPS = {
+            "room_size":  "Room size — scales the virtual room dimensions; larger = longer, more spacious reverb",
+            "decay":      "Decay time — how long the reverb tail rings before fading to silence (RT60)",
+            "diffusion":  "Diffusion — density of early reflections; high = smooth wash, low = distinct echoes",
+            "mix":        "Wet/dry blend — 0%=dry signal only, 100%=full reverb",
+        }
         for name, default, param in [
             ("SIZE", 0.55, "room_size"),
             ("DECAY", 0.55, "decay"),
@@ -247,6 +254,7 @@ class HallReverbModule(RackModuleBase):
             knob.set_value(default)
             knob.value_changed.connect(lambda v, p=param: self.param_changed.emit(p, v))
             setattr(self, f"_{param}", knob)
+            knob.setToolTip(_TIPS.get(param, ""))
             col = QVBoxLayout(); col.setSpacing(0)
             col.addWidget(QLabel(name), alignment=Qt.AlignmentFlag.AlignCenter)
             col.addWidget(knob, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -258,6 +266,7 @@ class HallReverbModule(RackModuleBase):
         self._jog.value_changed.connect(
             lambda v: self.param_changed.emit("room_size", v)
         )
+        self._jog.setToolTip("Jog wheel — fine-tune room size; synchronized with the SIZE knob")
         # Cross-sync: moving jog updates SIZE knob display and vice versa
         self._jog.value_changed.connect(
             lambda v: (self._room_size.blockSignals(True),
