@@ -16,7 +16,7 @@ class Mixer:
     def __init__(self):
         self.groups = [GroupState() for _ in range(NUM_GROUPS)]
         self.aux_volume = 1.0
-        self.aux_send_active = True
+        self.aux_send_level = 1.0
         self.aux_mute = False
         self.aux_fx_route = 0  # 0=OFF (main), 1=FX1, 2=FX2
         self.master_volume = 1.0
@@ -102,8 +102,8 @@ class Mixer:
                 main_bus += scaled
 
             # Aux send (post-fader, only when no FX routing)
-            if self.aux_send_active and fx_route == 0:
-                aux_send += scaled * group.send
+            if self.aux_send_level > 0.0 and fx_route == 0:
+                aux_send += scaled * group.send * self.aux_send_level
 
         return main_bus, aux_send, fx1_bus, fx2_bus
 

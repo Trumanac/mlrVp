@@ -215,7 +215,8 @@ class MixerView(QWidget):
     aux_volume_changed = Signal(float)
     aux_mute_toggled = Signal(bool)
     aux_fx_route_changed = Signal(int)  # route (0=OFF, 1=FX1, 2=FX2)
-    aux_send_toggled = Signal(bool)
+    aux_send_toggled = Signal(bool)   # kept for backward compat, unused
+    aux_send_changed = Signal(float)
     master_volume_changed = Signal(float)
     dac_toggled = Signal(bool)
 
@@ -306,6 +307,7 @@ class MixerView(QWidget):
         self._aux_send_fader = VerticalFader(SEND_FADER_COLOR)
         self._aux_send_fader.set_value(0.0)
         self._aux_send_fader.setFixedHeight(52)
+        self._aux_send_fader.value_changed.connect(self.aux_send_changed.emit)
         aux_send_row.addWidget(self._aux_send_fader)
         aux_send_row.addStretch(1)
         aux_layout.addLayout(aux_send_row)
@@ -470,6 +472,11 @@ class MixerView(QWidget):
     def set_aux_fx_route(self, route: int):
         self._aux_fx_route = route % 3
         self._update_aux_fx_route_display()
+
+    def set_aux_send(self, level: float):
+        self._aux_send_fader.blockSignals(True)
+        self._aux_send_fader.set_value(level)
+        self._aux_send_fader.blockSignals(False)
 
     def set_aux_mute(self, muted: bool):
         self._aux_mute_btn.blockSignals(True)

@@ -95,7 +95,7 @@ class MultibandFilterModule(RackModuleBase):
         filt.setSpacing(1)
         filt.addWidget(_lbl("HP/LP", _CREAM, size=6))
         self._hp_chk = QCheckBox("HP")
-        self._hp_chk.setChecked(True)
+        self._hp_chk.setChecked(False)
         self._hp_chk.setStyleSheet(f"color: {_CREAM}; font-size: 6px;")
         self._hp_chk.toggled.connect(
             lambda v: self.param_changed.emit("hp_enabled", v))
@@ -107,7 +107,7 @@ class MultibandFilterModule(RackModuleBase):
             lambda v: self.param_changed.emit("hp_freq", 16 + v * 334))
         filt.addWidget(self._hp_freq, alignment=Qt.AlignmentFlag.AlignCenter)
         self._lp_chk = QCheckBox("LP")
-        self._lp_chk.setChecked(True)
+        self._lp_chk.setChecked(False)
         self._lp_chk.setStyleSheet(f"color: {_CREAM}; font-size: 6px;")
         self._lp_chk.toggled.connect(
             lambda v: self.param_changed.emit("lp_enabled", v))
@@ -126,7 +126,7 @@ class MultibandFilterModule(RackModuleBase):
         lf.setSpacing(1)
         lf.addWidget(_lbl("LF", _BLUE, size=7))
         self._lf_chk = QCheckBox()
-        self._lf_chk.setChecked(True)
+        self._lf_chk.setChecked(False)
         self._lf_chk.setStyleSheet(f"color: {_BLUE}; font-size: 6px;")
         self._lf_chk.toggled.connect(
             lambda v: self.param_changed.emit("lf_enabled", v))
@@ -220,7 +220,7 @@ class MultibandFilterModule(RackModuleBase):
         hf.setSpacing(1)
         hf.addWidget(_lbl("HF", _GREEN, size=7))
         self._hf_chk = QCheckBox()
-        self._hf_chk.setChecked(True)
+        self._hf_chk.setChecked(False)
         self._hf_chk.setStyleSheet(f"color: {_GREEN}; font-size: 6px;")
         self._hf_chk.toggled.connect(
             lambda v: self.param_changed.emit("hf_enabled", v))

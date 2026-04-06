@@ -40,3 +40,12 @@ data/slices/*.wav
 data/presets/test.json
 data/setlists/TEST.json
 data/setlists/TEST/
+
+# Dev/planning files not for end users
+FX_RACK_PLAN.md
+generate_icon.py
+stress_test.py
+stress_results.txt
+
+# Local dev backups
+_backup/

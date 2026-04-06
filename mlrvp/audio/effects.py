@@ -39,6 +39,35 @@ class BiquadFilter:
         self.b = np.array([(1 + cos_w0) / 2, -(1 + cos_w0), (1 + cos_w0) / 2], dtype=np.float64) / a0
         self.a = np.array([1.0, (-2 * cos_w0) / a0, (1 - alpha) / a0], dtype=np.float64)
 
+    def set_peaking(self, freq: float, gain_db: float, q: float = 1.0):
+        """Peaking EQ biquad (Audio EQ Cookbook)."""
+        freq = max(20.0, min(freq, self.sr * 0.49))
+        q = max(0.1, q)
+        A = 10.0 ** (gain_db / 40.0)
+        w0 = 2.0 * np.pi * freq / self.sr
+        alpha = np.sin(w0) / (2.0 * q)
+        cos_w0 = np.cos(w0)
+        a0 = 1.0 + alpha / A
+        self.b = np.array([1.0 + alpha * A, -2.0 * cos_w0, 1.0 - alpha * A], dtype=np.float64) / a0
+        self.a = np.array([1.0, (-2.0 * cos_w0) / a0, (1.0 - alpha / A) / a0], dtype=np.float64)
+
+    def set_low_shelf(self, freq: float, gain_db: float):
+        """Low-shelving EQ biquad (Audio EQ Cookbook, S=1)."""
+        freq = max(20.0, min(freq, self.sr * 0.49))
+        A = 10.0 ** (gain_db / 40.0)
+        w0 = 2.0 * np.pi * freq / self.sr
+        cos_w0 = np.cos(w0)
+        alpha = np.sin(w0) / 2.0 * np.sqrt(2.0)   # S=1
+        sqA = np.sqrt(A)
+        b0 =     A * ((A+1) - (A-1)*cos_w0 + 2*sqA*alpha)
+        b1 =   2*A * ((A-1) - (A+1)*cos_w0)
+        b2 =     A * ((A+1) - (A-1)*cos_w0 - 2*sqA*alpha)
+        a0 =        (A+1) + (A-1)*cos_w0 + 2*sqA*alpha
+        a1 =  -2  * ((A-1) + (A+1)*cos_w0)
+        a2 =        (A+1) + (A-1)*cos_w0 - 2*sqA*alpha
+        self.b = np.array([b0, b1, b2], dtype=np.float64) / a0
+        self.a = np.array([1.0, a1 / a0, a2 / a0], dtype=np.float64)
+
     def process(self, data: np.ndarray) -> np.ndarray:
         """Process stereo data using scipy lfilter — both channels at once."""
         filtered, self._zi = lfilter(
@@ -55,18 +84,21 @@ class StereoDelay:
     Matches the mlrV2 aux delay effect.
     """
 
-    # Beat division table (in beats)
+    # Beat division table (in beats), aligned with SYNC_DIVISION_NAMES in effects_view.py
     SYNC_DIVISIONS = [
-        0.125,  # 1/32
-        0.25,   # 1/16
-        0.375,  # 1/16 dotted
-        0.5,    # 1/8
-        0.75,   # 1/8 dotted
-        1.0,    # 1/4
-        1.5,    # 1/4 dotted
-        2.0,    # 1/2
-        3.0,    # 1/2 dotted
-        4.0,    # 1 bar
+        0.125,      # 1/32
+        1.0 / 6,    # 1/16t (triplet)
+        0.25,       # 1/16
+        1.0 / 3,    # 1/8t (triplet)
+        0.5,        # 1/8
+        2.0 / 3,    # 1/4t (triplet)
+        0.75,       # 3/16
+        1.0,        # 1/4
+        4.0 / 3,    # 1/3
+        1.5,        # 3/8
+        2.0,        # 1/2
+        3.0,        # 3/4
+        4.0,        # 1 bar
     ]
 
     def __init__(self, sample_rate: int = SAMPLE_RATE, max_delay_sec: float = 4.0):
@@ -81,6 +113,7 @@ class StereoDelay:
         self._update_filters()
 
         self.tempo = 120.0
+        self._current_fb = 0.0  # envelope-smoothed feedback amount
 
     def _update_filters(self):
         self.lp_filter.set_lowpass(self.state.filter_freq_lp)
@@ -104,8 +137,22 @@ class StereoDelay:
         """Process stereo input through delay effect (block-vectorised)."""
         num_frames = len(input_data)
         delay_samples = self._get_delay_samples()
-        fb_amount = self.state.fb_range_high / 100.0
         gain = self.state.gain
+
+        # Feedback envelope: smoothly transitions between fb_range_low and
+        # fb_range_high based on input signal level (attack/release times).
+        fb_high = self.state.fb_range_high / 100.0
+        fb_low = self.state.fb_range_low / 100.0
+        input_level = float(np.abs(input_data).mean())
+        target_fb = fb_high if input_level > 0.01 else fb_low
+        atk_ms = max(1.0, self.state.fb_attack)
+        rel_ms = max(1.0, self.state.fb_release)
+        if target_fb > self._current_fb:
+            coeff = math.exp(-1.0 / (atk_ms * 0.001 * self.sr / num_frames))
+        else:
+            coeff = math.exp(-1.0 / (rel_ms * 0.001 * self.sr / num_frames))
+        self._current_fb = coeff * self._current_fb + (1.0 - coeff) * target_fb
+        fb_amount = self._current_fb
 
         # Read delayed block from circular buffer
         read_start = (self.write_pos - delay_samples) % self.max_delay_samples
@@ -147,6 +194,7 @@ class StereoDelay:
         """Clear the delay buffer."""
         self.buffer[:] = 0
         self.write_pos = 0
+        self._current_fb = 0.0
         self.lp_filter.reset()
         self.hp_filter.reset()
 
@@ -188,18 +236,32 @@ class ChannelFilter:
 
 
 class GlobalFilter:
-    """Global LP/HP filter for FX bus processing (separate LP/HP Q)."""
+    """Global LP/HP filter + parametric EQ bands for the Band Practice rack module."""
 
     def __init__(self, sample_rate: int = SAMPLE_RATE):
         self.sr = sample_rate
         self.lp = BiquadFilter(sample_rate)
         self.hp = BiquadFilter(sample_rate)
+        self.lf = BiquadFilter(sample_rate)   # LF low shelf
+        self.lmf = BiquadFilter(sample_rate)  # LMF peaking
+        self.hmf = BiquadFilter(sample_rate)  # HMF peaking
         self.state = FilterState()
         self._update()
 
     def _update(self):
         self.lp.set_lowpass(self.state.lp_freq, 0.5 + self.state.lp_q * 4.0)
         self.hp.set_highpass(self.state.hp_freq, 0.5 + self.state.hp_q * 4.0)
+        # LF low shelf
+        lf_db = (self.state.lo_mid_gain - 0.5) * 24.0
+        self.lf.set_low_shelf(self.state.lo_mid_freq, lf_db)
+        # LMF peaking
+        lmf_db = (self.state.mid_gain - 0.5) * 24.0
+        lmf_q = 0.2 + self.state.mid_q * 7.8
+        self.lmf.set_peaking(self.state.mid_freq, lmf_db, lmf_q)
+        # HMF peaking
+        hmf_db = (self.state.hi_mid_gain - 0.5) * 24.0
+        hmf_q = 0.2 + self.state.hi_mid_q * 7.8
+        self.hmf.set_peaking(self.state.hi_mid_freq, hmf_db, hmf_q)
 
     def update_from_state(self, state: FilterState):
         self.state = state
@@ -211,6 +273,27 @@ class GlobalFilter:
             out = self.lp.process(out)
         if self.state.hp_enabled:
             out = self.hp.process(out)
+        # LF low shelf
+        if self.state.lf_enabled:
+            lf_db = (self.state.lo_mid_gain - 0.5) * 24.0
+            if abs(lf_db) > 0.05:
+                out = self.lf.process(out)
+        # LMF peaking
+        lmf_db = (self.state.mid_gain - 0.5) * 24.0
+        if abs(lmf_db) > 0.05:
+            out = self.lmf.process(out)
+        # HMF peaking
+        hmf_db = (self.state.hi_mid_gain - 0.5) * 24.0
+        if abs(hmf_db) > 0.05:
+            out = self.hmf.process(out)
+        # Drive (soft saturation, normalised so unity drive = unity gain)
+        if self.state.drive > 0.01:
+            drive_amt = 1.0 + self.state.drive * 7.0
+            out = np.tanh(out * drive_amt) / np.tanh(drive_amt)
+        # Output gain (±12 dB)
+        out_db = (self.state.output_gain - 0.5) * 24.0
+        if abs(out_db) > 0.05:
+            out = out * (10.0 ** (out_db / 20.0))
         return out
 
 
@@ -317,7 +400,19 @@ class TapeDelay:
     """
 
     SYNC_DIVISIONS = [
-        0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0,
+        0.125,      # 1/32
+        1.0 / 6,    # 1/16t (triplet)
+        0.25,       # 1/16
+        1.0 / 3,    # 1/8t (triplet)
+        0.5,        # 1/8
+        2.0 / 3,    # 1/4t (triplet)
+        0.75,       # 3/16
+        1.0,        # 1/4
+        4.0 / 3,    # 1/3
+        1.5,        # 3/8
+        2.0,        # 1/2
+        3.0,        # 3/4
+        4.0,        # 1 bar
     ]
 
     # Playback head delay ratios (relative to base delay time)
@@ -1528,9 +1623,7 @@ class CompressorProcessor:
         self.sr = sample_rate
         self.state = CompressorState()
         self._sc_hp = BiquadFilter(sample_rate)
-        self._sc_lp = BiquadFilter(sample_rate)
         self._sc_hp.set_highpass(20.0, 0.707)
-        self._sc_lp.set_lowpass(20000.0, 0.707)
         # Envelope follower state
         self._env = 0.0
         # Gain reduction in dB for metering
@@ -1568,9 +1661,6 @@ class CompressorProcessor:
         if getattr(st, 'thrust_enabled', True) and st.sc_hp_freq > 25.0:
             self._sc_hp.set_highpass(st.sc_hp_freq, 0.707)
             sc = self._sc_hp.process(sc)
-        if st.sc_lp_freq < 19500.0:
-            self._sc_lp.set_lowpass(st.sc_lp_freq, 0.707)
-            sc = self._sc_lp.process(sc)
 
         # Compute level per sample (mono sum for detection)
         sc_mono = (np.abs(sc[:, 0]) + np.abs(sc[:, 1])) * 0.5

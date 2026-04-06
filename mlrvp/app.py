@@ -189,7 +189,7 @@ class AppController:
         osc.add_handler("/mlrvp/aux/fx_route",
                         lambda addr, v: self._gui_aux_fx_route(int(v)))
         osc.add_handler("/mlrvp/aux/send",
-                        lambda addr, v: self._gui_aux_send(int(v) > 0))
+                        lambda addr, v: self._gui_aux_send(float(v)))
 
         # Master: /mlrvp/master/volume
         osc.add_handler("/mlrvp/master/volume",
@@ -742,7 +742,11 @@ class AppController:
                         raw_speed = self._normalize_speed(raw_speed)
                         if self.config.snap_speed_to_rate:
                             raw_speed = self._snap_to_rate(raw_speed)
-                        self.config.channels[row].speed = raw_speed
+                        # Always store the BPM-calculated speed as normal_speed
+                        self.config.channels[row].normal_speed = raw_speed
+                        if self.config.channels[row].mode != PlaybackMode.SEQ:
+                            # Only update active speed for non-SEQ modes
+                            self.config.channels[row].speed = raw_speed
 
                     # Update waveform + speed spinner in the GUI
                     self._load_waveform_display(row, filepath)
@@ -775,6 +779,10 @@ class AppController:
                     speed = self._normalize_speed(speed)
                     if self.config.snap_speed_to_rate:
                         speed = self._snap_to_rate(speed)
+                    # Store BPM-calculated speed; use 1.0 as active speed in SEQ mode
+                    self.config.channels[row].normal_speed = speed
+                    if self.config.channels[row].mode == PlaybackMode.SEQ:
+                        speed = 1.0
                     self.engine.channels[row].state.speed = speed
                     self.config.channels[row].speed = speed
                     if self.window:
@@ -857,7 +865,7 @@ class AppController:
         w.mixer_view.aux_volume_changed.connect(self._gui_aux_volume)
         w.mixer_view.aux_mute_toggled.connect(self._gui_aux_mute)
         w.mixer_view.aux_fx_route_changed.connect(self._gui_aux_fx_route)
-        w.mixer_view.aux_send_toggled.connect(self._gui_aux_send)
+        w.mixer_view.aux_send_changed.connect(self._gui_aux_send)
         w.mixer_view.master_volume_changed.connect(self._gui_master_volume)
         w.mixer_view.dac_toggled.connect(self._gui_dac_toggle)
         w.master_filter_view.hp_changed.connect(self._gui_master_hp)
@@ -932,19 +940,34 @@ class AppController:
         if self.clock:
             self.clock.set_tempo(bpm)
         if self.engine:
+            old_bpm = self.config.tempo
             self.engine.set_tempo(bpm)
             # Update speed spinners in channel strips
             if self.window:
+                ratio = bpm / old_bpm if old_bpm > 0 else 1.0
                 for i in range(self.config.row_count):
                     ch = self.engine.channels[i]
                     if ch.sample is not None:
-                        speed = ch.state.speed
-                        self.config.channels[i].speed = speed
+                        cfg_ch = self.config.channels[i]
                         strip = self.window.channel_view.get_strip(i)
-                        strip._true_speed = speed
-                        strip._speed_spin.blockSignals(True)
-                        strip._speed_spin.setValue(speed)
-                        strip._speed_spin.blockSignals(False)
+                        if cfg_ch.mode == PlaybackMode.SEQ:
+                            # Scale normal_speed to stay BPM-relative, but
+                            # keep the active SEQ speed (engine skips SEQ channels)
+                            cfg_ch.normal_speed = max(0.01, min(8.0, cfg_ch.normal_speed * ratio))
+                            seq_speed = cfg_ch.speed
+                            ch.state.speed = seq_speed
+                            strip._true_speed = seq_speed
+                            strip._speed_spin.blockSignals(True)
+                            strip._speed_spin.setValue(seq_speed)
+                            strip._speed_spin.blockSignals(False)
+                        else:
+                            speed = ch.state.speed
+                            cfg_ch.speed = speed
+                            cfg_ch.normal_speed = speed
+                            strip._true_speed = speed
+                            strip._speed_spin.blockSignals(True)
+                            strip._speed_spin.setValue(speed)
+                            strip._speed_spin.blockSignals(False)
         self.config.tempo = bpm
 
     def _gui_quantize_changed(self, idx: int):
@@ -1304,6 +1327,7 @@ class AppController:
     def _gui_channel_param(self, row: int, param: str, value):
         ch = self.config.channels[row]
         if param == "mode":
+            old_mode = ch.mode
             ch.mode = value
             if self.engine:
                 ech = self.engine.channels[row]
@@ -1317,6 +1341,16 @@ class AppController:
             if self.window:
                 strip = self.window.channel_view.get_strip(row)
                 if value == PlaybackMode.SEQ:
+                    # Save current BPM speed and switch to SEQ default 1.0
+                    ch.normal_speed = ch.speed
+                    seq_speed = 1.0
+                    ch.speed = seq_speed
+                    if self.engine:
+                        self.engine.channels[row].state.speed = seq_speed
+                    strip._true_speed = seq_speed
+                    strip._speed_spin.blockSignals(True)
+                    strip._speed_spin.setValue(seq_speed)
+                    strip._speed_spin.blockSignals(False)
                     cols = self.config.grid_columns
                     ch.steps = cols
                     if self.engine:
@@ -1327,6 +1361,16 @@ class AppController:
                     strip._steps_spin.setEnabled(False)
                     strip._waveform.set_grid_columns(cols)
                 else:
+                    # Restore the BPM speed when leaving SEQ mode
+                    if old_mode == PlaybackMode.SEQ:
+                        restored = ch.normal_speed
+                        ch.speed = restored
+                        if self.engine:
+                            self.engine.channels[row].state.speed = restored
+                        strip._true_speed = restored
+                        strip._speed_spin.blockSignals(True)
+                        strip._speed_spin.setValue(restored)
+                        strip._speed_spin.blockSignals(False)
                     strip._steps_spin.setEnabled(True)
         elif param == "stop":
             if self.engine:
@@ -1360,6 +1404,8 @@ class AppController:
             ch.gain = value
         elif param == "speed":
             ch.speed = value
+            if ch.mode != PlaybackMode.SEQ:
+                ch.normal_speed = value
             if self.engine:
                 # Only push to engine if no staged sample (old audio keeps its speed)
                 ech = self.engine.channels[row]
@@ -1494,10 +1540,10 @@ class AppController:
         if self.engine:
             self.engine.mixer.aux_fx_route = route
 
-    def _gui_aux_send(self, active: bool):
-        self.config.aux_send_toggle = active
+    def _gui_aux_send(self, level: float):
+        self.config.aux_send_level = max(0.0, min(1.0, level))
         if self.engine:
-            self.engine.mixer.aux_send_active = active
+            self.engine.mixer.aux_send_level = self.config.aux_send_level
 
     def _gui_master_volume(self, vol: float):
         self.config.master_volume = vol
@@ -1963,6 +2009,8 @@ class AppController:
         # Mixer aux / master controls
         self._midi_map.register_control(
             w.mixer_view._aux_fader, "aux.volume", "Aux Volume")
+        self._midi_map.register_control(
+            w.mixer_view._aux_send_fader, "aux.send", "Aux Send Level")
         self._midi_map.register_control(
             w.mixer_view._aux_mute_btn, "aux.mute", "Aux Mute")
         self._midi_map.register_control(
@@ -2457,6 +2505,9 @@ class AppController:
             if parts[1] == "volume":
                 self.midi.set_param_callback(param_path,
                     lambda v: self._gui_aux_volume(v))
+            elif parts[1] == "send":
+                self.midi.set_param_callback(param_path,
+                    lambda v: self._gui_aux_send(v))
             elif parts[1] == "mute":
                 self.midi.set_param_callback(param_path,
                     lambda v: self._gui_aux_mute(v > 0.5))
@@ -2591,7 +2642,7 @@ class AppController:
         self.engine.set_aux_volume(self.config.aux_volume)
         self.engine.mixer.aux_mute = self.config.aux_mute
         self.engine.mixer.aux_fx_route = self.config.aux_fx_route
-        self.engine.mixer.aux_send_active = self.config.aux_send_toggle
+        self.engine.mixer.aux_send_level = self.config.aux_send_level
 
         for i, grp in enumerate(self.config.groups):
             self.engine.set_group_volume(i, grp.volume)
@@ -2679,7 +2730,7 @@ class AppController:
         self.engine.set_aux_volume(self.config.aux_volume)
         self.engine.mixer.aux_mute = self.config.aux_mute
         self.engine.mixer.aux_fx_route = self.config.aux_fx_route
-        self.engine.mixer.aux_send_active = self.config.aux_send_toggle
+        self.engine.mixer.aux_send_level = self.config.aux_send_level
 
         for i, grp in enumerate(self.config.groups):
             self.engine.set_group_volume(i, grp.volume)
@@ -2899,6 +2950,7 @@ class AppController:
             gc.set_fx_route(grp.fx_route)
 
         # AUX channel
+        w.mixer_view.set_aux_send(self.config.aux_send_level)
         w.mixer_view.set_aux_mute(self.config.aux_mute)
         w.mixer_view.set_aux_fx_route(self.config.aux_fx_route)
 
