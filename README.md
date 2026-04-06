@@ -34,8 +34,9 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 - **Up to 16 rows** with independent sample playback, each synced to a master tempo
 - **4 group buses** with volume/send faders, mute, solo, and FX routing (OFF / FX1 / FX2)
 - **Group-exclusive playback**: Only one row per group can play at a time — triggering a new row automatically stops any other playing row in the same group (allows simultaneous playback across different groups)
-- **Playback modes**: Loop, Reverse, Shot (one-shot), Slice (hold-to-play with 2-button loop), SEQ (step sequencer)
+- **Playback modes**: Loop, Reverse, Shot (one-shot), Slice (hold-to-play with 2-button loop), SEQ (step sequencer), **Pitch** (each grid column plays the sample at a different pitch)
 - **Per-channel controls**: Speed (halve/double + continuous), gain, attack/release envelope, start/end selection, transpose (time-stretch-free pitch shift, −24 to +24 semitones), steps (1–32 for SEQ/slice mapping), velocity, filter sweep
+- **Pitch mode extras**: 5 musical scale maps (Major, Minor, Pentatonic, Chord, Chromatic), root offset (−24 to +24 st), and a **HOLD** toggle that loops the sample continuously instead of one-shot behaviour
 - **Snap Speed to Rate**: When loading a sample, speed auto-snaps to the nearest ½× / 2× step of 1.0 (e.g. 0.25×, 0.5×, 1.0×, 2.0×, 4.0×, 8.0×) for clean grid-synced loops — toggle on/off in Setup → Grid
 - **Live sample staging**: Dragging a new sample onto a playing row updates the waveform display immediately but keeps the old audio and grid LEDs looping — the new sample loads on the next trigger, group stop, or ALL stop
 - **Waveform display** with playback cursor, selection markers, grid column dividers, active column highlight, group color coding, and two-pass dim/bright rendering (out-of-loop content shown dim, active loop region shown bright)
@@ -140,7 +141,7 @@ Double-click run.bat
 
 **macOS:**
 ```
-Double-click run.command in Finder
+Right-click open run.command in Finder
 ```
 (If blocked, right-click → Open, or run `chmod +x run.command` first.)
 
@@ -253,7 +254,8 @@ python generate_icon.py
 | python-osc | OSC networking |
 | pymonome | Monome grid communication (optional) |
 | resampy | High-quality sample rate conversion |
-| scipy | Signal processing (filters) || librosa | Time-stretch-free pitch shifting |
+| scipy | Signal processing (filters) |
+| librosa | Time-stretch-free pitch shifting |
 ---
 
 ## Project Structure
@@ -361,11 +363,12 @@ Each channel row consists of a control bar at the top and a **waveform display**
 |---------|----------|-------------|
 | *(left edge)* | Color bar + row number | Group color indicator and 1-based channel number |
 | **SAMPLE** | Sample name label (clickable) + **LOAD** button | Shows loaded filename; click name to pick from history, LOAD to browse files |
-| **MODE** | Dropdown: LOOP / REV / SHOT / SLICE / SEQ | Playback mode selector |
+| **MODE** | Dropdown: LOOP / RVRS / SHOT / SLCE / SQNC / PTCH | Playback mode selector |
 | **GROUP** | Buttons 1–4 | Assigns the channel to a group (one active at a time) |
 | **GAIN** | Horizontal fader | Channel output level (0.0–1.0) |
 | **RATE** | Speed spinner (0.00–8.00×) + **-½** + **+2×** | Playback speed; halve or double with shortcut buttons |
-| **PITCH** | Semitone spinner (−24 to +24 st) | Time-stretch-free pitch shift |
+| **PITCH** | Semitone spinner (−24 to +24 st) | Transpose pitch shift (all modes). In PTCH mode, acts as root offset — shifts all scale pitches up or down |
+| **SCALE** *(PTCH mode)* | Scale dropdown + **HOLD** toggle | Scale map (Major / Minor / Penta / Chord / Chromatic) and hold-to-loop toggle (visible in PTCH mode only) |
 | **STEP** | Integer spinner (1–32) | Slice-mapping resolution (locked to grid columns in SEQ mode) |
 | **CONTROL** | **MUTE** + **STOP** | MUTE silences channel output without stopping playback; STOP immediately ends playback |
 
@@ -475,7 +478,7 @@ Rows are assigned to one of 4 groups (yellow, green, red, blue). **Only one row 
 
 - If row 1 and row 2 are both in Group 1 and row 1 is playing, pressing a button on row 2 will **automatically stop row 1** and start row 2.
 - Rows in **different** groups play simultaneously — you can have up to 4 samples playing at once (one per group).
-- This applies to all playback modes (Loop, Reverse, Shot, Slice, SEQ) and to pattern recorder playback.
+- This applies to all playback modes (Loop, Reverse, Shot, Slice, SEQ, Pitch) and to pattern recorder playback.
 - To change a row's group, use the group selector in the channel strip.
 
 #### Stopping Playback
@@ -823,7 +826,7 @@ The Tools → Record tab lets you capture audio output:
 
 ### Playback Modes
 
-Each channel can operate in one of five modes, selected via the MODE section in the channel strip:
+Each channel can operate in one of six modes, selected via the MODE section in the channel strip:
 
 | Mode | Behaviour |
 |------|----------|
@@ -832,6 +835,21 @@ Each channel can operate in one of five modes, selected via the MODE section in 
 | **Shot** | One-shot playback — plays once from the triggered position to the end, then stops. |
 | **Slice** | Hold-to-play mode. Hold one button to play from that column. Hold two buttons simultaneously to create a latched sub-loop between them. Press any button while latched to stop. |
 | **SEQ** | Step sequencer mode. Toggle grid columns on/off to define active steps. The sample is divided into equal slices and each active step triggers its slice in order, synced to the master clock. The STEP count is locked to the grid column count in SEQ mode. |
+| **Pitch** | Each grid column plays the sample at a different pitch based on the selected scale map. Uses rate-based pitch shifting (higher pitch = faster playback). Choose a scale (Major, Minor, Pentatonic, Chord, Chromatic), set a root offset (−24 to +24 st) to transpose the whole keyboard, and toggle **HOLD** to loop the sample continuously instead of one-shot. All columns light DIM; the active column lights BRIGHT. |
+
+#### Pitch Scale Maps
+
+The SCALE selector in PTCH mode determines which semitone intervals are assigned across the grid columns. All values are in semitones relative to the root (0 = unison). On an 8-column grid, columns use the first 8 entries; on 16 columns, all 16 are used.
+
+| Scale | Columns 1–8 | Columns 9–16 | Character |
+|-------|------------|-------------|----------|
+| **MAJOR** | 0, 2, 4, 5, 7, 9, 11, 12 | 14, 16, 17, 19, 21, 23, 24, 26 | Two octaves of the major scale (Ionian). Bright, familiar, covers the most common melodic intervals. |
+| **MINOR** | 0, 2, 3, 5, 7, 8, 10, 12 | 14, 15, 17, 19, 20, 22, 24, 26 | Two octaves of the natural minor scale (Aeolian). Darker tonality, good for moody or cinematic textures. |
+| **PENTA** | 0, 2, 4, 7, 9, 12, 14, 16 | 19, 21, 24, 26, 28, 31, 33, 36 | Major pentatonic spanning ~3 octaves. Wider intervals, no dissonance — everything sounds good together. |
+| **CHORD** | 0, 1, 2, 3, 5, 7, 9, 10 | 12, 13, 14, 15, 17, 19, 21, 22 | Dense chromatic cluster in the lower range, spreading into wider intervals. Useful for building chord voicings and clusters. |
+| **CHROM** | 0, 1, 2, 3, 4, 5, 6, 7 | 8, 9, 10, 11, 12, 13, 14, 15 | Pure chromatic — every semitone in order. Maximum pitch resolution, one octave per 12 columns. |
+
+The **root offset** (PITCH spinner, −24 to +24 st) shifts every column’s pitch up or down by a fixed amount, effectively transposing the entire keyboard.
 
 ### UI Scale and View Options
 
