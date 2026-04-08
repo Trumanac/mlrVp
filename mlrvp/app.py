@@ -344,7 +344,7 @@ class AppController:
                     self.engine.stop_channel(i)
                     self.grid.clear_row_leds(i, self.config.grid_columns)
                     self.load_sample_to_channel(i, pending)
-                col = beat_int % columns
+                col = beat_int % columns if columns > 0 else 0
                 ch._seq_column = col
                 if col in ch._seq_steps:
                     # Retrigger sample from the beginning on each active step
@@ -680,7 +680,10 @@ class AppController:
 
         rows = self.grid.info.rows - self.grid._monome_row_offset  # data rows
         cols = self.grid.info.columns
-        self.config.row_count = rows
+        # Clamp to engine channel count to avoid index-out-of-bounds
+        if self.engine:
+            rows = min(rows, len(self.engine.channels))
+        self.config.row_count = max(1, rows)
         self.config.grid_columns = cols
 
         for ch in self.config.channels:
@@ -2370,12 +2373,12 @@ class AppController:
                 self.midi.set_param_callback(param_path,
                     lambda v, r=row: QTimer.singleShot(
                         0, lambda: self.window.channel_view.get_strip(r)._on_half_speed()
-                    ) if v > 0.5 else None)
+                    ) if v > 0.5 and self.window else None)
             elif param == "rate_double":
                 self.midi.set_param_callback(param_path,
                     lambda v, r=row: QTimer.singleShot(
                         0, lambda: self.window.channel_view.get_strip(r)._on_double_speed()
-                    ) if v > 0.5 else None)
+                    ) if v > 0.5 and self.window else None)
             elif param == "stop":
                 self.midi.set_param_callback(param_path,
                     lambda v, r=row: QTimer.singleShot(
@@ -2971,54 +2974,56 @@ class AppController:
             return
 
         ControlDisplaySettings.notifications_suspended = True
-        w = self.window
+        try:
+            w = self.window
 
-        # Transport
-        w.transport.set_tempo(self.config.tempo)
-        w.transport.set_quantize(int(self.config.quantize))
+            # Transport
+            w.transport.set_tempo(self.config.tempo)
+            w.transport.set_quantize(int(self.config.quantize))
 
-        # Channel strips
-        for i in range(self.config.row_count):
-            strip = w.channel_view.get_strip(i)
-            strip.set_state(self.config.channels[i])
-            # Sync virtual grid row color to group
-            w.virtual_grid.set_row_color(i, self.config.channels[i].group)
+            # Channel strips
+            for i in range(self.config.row_count):
+                strip = w.channel_view.get_strip(i)
+                strip.set_state(self.config.channels[i])
+                # Sync virtual grid row color to group
+                w.virtual_grid.set_row_color(i, self.config.channels[i].group)
 
-        w.channel_view.set_visible_rows(self.config.row_count)
+            w.channel_view.set_visible_rows(self.config.row_count)
 
-        # Mixer groups
-        for i, grp in enumerate(self.config.groups):
-            gc = w.mixer_view.get_group_channel(i)
-            gc.set_volume(grp.volume)
-            gc.set_send(grp.send)
-            gc.set_mute(grp.mute)
-            gc.set_fx_route(grp.fx_route)
+            # Mixer groups
+            for i, grp in enumerate(self.config.groups):
+                gc = w.mixer_view.get_group_channel(i)
+                gc.set_volume(grp.volume)
+                gc.set_send(grp.send)
+                gc.set_mute(grp.mute)
+                gc.set_fx_route(grp.fx_route)
 
-        # AUX channel
-        w.mixer_view.set_aux_send(self.config.aux_send_level)
-        w.mixer_view.set_aux_mute(self.config.aux_mute)
-        w.mixer_view.set_aux_fx_route(self.config.aux_fx_route)
+            # AUX channel
+            w.mixer_view.set_aux_send(self.config.aux_send_level)
+            w.mixer_view.set_aux_mute(self.config.aux_mute)
+            w.mixer_view.set_aux_fx_route(self.config.aux_fx_route)
 
-        # Effects
-        w.effects_view.delay_panel.set_state(self.config.delay)
-        w.effects_view.tape_delay_panel.set_state(self.config.tape_delay)
-        w.effects_view.filter_a_panel.set_state(self.config.filter_a)
-        w.effects_view.filter_b_panel.set_state(self.config.filter_b)
-        w.effects_view.mod_panel.set_state(self.config.mod)
-        w.effects_view.set_effect_route("delay", self.config.delay.fx_route)
-        w.effects_view.set_effect_route("tape_delay", self.config.tape_delay.fx_route)
-        w.effects_view.set_effect_route("filter_a", self.config.filter_a.fx_route)
-        w.effects_view.set_effect_route("filter_b", self.config.filter_b.fx_route)
-        w.effects_view.set_effect_route("mod", self.config.mod_route)
+            # Effects
+            w.effects_view.delay_panel.set_state(self.config.delay)
+            w.effects_view.tape_delay_panel.set_state(self.config.tape_delay)
+            w.effects_view.filter_a_panel.set_state(self.config.filter_a)
+            w.effects_view.filter_b_panel.set_state(self.config.filter_b)
+            w.effects_view.mod_panel.set_state(self.config.mod)
+            w.effects_view.set_effect_route("delay", self.config.delay.fx_route)
+            w.effects_view.set_effect_route("tape_delay", self.config.tape_delay.fx_route)
+            w.effects_view.set_effect_route("filter_a", self.config.filter_a.fx_route)
+            w.effects_view.set_effect_route("filter_b", self.config.filter_b.fx_route)
+            w.effects_view.set_effect_route("mod", self.config.mod_route)
 
-        # Rack modules state recall
-        w.effects_view.reel_module.set_state(self.config.reel_to_reel)
-        w.effects_view.cassette_module.set_state(self.config.cassette_tape)
-        w.effects_view.vhs_module.set_state(self.config.vhs)
-        w.effects_view.vinyl_module.set_state(self.config.vinyl)
-        w.effects_view.vinyl_b_module.set_state(self.config.vinyl_b)
-        w.effects_view.compressor_module.set_state(self.config.compressor_b)
-        ControlDisplaySettings.notifications_suspended = False
+            # Rack modules state recall
+            w.effects_view.reel_module.set_state(self.config.reel_to_reel)
+            w.effects_view.cassette_module.set_state(self.config.cassette_tape)
+            w.effects_view.vhs_module.set_state(self.config.vhs)
+            w.effects_view.vinyl_module.set_state(self.config.vinyl)
+            w.effects_view.vinyl_b_module.set_state(self.config.vinyl_b)
+            w.effects_view.compressor_module.set_state(self.config.compressor_b)
+        finally:
+            ControlDisplaySettings.notifications_suspended = False
 
     # ------------------------------------------------------------------ #
     #  Periodic UI update                                                 #

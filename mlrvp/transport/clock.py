@@ -4,10 +4,13 @@ Provides a stable tempo clock with beat/bar tracking and quantized triggering.
 """
 
 import time
+import logging
 import threading
 from typing import Callable, Optional
 
 from mlrvp.config import QuantizeMode
+
+log = logging.getLogger("mlrvp")
 
 
 class MasterClock:
@@ -145,8 +148,8 @@ class MasterClock:
                 for cb in self._beat_callbacks:
                     try:
                         cb(current_beat_int, self._beat_position)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.warning("Beat callback error: %s", exc)
 
                 # Apply pending tempo change on beat
                 if self._next_tempo is not None:
@@ -161,8 +164,8 @@ class MasterClock:
                 for cb in self._bar_callbacks:
                     try:
                         cb(current_bar)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.warning("Bar callback error: %s", exc)
 
             # Check quantize boundary
             quant_div = quant_divisions.get(self.quantize, 0.25)
@@ -173,15 +176,15 @@ class MasterClock:
                     for cb in self._quantize_callbacks:
                         try:
                             cb(self._beat_position)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            log.warning("Quantize callback error: %s", exc)
 
             # Tick callbacks
             for cb in self._tick_callbacks:
                 try:
                     cb(self._beat_position, self.tempo)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("Tick callback error: %s", exc)
 
             # Sleep ~1ms for resolution
             time.sleep(0.001)

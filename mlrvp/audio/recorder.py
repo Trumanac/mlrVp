@@ -60,12 +60,17 @@ class Recorder:
         if not self._recording or self._buffer is None:
             return input_data if self.state.thru else None
 
+        # Snapshot shared state to avoid races with stop() on the GUI thread
+        buffer = self._buffer
+        if buffer is None:
+            return input_data if self.state.thru else None
+
         thru_output = input_data.copy() if self.state.thru else None
 
         frames_to_write = min(len(input_data), self._target_frames - self._write_pos)
 
         if frames_to_write > 0:
-            buf = self._buffer.data
+            buf = buffer.data
             # Handle channel mismatch
             if input_data.shape[1] >= 2:
                 buf[self._write_pos:self._write_pos + frames_to_write] = input_data[:frames_to_write, :2]

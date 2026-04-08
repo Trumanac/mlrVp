@@ -133,9 +133,10 @@ class _CRTDisplay(QWidget):
             return
         path = QPainterPath()
         n = len(buf)
+        n_1 = max(1, n - 1)
         zoom = self._zoom * 2.0
         for i, s in enumerate(buf):
-            x = ox + (i / (n - 1)) * iw
+            x = ox + (i / n_1) * iw
             y = oy + ih / 2 - s * zoom * ih / 2
             y = max(oy, min(oy + ih, y))
             if i == 0:

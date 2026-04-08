@@ -9,7 +9,7 @@ import threading
 from typing import Optional, Callable
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QTimer
 
 log = logging.getLogger("mlrvp")
 
@@ -36,6 +36,8 @@ class MidiHandler(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._lock = threading.Lock()
+        self._closed = False
         self._midi_inputs: dict[int, object] = {}  # port -> rtmidi.MidiIn
         self._midi_out = None
         self._mappings: dict[str, MidiMapping] = {}  # param_path -> mapping
@@ -103,6 +105,7 @@ class MidiHandler(QObject):
             print(f"MIDI output error: {e}")
 
     def close(self):
+        self._closed = True
         for port, midi_in in list(self._midi_inputs.items()):
             try:
                 midi_in.close_port()
@@ -116,25 +119,29 @@ class MidiHandler(QObject):
     def add_mapping(self, param_path: str, mapping: MidiMapping):
         """Add a MIDI CC mapping for a parameter."""
         mapping.param_path = param_path
-        self._mappings[param_path] = mapping
-        self._cc_to_param[(mapping.channel, mapping.cc)] = param_path
+        with self._lock:
+            self._mappings[param_path] = mapping
+            self._cc_to_param[(mapping.channel, mapping.cc)] = param_path
 
     def remove_mapping(self, param_path: str):
         """Remove a MIDI mapping."""
-        if param_path in self._mappings:
-            m = self._mappings[param_path]
-            key = (m.channel, m.cc)
-            if key in self._cc_to_param:
-                del self._cc_to_param[key]
-            del self._mappings[param_path]
+        with self._lock:
+            if param_path in self._mappings:
+                m = self._mappings[param_path]
+                key = (m.channel, m.cc)
+                if key in self._cc_to_param:
+                    del self._cc_to_param[key]
+                del self._mappings[param_path]
 
     def set_param_callback(self, param_path: str, callback: Callable):
         """Set callback for when a mapped parameter changes via MIDI."""
-        self._param_callbacks[param_path] = callback
+        with self._lock:
+            self._param_callbacks[param_path] = callback
 
     def get_param_callback(self, param_path: str) -> Optional[Callable]:
         """Return the current callback for param_path, or None."""
-        return self._param_callbacks.get(param_path)
+        with self._lock:
+            return self._param_callbacks.get(param_path)
 
     def start_learn(self, param_path: str, callback: Optional[Callable] = None):
         """Start MIDI learn mode for a parameter.
@@ -165,8 +172,13 @@ class MidiHandler(QObject):
 
     def _midi_callback(self, event, data=None):
         """Handle incoming MIDI messages from rtmidi (runs on background thread)."""
-        message, delta_time = event
-        self._process_message(message)
+        if self._closed:
+            return
+        try:
+            message, delta_time = event
+            self._process_message(message)
+        except Exception as e:
+            log.error(f"MIDI callback error: {e}")
 
     def _process_message(self, message):
         """Core message processing — handles learn and normal CC mapping."""
@@ -195,52 +207,51 @@ class MidiHandler(QObject):
             return
 
         # ------ Normal operation ------
-        key = (channel, data1)
-        if key not in self._cc_to_param:
-            return
-        param_path = self._cc_to_param[key]
-        mapping = self._mappings[param_path]
+        with self._lock:
+            key = (channel, data1)
+            if key not in self._cc_to_param:
+                return
+            param_path = self._cc_to_param[key]
+            mapping = self._mappings.get(param_path)
+            if mapping is None:
+                return
 
+        scaled = None
         if msg_type == 0xB0:
             value = data2
             if mapping.toggle:
-                # Toggle on any CC > 0
                 if value > 0:
                     cur = self._toggle_state.get(param_path, False)
                     nxt = not cur
                     self._toggle_state[param_path] = nxt
                     scaled = mapping.max_val if nxt else mapping.min_val
-                    if param_path in self._param_callbacks:
-                        self._param_callbacks[param_path](scaled)
             else:
                 normalized = value / 127.0
                 scaled = mapping.min_val + normalized * (mapping.max_val - mapping.min_val)
-                if param_path in self._param_callbacks:
-                    self._param_callbacks[param_path](scaled)
 
         elif msg_type == 0x90:
             velocity = data2
             if mapping.toggle:
-                # Toggle on note-on with velocity > 0
                 if velocity > 0:
                     cur = self._toggle_state.get(param_path, False)
                     nxt = not cur
                     self._toggle_state[param_path] = nxt
                     scaled = mapping.max_val if nxt else mapping.min_val
-                    if param_path in self._param_callbacks:
-                        self._param_callbacks[param_path](scaled)
             else:
                 normalized = velocity / 127.0
                 scaled = mapping.min_val + normalized * (mapping.max_val - mapping.min_val)
-                if param_path in self._param_callbacks:
-                    self._param_callbacks[param_path](scaled)
 
         elif msg_type == 0x80:
             if not mapping.toggle:
-                # Momentary mode: note off → min value
                 scaled = mapping.min_val
-                if param_path in self._param_callbacks:
-                    self._param_callbacks[param_path](scaled)
+
+        # Dispatch callback on Qt main thread (never from rtmidi thread)
+        if scaled is not None:
+            with self._lock:
+                cb = self._param_callbacks.get(param_path)
+            if cb is not None:
+                val = scaled
+                QTimer.singleShot(0, lambda cb=cb, v=val: cb(v))
 
     def _finish_learn(self, channel: int, cc: int):
         """Complete a MIDI learn — creates mapping and emits signal on Qt thread."""
@@ -263,37 +274,42 @@ class MidiHandler(QObject):
             self._midi_out.send_message(msg)
 
     def get_mappings(self) -> dict[str, MidiMapping]:
-        return self._mappings.copy()
+        with self._lock:
+            return self._mappings.copy()
 
     def get_mappings_serializable(self) -> list[dict]:
         """Get mappings as serializable dicts for preset save."""
-        result = []
-        for path, m in self._mappings.items():
-            result.append({
-                "param_path": m.param_path,
-                "channel": m.channel,
-                "cc": m.cc,
-                "min_val": m.min_val,
-                "max_val": m.max_val,
-                "toggle": m.toggle,
-            })
-        return result
+        with self._lock:
+            result = []
+            for path, m in self._mappings.items():
+                result.append({
+                    "param_path": m.param_path,
+                    "channel": m.channel,
+                    "cc": m.cc,
+                    "min_val": m.min_val,
+                    "max_val": m.max_val,
+                    "toggle": m.toggle,
+                })
+            return result
 
     def load_mappings(self, mappings_data: list[dict]):
         """Load mappings from serialized data."""
-        self._mappings.clear()
-        self._cc_to_param.clear()
+        with self._lock:
+            self._mappings.clear()
+            self._cc_to_param.clear()
         for m_data in mappings_data:
             mapping = MidiMapping(**m_data)
             self.add_mapping(mapping.param_path, mapping)
 
     def update_mapping_range(self, param_path: str, min_val: float, max_val: float):
         """Update the min/max range for an existing mapping."""
-        if param_path in self._mappings:
-            self._mappings[param_path].min_val = min_val
-            self._mappings[param_path].max_val = max_val
+        with self._lock:
+            if param_path in self._mappings:
+                self._mappings[param_path].min_val = min_val
+                self._mappings[param_path].max_val = max_val
 
     def update_mapping_toggle(self, param_path: str, toggle: bool):
         """Update the toggle mode for an existing mapping."""
-        if param_path in self._mappings:
-            self._mappings[param_path].toggle = toggle
+        with self._lock:
+            if param_path in self._mappings:
+                self._mappings[param_path].toggle = toggle

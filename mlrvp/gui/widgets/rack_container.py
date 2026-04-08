@@ -117,7 +117,7 @@ class RackContainer(QScrollArea):
 
     def add_module(self, module: RackModuleBase, index: int = -1) -> bool:
         """Insert a module into the rack.  Returns False if the rack is full."""
-        if len(self._modules) > MAX_MODULES_PER_RACK:
+        if len(self._modules) >= MAX_MODULES_PER_RACK:
             return False
         if self._global_limit_fn and self._global_limit_fn():
             return False

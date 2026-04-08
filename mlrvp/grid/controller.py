@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from mlrvp.config import MAX_ROWS, MAX_COLUMNS, LED_OFF, LED_DIM, LED_MED, LED_BRIGHT
 from mlrvp.grid.midi_grid import MidiGridAdapter, scan_midi_grid_devices
 
+from PySide6.QtCore import QTimer
+
 log = logging.getLogger("mlrvp")
 
 
@@ -142,14 +144,16 @@ class GridController:
                 self._connected = False
 
     def _on_midi_grid_button(self, x: int, y: int, state: int):
-        """Forward MIDI grid button events to the main callback."""
-        if self._button_callback:
-            self._button_callback(x, y, state)
+        """Forward MIDI grid button events to the main callback (on Qt thread)."""
+        cb = self._button_callback
+        if cb:
+            QTimer.singleShot(0, lambda: cb(x, y, state))
 
     def _on_midi_grid_control_button(self, btn_idx: int, state: int):
-        """Forward MIDI grid control button events (top row CC)."""
-        if self._control_button_callback:
-            self._control_button_callback(btn_idx, state)
+        """Forward MIDI grid control button events (on Qt thread)."""
+        cb = self._control_button_callback
+        if cb:
+            QTimer.singleShot(0, lambda: cb(btn_idx, state))
 
     @staticmethod
     def scan_midi_grids() -> list[dict]:
@@ -184,13 +188,15 @@ class GridController:
                 def on_grid_key(self, x, y, s):
                     if self.controller._monome_row_offset > 0 and y == 0:
                         # Top row → control buttons
-                        if self.controller._control_button_callback:
-                            self.controller._control_button_callback(x, s)
-                    elif self.controller._button_callback:
-                        # Data rows: offset y for channel mapping
-                        self.controller._button_callback(
-                            x, y - self.controller._monome_row_offset, s
-                        )
+                        cb = self.controller._control_button_callback
+                        if cb:
+                            QTimer.singleShot(0, lambda: cb(x, s))
+                    else:
+                        cb = self.controller._button_callback
+                        if cb:
+                            # Data rows: offset y for channel mapping
+                            adj_y = y - self.controller._monome_row_offset
+                            QTimer.singleShot(0, lambda: cb(x, adj_y, s))
 
                 def on_grid_disconnect(self):
                     self.controller._connected = False

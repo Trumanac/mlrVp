@@ -10,6 +10,18 @@ from mlrvp.config import (
     HallReverbState, PlateReverbState, GlueCompressorState, EtherDriftState,
 )
 
+# Import Numba JIT kernels — fall back to None if unavailable
+try:
+    from mlrvp.audio._dsp_kernels import (
+        moog_ladder_kernel as _moog_jit,
+        phaser_kernel as _phaser_jit,
+        compressor_kernel as _compressor_jit,
+        glue_compressor_kernel as _glue_jit,
+    )
+    _HAS_NUMBA = True
+except ImportError:
+    _HAS_NUMBA = False
+
 
 class BiquadFilter:
     """Simple biquad filter for LP/HP in the delay feedback path."""
@@ -20,6 +32,10 @@ class BiquadFilter:
         self.a = np.array([1.0, 0.0, 0.0], dtype=np.float64)
         # lfilter state for both channels at once: shape (2, 2) = (order, channels)
         self._zi = np.zeros((2, 2), dtype=np.float64)
+        # Pre-allocated conversion buffers to avoid per-call astype allocations
+        from mlrvp.config import BUFFER_SIZE
+        self._f64_buf = np.zeros((BUFFER_SIZE, 2), dtype=np.float64)
+        self._f32_buf = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
 
     def set_lowpass(self, freq: float, q: float = 0.707):
         freq = max(20.0, min(freq, self.sr * 0.49))
@@ -70,9 +86,18 @@ class BiquadFilter:
 
     def process(self, data: np.ndarray) -> np.ndarray:
         """Process stereo data using scipy lfilter — both channels at once."""
+        n = len(data)
+        # Resize pre-allocated buffers if needed
+        if n > self._f64_buf.shape[0]:
+            self._f64_buf = np.zeros((n, 2), dtype=np.float64)
+            self._f32_buf = np.zeros((n, 2), dtype=np.float32)
+        buf64 = self._f64_buf[:n]
+        buf64[:] = data  # float32 → float64 in-place (no temp alloc)
         filtered, self._zi = lfilter(
-            self.b, self.a, data.astype(np.float64), axis=0, zi=self._zi)
-        return filtered.astype(np.float32)
+            self.b, self.a, buf64, axis=0, zi=self._zi)
+        buf32 = self._f32_buf[:n]
+        buf32[:] = filtered  # float64 → float32 in-place (no temp alloc)
+        return buf32
 
     def reset(self):
         self._zi = np.zeros((2, 2), dtype=np.float64)
@@ -289,7 +314,9 @@ class GlobalFilter:
         # Drive (soft saturation, normalised so unity drive = unity gain)
         if self.state.drive > 0.01:
             drive_amt = 1.0 + self.state.drive * 7.0
-            out = np.tanh(out * drive_amt) / np.tanh(drive_amt)
+            np.multiply(out, drive_amt, out=out)
+            np.tanh(out, out=out)
+            out *= np.float32(1.0 / math.tanh(drive_amt))
         # Output gain (±12 dB)
         out_db = (self.state.output_gain - 0.5) * 24.0
         if abs(out_db) > 0.05:
@@ -326,7 +353,6 @@ class MoogLadderFilter:
         self.state = state
 
     def process(self, data: np.ndarray) -> np.ndarray:
-        _tanh = math.tanh          # local alias — avoids attribute lookup per call
         n = len(data)
         if n != self._buf_size:
             self._buf_size = n
@@ -341,46 +367,60 @@ class MoogLadderFilter:
         # One-pole coefficient (bilinear approximation) — use math.exp/pi
         g = 1.0 - math.exp(-2.0 * math.pi * cutoff / self.sr)
 
-        for ch in range(2):
-            # Python list: O(1) indexed access without numpy __getitem__ overhead
-            x_list = data[:, ch].tolist()
-            y0 = float(self._y[0, ch])
-            y1 = float(self._y[1, ch])
-            y2 = float(self._y[2, ch])
-            y3 = float(self._y[3, ch])
-            fb = float(self._fb[ch])
-            result = [0.0] * n
+        if _HAS_NUMBA:
+            # Numba JIT path — ~20x faster than pure Python
+            for ch in range(2):
+                x_arr = np.ascontiguousarray(data[:, ch], dtype=np.float64)
+                result = np.empty(n, dtype=np.float64)
+                y0, y1, y2, y3, fb = _moog_jit(
+                    x_arr, n, g, resonance, drive, do_drive,
+                    float(self._y[0, ch]), float(self._y[1, ch]),
+                    float(self._y[2, ch]), float(self._y[3, ch]),
+                    float(self._fb[ch]), result,
+                )
+                self._y[0, ch] = y0
+                self._y[1, ch] = y1
+                self._y[2, ch] = y2
+                self._y[3, ch] = y3
+                self._fb[ch] = fb
+                out[:, ch] = result
+        else:
+            _tanh = math.tanh
+            for ch in range(2):
+                x_list = data[:, ch].tolist()
+                y0 = float(self._y[0, ch])
+                y1 = float(self._y[1, ch])
+                y2 = float(self._y[2, ch])
+                y3 = float(self._y[3, ch])
+                fb = float(self._fb[ch])
+                result = [0.0] * n
 
-            # Seed the cached tanh values for the initial stage states.
-            # Each ty_k is kept up-to-date at end of every iteration so the
-            # next iteration's tanh(y_k) lookup is free — no redundant call.
-            ty0 = _tanh(y0)
-            ty1 = _tanh(y1)
-            ty2 = _tanh(y2)
-            ty3 = _tanh(y3)
+                ty0 = _tanh(y0)
+                ty1 = _tanh(y1)
+                ty2 = _tanh(y2)
+                ty3 = _tanh(y3)
 
-            for i in range(n):
-                xn = x_list[i]
-                if do_drive:
-                    xn = _tanh(xn * drive)
-                xn -= resonance * fb
+                for i in range(n):
+                    xn = x_list[i]
+                    if do_drive:
+                        xn = _tanh(xn * drive)
+                    xn -= resonance * fb
 
-                # 4-pole ladder — 5 tanh calls per sample (down from 9)
-                txn = _tanh(xn)
-                ny0 = y0 + g * (txn - ty0);  ty0 = _tanh(ny0)
-                ny1 = y1 + g * (ty0 - ty1);  ty1 = _tanh(ny1)
-                ny2 = y2 + g * (ty1 - ty2);  ty2 = _tanh(ny2)
-                ny3 = y3 + g * (ty2 - ty3);  ty3 = _tanh(ny3)
-                y0, y1, y2, y3 = ny0, ny1, ny2, ny3
-                fb = ny3
-                result[i] = ny3
+                    txn = _tanh(xn)
+                    ny0 = y0 + g * (txn - ty0);  ty0 = _tanh(ny0)
+                    ny1 = y1 + g * (ty0 - ty1);  ty1 = _tanh(ny1)
+                    ny2 = y2 + g * (ty1 - ty2);  ty2 = _tanh(ny2)
+                    ny3 = y3 + g * (ty2 - ty3);  ty3 = _tanh(ny3)
+                    y0, y1, y2, y3 = ny0, ny1, ny2, ny3
+                    fb = ny3
+                    result[i] = ny3
 
-            self._y[0, ch] = y0
-            self._y[1, ch] = y1
-            self._y[2, ch] = y2
-            self._y[3, ch] = y3
-            self._fb[ch] = fb
-            out[:, ch] = result
+                self._y[0, ch] = y0
+                self._y[1, ch] = y1
+                self._y[2, ch] = y2
+                self._y[3, ch] = y3
+                self._fb[ch] = fb
+                out[:, ch] = result
 
         return out
 
@@ -459,6 +499,8 @@ class TapeDelay:
         self._idx_intp = np.arange(buffer_size, dtype=np.intp)
         # Pre-allocated delayed sum buffer
         self._delayed_sum = np.zeros((buffer_size, 2), dtype=np.float32)
+        # Pre-allocated spring reverb buffer
+        self._spring_buf = np.empty((buffer_size, 2), dtype=np.float32)
         # Cache tone to avoid rebuilding filter every block
         self._last_tone: float = -1.0
 
@@ -529,7 +571,9 @@ class TapeDelay:
         fb_signal = delayed_sum * feedback
         if sat > 0.01:
             drive = 1.0 + sat * 3.0
-            fb_signal = np.tanh(fb_signal * drive) / np.float32(max(math.tanh(drive), 0.01))
+            np.multiply(fb_signal, drive, out=fb_signal)
+            np.tanh(fb_signal, out=fb_signal)
+            fb_signal *= np.float32(1.0 / max(math.tanh(drive), 0.01))
 
         # Write input + feedback to buffer
         write_data = input_data + fb_signal
@@ -543,7 +587,8 @@ class TapeDelay:
         # Built-in spring reverb (allpass chain)
         spring_mix = self.state.spring_mix
         if spring_mix > 0.01:
-            spring = output.copy()
+            spring = self._spring_buf[:n] if n <= len(self._spring_buf) else np.empty((n, 2), dtype=np.float32)
+            spring[:] = output
             for ap in self._spring_aps:
                 spring = ap.process(spring)
             output = output * np.float32(1.0 - spring_mix * 0.5) + spring * np.float32(spring_mix * 0.5)
@@ -580,9 +625,9 @@ class Phaser:
         self.depth = 0.5
         self.feedback = 0.3
         self._phase = 0.0
-        # Per-stage, per-channel allpass state: [[x_prev_L, x_prev_R], ...]
-        self._ap_x = [[0.0, 0.0] for _ in range(stages)]
-        self._ap_y = [[0.0, 0.0] for _ in range(stages)]
+        # Per-stage, per-channel allpass state as numpy arrays for Numba compat
+        self._ap_x = np.zeros((stages, 2), dtype=np.float64)
+        self._ap_y = np.zeros((stages, 2), dtype=np.float64)
         # Feedback sample — last allpass output, per channel
         self._fb0 = 0.0
         self._fb1 = 0.0
@@ -597,56 +642,61 @@ class Phaser:
             self._out = np.empty((n, 2), dtype=np.float32)
         out = self._out
 
-        rps = self.rate / self.sr          # LFO phase increment per sample
+        rps = self.rate / self.sr
         phase = self._phase
-        # Cap feedback — allpass gain is 1, loop gain > ~0.88 causes ringing
         feedback = min(abs(self.feedback), 0.88)
         stages = self.stages
 
-        # Local references to avoid per-iteration attribute lookups
-        ap_x = self._ap_x
-        ap_y = self._ap_y
-        fb0 = self._fb0
-        fb1 = self._fb1
-        _pi2 = math.pi * 2.0
+        if _HAS_NUMBA:
+            # Numba JIT path
+            phase, fb0, fb1 = _phaser_jit(
+                data, n, out, rps, phase, feedback, stages,
+                self._ap_x, self._ap_y, self._fb0, self._fb1,
+            )
+            self._phase = phase
+            self._fb0 = fb0
+            self._fb1 = fb1
+        else:
+            ap_x = self._ap_x
+            ap_y = self._ap_y
+            fb0 = self._fb0
+            fb1 = self._fb1
+            _pi2 = math.pi * 2.0
 
-        for i in range(n):
-            # LFO → allpass coefficient c in (0.05, 0.95)
-            lfo = math.sin(_pi2 * phase) * self.depth
-            c = 0.5 + lfo * 0.4
-            if c < 0.05:
-                c = 0.05
-            elif c > 0.95:
-                c = 0.95
-            mc = -c
-            phase += rps
+            for i in range(n):
+                lfo = math.sin(_pi2 * phase) * self.depth
+                c = 0.5 + lfo * 0.4
+                if c < 0.05:
+                    c = 0.05
+                elif c > 0.95:
+                    c = 0.95
+                mc = -c
+                phase += rps
 
-            # Left channel
-            x0 = float(data[i, 0]) + fb0 * feedback
-            for s in range(stages):
-                xp = ap_x[s][0];  yp = ap_y[s][0]
-                y = mc * x0 + xp + c * yp
-                ap_x[s][0] = x0;  ap_y[s][0] = y
-                x0 = y
-            fb0 = x0
+                x0 = float(data[i, 0]) + fb0 * feedback
+                for s in range(stages):
+                    xp = ap_x[s, 0];  yp = ap_y[s, 0]
+                    y = mc * x0 + xp + c * yp
+                    ap_x[s, 0] = x0;  ap_y[s, 0] = y
+                    x0 = y
+                fb0 = x0
 
-            # Right channel
-            x1 = float(data[i, 1]) + fb1 * feedback
-            for s in range(stages):
-                xp = ap_x[s][1];  yp = ap_y[s][1]
-                y = mc * x1 + xp + c * yp
-                ap_x[s][1] = x1;  ap_y[s][1] = y
-                x1 = y
-            fb1 = x1
+                x1 = float(data[i, 1]) + fb1 * feedback
+                for s in range(stages):
+                    xp = ap_x[s, 1];  yp = ap_y[s, 1]
+                    y = mc * x1 + xp + c * yp
+                    ap_x[s, 1] = x1;  ap_y[s, 1] = y
+                    x1 = y
+                fb1 = x1
 
-            out[i, 0] = float(data[i, 0]) * 0.5 + x0 * 0.5
-            out[i, 1] = float(data[i, 1]) * 0.5 + x1 * 0.5
+                out[i, 0] = float(data[i, 0]) * 0.5 + x0 * 0.5
+                out[i, 1] = float(data[i, 1]) * 0.5 + x1 * 0.5
 
-        if phase >= 1.0:
-            phase -= int(phase)
-        self._phase = phase
-        self._fb0 = fb0
-        self._fb1 = fb1
+            if phase >= 1.0:
+                phase -= int(phase)
+            self._phase = phase
+            self._fb0 = fb0
+            self._fb1 = fb1
         return out
 
 
@@ -666,6 +716,9 @@ class Chorus:
         # Pre-allocated index arrays (reused every callback)
         self._idx_f64 = np.arange(buffer_size, dtype=np.float64)
         self._idx_intp = np.arange(buffer_size, dtype=np.intp)
+        # Pre-allocated conversion buffers
+        self._d0_buf = np.empty(buffer_size, dtype=np.intp)
+        self._frac_buf = np.empty((buffer_size, 1), dtype=np.float32)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         n = len(data)
@@ -688,8 +741,12 @@ class Chorus:
         # Fractional delay (float) for linear interpolation — avoids quantisation
         # noise (which sounds like bit-crushing) from integer truncation.
         delay_f = base_delay + lfo * mod_range
-        d0 = np.clip(delay_f.astype(np.intp), 1, self._buf_len - 2)
-        frac = (delay_f - d0).astype(np.float32)[:, np.newaxis]  # (n, 1)
+        d0 = self._d0_buf[:n] if n <= len(self._d0_buf) else np.empty(n, dtype=np.intp)
+        np.clip(delay_f, 1, self._buf_len - 2, out=delay_f)
+        d0[:] = delay_f.astype(np.intp)
+        frac_1d = (delay_f - d0)
+        frac = self._frac_buf[:n] if n <= len(self._frac_buf) else np.empty((n, 1), dtype=np.float32)
+        frac[:, 0] = frac_1d
 
         # Write positions
         write_positions = (self._write_pos + idx_intp) % self._buf_len
@@ -742,6 +799,9 @@ class Flanger:
         # Pre-allocated index arrays (reused every callback)
         self._idx_f64 = np.arange(buffer_size, dtype=np.float64)
         self._idx_intp = np.arange(buffer_size, dtype=np.intp)
+        # Pre-allocated conversion buffers
+        self._d0_buf = np.empty(buffer_size, dtype=np.intp)
+        self._frac_buf = np.empty((buffer_size, 1), dtype=np.float32)
         # 1-pole LP in feedback path — fc=4 kHz — damps HF comb resonance
         self._fb_lp_a = np.float32(math.exp(-2.0 * math.pi * 4000.0 / sample_rate))
         # Pre-compute lfilter coefficients for feedback LP (float32 to avoid astype)
@@ -773,8 +833,12 @@ class Flanger:
 
         # Fractional delay → linear interpolation eliminates quantisation clicks
         delay_f = 1.0 + (lfo * 0.5 + 0.5) * mod_range
-        d0   = np.clip(delay_f.astype(np.intp), 1, self._buf_len - 2)
-        frac = (delay_f - d0).astype(np.float32)[:, np.newaxis]   # (n, 1) for stereo
+        d0 = self._d0_buf[:n] if n <= len(self._d0_buf) else np.empty(n, dtype=np.intp)
+        np.clip(delay_f, 1, self._buf_len - 2, out=delay_f)
+        d0[:] = delay_f.astype(np.intp)
+        frac_1d = (delay_f - d0)
+        frac = self._frac_buf[:n] if n <= len(self._frac_buf) else np.empty((n, 1), dtype=np.float32)
+        frac[:, 0] = frac_1d
 
         write_positions = (self._write_pos + idx_intp) % self._buf_len
 
@@ -898,6 +962,8 @@ class BitCrusherProcessor:
         from mlrvp.config import BitCrusherState
         self.state = BitCrusherState()
         self._idx_int = np.arange(buffer_size, dtype=np.intp)
+        # Pre-allocated wet buffer
+        self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
@@ -908,7 +974,8 @@ class BitCrusherProcessor:
             return data
 
         n = len(data)
-        wet = data.copy()
+        wet = self._wet_buf[:n] if n <= len(self._wet_buf) else np.empty((n, 2), dtype=np.float32)
+        wet[:] = data
 
         # --- Sample-rate reduction (zero-order hold) ---
         # reduction=0 → passthrough; reduction=1 → hold every ~32 samples
@@ -1036,6 +1103,8 @@ class ReelToReelProcessor:
         self._buf_pos = 0
         # Cache last tone value to avoid rebuilding filter every block
         self._last_tone: float = -1.0
+        # Pre-allocated wet buffer
+        self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         if not self.state.enabled:
@@ -1045,7 +1114,8 @@ class ReelToReelProcessor:
         if mix < 0.001:
             return data
 
-        wet = data.copy()
+        wet = self._wet_buf[:n] if n <= len(self._wet_buf) else np.empty((n, 2), dtype=np.float32)
+        wet[:] = data
 
         # Flutter: modulated-delay pitch wobble (real tape flutter)
         flutter_amt = self.state.flutter
@@ -1088,7 +1158,9 @@ class ReelToReelProcessor:
         sat = self.state.saturation
         if sat > 0.01:
             drive = 1.0 + sat * 8.0
-            wet = np.tanh(wet * drive) / np.float32(math.tanh(drive))
+            np.multiply(wet, drive, out=wet)
+            np.tanh(wet, out=wet)
+            wet *= np.float32(1.0 / math.tanh(drive))
 
         # Remove bias offset after saturation
         if bias > 0.01:
@@ -1131,6 +1203,8 @@ class CassetteTapeProcessor:
         # Cache last filter params to avoid rebuilding coefficients every block
         self._last_tone: float = -1.0
         self._last_punch: float = -1.0
+        # Pre-allocated wet buffer
+        self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         if not self.state.enabled:
@@ -1140,7 +1214,8 @@ class CassetteTapeProcessor:
         if mix < 0.001:
             return data
 
-        wet = data.copy()
+        wet = self._wet_buf[:n] if n <= len(self._wet_buf) else np.empty((n, 2), dtype=np.float32)
+        wet[:] = data
 
         # Warp: modulated-delay pitch wobble (cassette motor inconsistency)
         warp = self.state.warp
@@ -1174,7 +1249,9 @@ class CassetteTapeProcessor:
         sat = self.state.saturation
         if sat > 0.01:
             drive = 1.0 + sat * 5.0
-            wet = np.tanh(wet * drive) / np.float32(math.tanh(drive))
+            np.multiply(wet, drive, out=wet)
+            np.tanh(wet, out=wet)
+            wet *= np.float32(1.0 / math.tanh(drive))
 
         # Punch: bass pump with re-saturation for cassette body
         punch = self.state.punch
@@ -1189,11 +1266,13 @@ class CassetteTapeProcessor:
             wet = wet + bass * bass_gain
             # Re-saturate after bass boost for tape compression feel
             punch_drive = 1.0 + punch * 2.5
-            wet = np.tanh(wet * punch_drive) / np.float32(math.tanh(punch_drive))
+            np.multiply(wet, punch_drive, out=wet)
+            np.tanh(wet, out=wet)
+            wet *= np.float32(1.0 / math.tanh(punch_drive))
 
         # Hiss: additive tape hiss (band-limited noise) — gated on signal presence
         hiss = self.state.hiss
-        has_signal = max(abs(float(data[0, 0])), abs(float(data[n >> 1, 0])), abs(float(data[-1, 0]))) > 1e-5
+        has_signal = float(np.abs(data[:n]).max()) > 1e-5
         if hiss > 0.01 and has_signal:
             p = self._noise_pos
             if p + n > len(self._noise_buf):
@@ -1247,6 +1326,14 @@ class EtherDriftProcessor:
         # LFO phases: RISE starts at 0 (bottom), FALL at 0.5 (mid, already descending)
         self._phase_rise = 0.0
         self._phase_fall = 0.5
+        # Pre-allocated buffers for _run_chain
+        self._inp_buf = np.empty((buffer_size, 2), dtype=np.float32)
+        self._f64_buf = np.empty((buffer_size, 2), dtype=np.float64)
+        # Per-chain output buffers (two chains can run in "BOTH" mode)
+        self._out_f32_bufs = [
+            np.empty((buffer_size, 2), dtype=np.float32),
+            np.empty((buffer_size, 2), dtype=np.float32),
+        ]
         # Cache log bounds
         self._log_fmin = math.log(self.F_MIN)
         self._log_fmax = math.log(self.F_MAX)
@@ -1287,7 +1374,8 @@ class EtherDriftProcessor:
             decay_idx = self._idx_f32[:n] if n <= len(self._idx_f32) else np.arange(n, dtype=np.float32)
             decay = np.exp(-decay_idx * np.float32(4.0 / n))
             fb_scale = np.float32(feedback * 0.75)
-            inp = data.copy()
+            inp = self._inp_buf[:n] if n <= len(self._inp_buf) else np.empty((n, 2), dtype=np.float32)
+            inp[:] = data
             inp[:, 0] += fb_sig_0 * fb_scale * decay
             inp[:, 1] += fb_sig_1 * fb_scale * decay
         else:
@@ -1296,7 +1384,8 @@ class EtherDriftProcessor:
         # Process all stages with both channels at once (axis=0) to avoid
         # per-channel astype round-trips.  Keep data in float64 for the
         # full allpass chain, then convert back once at the end.
-        out_f64 = inp.astype(np.float64)
+        out_f64 = self._f64_buf[:n] if n <= len(self._f64_buf) else np.empty((n, 2), dtype=np.float64)
+        out_f64[:] = inp
         for stage in range(self.N_STAGES):
             # Stagger stages logarithmically for a richer phaser comb
             f_stage = min(base_freq * math.exp(stage * 0.55), self.sr * 0.44)
@@ -1304,13 +1393,15 @@ class EtherDriftProcessor:
             out_f64, self._zi[chain_idx, stage] = lfilter(
                 b, a, out_f64, axis=0, zi=self._zi[chain_idx, stage])
 
-        out = out_f64.astype(np.float32)
+        out_buf = self._out_f32_bufs[chain_idx]
+        out = out_buf[:n] if n <= len(out_buf) else np.empty((n, 2), dtype=np.float32)
+        out[:] = out_f64
 
         # Store last sample for next-block feedback; guard against NaN/Inf
         last = out[-1]
         if not np.all(np.isfinite(last)):
             last = np.zeros(2, dtype=np.float32)
-            self._zi[chain_idx] = 0.0  # reset chain state on blow-up
+            self._zi[chain_idx] = np.zeros((self.N_STAGES, 2, 2), dtype=np.float64)
         self._fb_state[chain_idx] = last
         return out
 
@@ -1406,6 +1497,8 @@ class VHSProcessor:
         self._noise_pos = 0
         # Cache last worn value to avoid rebuilding filter every block
         self._last_worn: float = -1.0
+        # Pre-allocated wet buffer
+        self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         if not self.state.enabled:
@@ -1415,7 +1508,8 @@ class VHSProcessor:
         if mix < 0.001:
             return data
 
-        wet = data.copy()
+        wet = self._wet_buf[:n] if n <= len(self._wet_buf) else np.empty((n, 2), dtype=np.float32)
+        wet[:] = data
 
         # Wobble: modulated-delay pitch wobble (VHS tracking instability)
         wobble = self.state.wobble
@@ -1511,6 +1605,8 @@ class VinylProcessor:
         # Cache last filter param values
         self._last_wear: float = -1.0
         self._last_warmth_freq: float = -1.0
+        # Pre-allocated wet buffer
+        self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         if not self.state.enabled:
@@ -1523,9 +1619,10 @@ class VinylProcessor:
         # Gate all additive noise on input signal presence.
         # Crackle/pops are injected on top of the signal — they must not
         # fire on a silent/unrouted bus.
-        has_signal = max(abs(float(data[0, 0])), abs(float(data[n >> 1, 0])), abs(float(data[-1, 0]))) > 1e-5
+        has_signal = float(np.abs(data[:n]).max()) > 1e-5
 
-        wet = data.copy()
+        wet = self._wet_buf[:n] if n <= len(self._wet_buf) else np.empty((n, 2), dtype=np.float32)
+        wet[:] = data
 
         # Wow: slow warped-record pitch modulation (driven by warmth knob)
         warmth = self.state.warmth
@@ -1564,7 +1661,9 @@ class VinylProcessor:
             wet = wet + bass * warmth * (0.8 + warmth * 1.0)
             # Heavier vinyl saturation
             drive = 1.0 + warmth * 3.5
-            wet = np.tanh(wet * drive) / np.float32(math.tanh(drive))
+            np.multiply(wet, drive, out=wet)
+            np.tanh(wet, out=wet)
+            wet *= np.float32(1.0 / math.tanh(drive))
 
         # Wear: high-frequency rolloff (old grooves lose treble)
         wear = self.state.wear
@@ -1679,30 +1778,35 @@ class CompressorProcessor:
         alpha_r = np.exp(-1.0 / (rel_ms * 0.001 * self.sr))
 
         # Process sample-by-sample envelope + gain reduction.
-        # Gain reduction is computed purely multiplicatively (no log in hot path):
-        #   gain_lin = (thresh_lin / env) ^ (1 - 1/ratio)   when env > thresh
         gain = self._gain
         gain[:n] = 1.0
-        env = self._env
-        gr_sum = 0.0
-        _thresh = thresh_lin
 
-        for i in range(n):
-            level = float(sc_mono[i])
-            # Envelope follower
-            if level > env:
-                env = alpha_a * env + (1.0 - alpha_a) * level
-            else:
-                env = alpha_r * env + (1.0 - alpha_r) * level
+        if _HAS_NUMBA:
+            env, gr_db = _compressor_jit(
+                sc_mono, n, gain, thresh_lin, ratio,
+                float(alpha_a), float(alpha_r), self._env,
+            )
+            self._env = env
+            self.gr_db = gr_db
+        else:
+            env = self._env
+            gr_sum = 0.0
+            _thresh = thresh_lin
 
-            # Gain computer — multiplicative form, no repeated log10 calls
-            if env > _thresh:
-                g = (_thresh / env) ** (1.0 - 1.0 / ratio)
-                gr_sum += math.log10(max(g, 1e-10)) * 20.0
-                gain[i] = float(g)
+            for i in range(n):
+                level = float(sc_mono[i])
+                if level > env:
+                    env = alpha_a * env + (1.0 - alpha_a) * level
+                else:
+                    env = alpha_r * env + (1.0 - alpha_r) * level
 
-        self._env = env
-        self.gr_db = gr_sum / max(n, 1)
+                if env > _thresh:
+                    g = (_thresh / env) ** (1.0 - 1.0 / ratio)
+                    gr_sum += math.log10(max(g, 1e-10)) * 20.0
+                    gain[i] = float(g)
+
+            self._env = env
+            self.gr_db = gr_sum / max(n, 1)
 
         # Apply gain reduction + makeup
         return data * gain[:n, np.newaxis] * np.float32(makeup_lin)
@@ -1782,42 +1886,49 @@ class GlueCompressorProcessor:
             self._gain = np.ones(n, dtype=np.float32)
         gain = self._gain
         gain[:n] = 1.0
-        env = self._env
-        gr_sum = 0.0
 
-        for i in range(n):
-            level = float(sc_mono[i])
+        if _HAS_NUMBA:
+            env, gr_db = _glue_jit(
+                sc_mono, n, gain, thresh_lin, inv_ratio,
+                alpha_a, alpha_r,
+                knee_lower_lin, knee_upper_lin, knee_range_lin,
+                auto_release, _sr_ms, self._env,
+            )
+            self._env = env
+            self.gr_db = gr_db
+        else:
+            env = self._env
+            gr_sum = 0.0
 
-            if level > env:
-                env = alpha_a * env + (1.0 - alpha_a) * level
-            else:
-                if auto_release:
-                    # Program-dependent: faster release when heavily compressing
-                    # thresh_lin >= 10^(-30/20) >> 1e-10, no need to guard
-                    gr_ratio = env / thresh_lin
-                    auto_rel_ms = max(50.0, 600.0 / max(gr_ratio, 1.0))
-                    alpha_r_auto = math.exp(-1.0 / (auto_rel_ms * _sr_ms))
-                    env = alpha_r_auto * env + (1.0 - alpha_r_auto) * level
+            for i in range(n):
+                level = float(sc_mono[i])
+
+                if level > env:
+                    env = alpha_a * env + (1.0 - alpha_a) * level
                 else:
-                    env = alpha_r * env + (1.0 - alpha_r) * level
+                    if auto_release:
+                        gr_ratio = env / thresh_lin
+                        auto_rel_ms = max(50.0, 600.0 / max(gr_ratio, 1.0))
+                        alpha_r_auto = math.exp(-1.0 / (auto_rel_ms * _sr_ms))
+                        env = alpha_r_auto * env + (1.0 - alpha_r_auto) * level
+                    else:
+                        env = alpha_r * env + (1.0 - alpha_r) * level
 
-            # Soft-knee gain computer (no log in hot path)
-            if env <= knee_lower_lin:
-                g = 1.0
-            elif env >= knee_upper_lin:
-                g = (thresh_lin / env) ** (1.0 - inv_ratio)
-            else:
-                t = (env - knee_lower_lin) / knee_range_lin
-                full_g = (thresh_lin / env) ** (1.0 - inv_ratio)
-                g = 1.0 + (full_g - 1.0) * t * t   # quadratic knee
+                if env <= knee_lower_lin:
+                    g = 1.0
+                elif env >= knee_upper_lin:
+                    g = (thresh_lin / env) ** (1.0 - inv_ratio)
+                else:
+                    t = (env - knee_lower_lin) / knee_range_lin
+                    full_g = (thresh_lin / env) ** (1.0 - inv_ratio)
+                    g = 1.0 + (full_g - 1.0) * t * t
 
-            gain[i] = float(g)
-            # Only call log10 when actual gain reduction is present
-            if g < 1.0:
-                gr_sum += math.log10(g) * 20.0
+                gain[i] = float(g)
+                if g < 1.0:
+                    gr_sum += math.log10(g) * 20.0
 
-        self._env = env
-        self.gr_db = gr_sum / max(n, 1)
+            self._env = env
+            self.gr_db = gr_sum / max(n, 1)
 
         return data * gain[:n, np.newaxis] * np.float32(makeup_lin)
 

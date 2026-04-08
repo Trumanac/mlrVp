@@ -32,6 +32,8 @@ class Mixer:
         self._aux_send = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
         self._fx1_bus = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
         self._fx2_bus = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
+        # Temp buffer for wet/dry routing (avoids per-group temporaries)
+        self._route_tmp = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
 
     def process_groups(self, channel_outputs: list[tuple[int, np.ndarray]],
                        num_frames: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -53,6 +55,7 @@ class Mixer:
             self._aux_send = np.zeros((num_frames, 2), dtype=np.float32)
             self._fx1_bus = np.zeros((num_frames, 2), dtype=np.float32)
             self._fx2_bus = np.zeros((num_frames, 2), dtype=np.float32)
+            self._route_tmp = np.zeros((num_frames, 2), dtype=np.float32)
 
         # Zero pre-allocated buffers
         for gb in self._group_buses:
@@ -91,19 +94,27 @@ class Mixer:
             if fx_route == 1:
                 wet = group.send  # send fader = wet amount
                 dry = 1.0 - wet
-                main_bus += scaled * dry
-                fx1_bus += scaled * wet
+                tmp = self._route_tmp[:num_frames]
+                np.multiply(scaled, dry, out=tmp)
+                main_bus += tmp
+                np.multiply(scaled, wet, out=tmp)
+                fx1_bus += tmp
             elif fx_route == 2:
                 wet = group.send
                 dry = 1.0 - wet
-                main_bus += scaled * dry
-                fx2_bus += scaled * wet
+                tmp = self._route_tmp[:num_frames]
+                np.multiply(scaled, dry, out=tmp)
+                main_bus += tmp
+                np.multiply(scaled, wet, out=tmp)
+                fx2_bus += tmp
             else:
                 main_bus += scaled
 
             # Aux send (post-fader, only when no FX routing)
             if self.aux_send_level > 0.0 and fx_route == 0:
-                aux_send += scaled * group.send * self.aux_send_level
+                tmp = self._route_tmp[:num_frames]
+                np.multiply(scaled, group.send * self.aux_send_level, out=tmp)
+                aux_send += tmp
 
         return main_bus, aux_send, fx1_bus, fx2_bus
 
@@ -117,9 +128,14 @@ class Mixer:
         Returns:
             Final stereo output
         """
-        output = main_bus + aux_return * self.aux_volume
-        output *= self.master_volume
+        # In-place: main_bus += aux_return * aux_volume, then *= master
+        if self.aux_volume != 0.0:
+            n = len(main_bus)
+            tmp = self._route_tmp[:n]
+            np.multiply(aux_return, self.aux_volume, out=tmp)
+            main_bus += tmp
+        main_bus *= self.master_volume
 
         # Soft clip to prevent harsh clipping
-        np.clip(output, -1.0, 1.0, out=output)
-        return output
+        np.clip(main_bus, -1.0, 1.0, out=main_bus)
+        return main_bus

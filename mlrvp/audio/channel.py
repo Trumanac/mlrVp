@@ -14,6 +14,14 @@ from typing import Optional
 from mlrvp.config import PlaybackMode, ChannelState, SAMPLE_RATE, BUFFER_SIZE, PITCH_SCALE_MAPS
 from mlrvp.audio.sample import SampleBuffer
 
+# Import Numba JIT channel kernel — fall back to None if unavailable
+try:
+    from mlrvp.audio._dsp_kernels import channel_process_kernel as _ch_jit
+    from mlrvp.audio._dsp_kernels import xfade_tail_kernel as _xfade_jit
+    _HAS_CH_JIT = True
+except ImportError:
+    _HAS_CH_JIT = False
+
 
 class Channel:
     """A single playback channel mapped to one grid row."""
@@ -75,6 +83,21 @@ class Channel:
         # Pre-allocated arange buffer for position computation
         self._arange_f64 = np.arange(BUFFER_SIZE, dtype=np.float64)
         self._arange_f32 = np.arange(BUFFER_SIZE, dtype=np.float32)
+
+        # Pre-allocated intermediate buffers — eliminates per-callback
+        # temporary array allocations that cause malloc/free churn and
+        # reduce headroom for GIL contention with the GUI thread.
+        self._pos_buf = np.zeros(BUFFER_SIZE, dtype=np.float64)
+        self._pos_int_buf = np.zeros(BUFFER_SIZE, dtype=np.intp)
+        self._pos_frac_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
+        self._frac_f64_buf = np.zeros(BUFFER_SIZE, dtype=np.float64)
+        self._next_pos_buf = np.zeros(BUFFER_SIZE, dtype=np.intp)
+        self._inv_frac_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
+        self._samp_a_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
+        self._samp_b_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
+        self._env_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
+        self._env_gain_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
+        self._bool_buf = np.zeros(BUFFER_SIZE, dtype=bool)
 
         # Pitch-shift cache (populated by app.py via librosa in a background thread)
         self._pitch_cache: Optional[np.ndarray] = None
@@ -201,42 +224,75 @@ class Channel:
         self.state.playing = True
 
     def _snapshot_xfade_tail(self):
-        """Render a short fade-out snippet from the current position (vectorized).
+        """Render a short fade-out snippet from the current position.
 
         Now called only from the audio thread (via queued trigger/force_stop),
         so all state reads are safe.
         """
         xlen = self.XFADE_LEN
         buf = self._xfade_buf
-        buf[:] = 0
         num_sample_frames = self.sample.num_frames
         if num_sample_frames < 2:
+            buf[:] = 0
             return
-        num_channels = self.sample.num_channels
-        audio_data = self._get_audio_data()
 
+        audio_data = self._get_audio_data()
         speed = self._effective_speed()
         if self.state.reverse or self.state.mode == PlaybackMode.REVERSE:
             speed = -speed
 
-        positions = self._position + self._arange_f64[:xlen] * speed
-        np.clip(positions, 0, num_sample_frames - 1.0, out=positions)
-        pos_int = positions.astype(np.intp)
-        pos_frac = (positions - pos_int).astype(np.float32)
-        next_pos = np.minimum(pos_int + 1, num_sample_frames - 1)
-
-        fade = self._xfade_fade
         env_gain = self._envelope * self.state.gain * self.state.velocity
 
-        if num_channels >= 2:
-            for ch in range(2):
-                buf[:, ch] = (audio_data[pos_int, ch] * (1.0 - pos_frac) +
-                              audio_data[next_pos, ch] * pos_frac) * fade * env_gain
+        if _HAS_CH_JIT:
+            _xfade_jit(
+                audio_data, num_sample_frames, self.sample.num_channels,
+                float(self._position), float(speed),
+                buf, self._xfade_fade, xlen, float(env_gain),
+            )
         else:
-            mono = (audio_data[pos_int, 0] * (1.0 - pos_frac) +
-                    audio_data[next_pos, 0] * pos_frac) * fade * env_gain
-            buf[:, 0] = mono
-            buf[:, 1] = mono
+            # Python fallback
+            buf[:] = 0
+            num_channels = self.sample.num_channels
+            positions = self._pos_buf[:xlen]
+            np.multiply(self._arange_f64[:xlen], speed, out=positions)
+            np.add(positions, self._position, out=positions)
+            np.clip(positions, 0, num_sample_frames - 1.0, out=positions)
+            pos_int = self._pos_int_buf[:xlen]
+            pos_int[:] = positions
+            frac_f64 = self._frac_f64_buf[:xlen]
+            np.subtract(positions, pos_int, out=frac_f64)
+            pos_frac = self._pos_frac_buf[:xlen]
+            pos_frac[:] = frac_f64
+            next_pos = self._next_pos_buf[:xlen]
+            np.add(pos_int, 1, out=next_pos)
+            np.minimum(next_pos, num_sample_frames - 1, out=next_pos)
+
+            fade = self._xfade_fade
+            inv_frac = self._inv_frac_buf[:xlen]
+            np.subtract(1.0, pos_frac, out=inv_frac)
+            samp_a = self._samp_a_buf[:xlen]
+            samp_b = self._samp_b_buf[:xlen]
+
+            if num_channels >= 2:
+                for ch in range(2):
+                    np.take(audio_data[:, ch], pos_int, out=samp_a)
+                    np.take(audio_data[:, ch], next_pos, out=samp_b)
+                    np.multiply(samp_a, inv_frac, out=samp_a)
+                    np.multiply(samp_b, pos_frac, out=samp_b)
+                    np.add(samp_a, samp_b, out=samp_b)
+                    np.multiply(samp_b, fade, out=samp_b)
+                    samp_b *= env_gain
+                    buf[:, ch] = samp_b
+            else:
+                np.take(audio_data[:, 0], pos_int, out=samp_a)
+                np.take(audio_data[:, 0], next_pos, out=samp_b)
+                np.multiply(samp_a, inv_frac, out=samp_a)
+                np.multiply(samp_b, pos_frac, out=samp_b)
+                np.add(samp_a, samp_b, out=samp_b)
+                np.multiply(samp_b, fade, out=samp_b)
+                samp_b *= env_gain
+                buf[:, 0] = samp_b
+                buf[:, 1] = samp_b
 
         self._xfade_pos = 0
         self._xfade_len = xlen
@@ -270,6 +326,17 @@ class Channel:
             self._buf_size = num_frames
             self._arange_f64 = np.arange(num_frames, dtype=np.float64)
             self._arange_f32 = np.arange(num_frames, dtype=np.float32)
+            self._pos_buf = np.zeros(num_frames, dtype=np.float64)
+            self._pos_int_buf = np.zeros(num_frames, dtype=np.intp)
+            self._pos_frac_buf = np.zeros(num_frames, dtype=np.float32)
+            self._frac_f64_buf = np.zeros(num_frames, dtype=np.float64)
+            self._next_pos_buf = np.zeros(num_frames, dtype=np.intp)
+            self._inv_frac_buf = np.zeros(num_frames, dtype=np.float32)
+            self._samp_a_buf = np.zeros(num_frames, dtype=np.float32)
+            self._samp_b_buf = np.zeros(num_frames, dtype=np.float32)
+            self._env_buf = np.zeros(num_frames, dtype=np.float32)
+            self._env_gain_buf = np.zeros(num_frames, dtype=np.float32)
+            self._bool_buf = np.zeros(num_frames, dtype=bool)
         output = self._output_buf[:num_frames]
         output[:] = 0
 
@@ -307,8 +374,8 @@ class Channel:
         num_sample_frames = self.sample.num_frames
         num_channels = self.sample.num_channels
 
-        sel_start = self.state.sel_start * num_sample_frames
-        sel_end = self.state.sel_end * num_sample_frames
+        sel_start = max(0.0, min(1.0, self.state.sel_start)) * num_sample_frames
+        sel_end = max(0.0, min(1.0, self.state.sel_end)) * num_sample_frames
         sel_length = sel_end - sel_start
 
         if sel_length <= 0:
@@ -334,8 +401,12 @@ class Channel:
             slice_ls = getattr(self, '_slice_loop_start', None)
             slice_le = getattr(self, '_slice_loop_end', None)
             if slice_ls is not None and slice_le is not None:
-                loop_start = slice_ls
-                loop_end = slice_le
+                if slice_ls < slice_le:
+                    loop_start = slice_ls
+                    loop_end = slice_le
+                else:
+                    # Inverted or equal bounds — fall back to full selection
+                    pass
         loop_len = loop_end - loop_start
 
         # Attack/release times in samples
@@ -344,11 +415,54 @@ class Channel:
 
         active_frames = num_frames
 
-        # --- Envelope computation (vectorized ramp) ---
+        # Determine loop mode
+        pitch_loops = (self.state.mode == PlaybackMode.PITCH and self.state.pitch_hold)
+        do_loop = not (self.state.mode in (PlaybackMode.ONESHOT, PlaybackMode.SEQ, PlaybackMode.PITCH) and not pitch_loops)
+
+        # ── Numba JIT path ──────────────────────────────────────────
+        if _HAS_CH_JIT:
+            # Gather crossfade / fade-in state (kernel handles both)
+            xf_pos = self._xfade_pos if self._xfade_active else 0
+            xf_len = self._xfade_len if self._xfade_active else 0
+            fi_off = self.XFADE_LEN - self._fade_in_remaining
+            fi_rem = self._fade_in_remaining
+
+            new_pos, new_env, active_frames, stopped, new_xf_pos, new_fi_rem = _ch_jit(
+                sample_data, num_sample_frames, num_channels,
+                output, num_frames,
+                float(self._position), float(speed),
+                float(loop_start), float(loop_end), do_loop,
+                float(self._envelope), bool(self._releasing),
+                float(attack_samples), float(release_samples),
+                float(self.state.gain * self.state.velocity),
+                self._xfade_buf, xf_pos, xf_len,
+                self._fade_in_ramp, fi_off, fi_rem,
+                bool(self.state.mute),
+            )
+
+            self._envelope = new_env
+            self._position = new_pos
+            self._fade_in_remaining = new_fi_rem
+            if xf_len > 0:
+                self._xfade_pos = new_xf_pos
+                if new_xf_pos >= xf_len:
+                    self._xfade_active = False
+
+            if stopped:
+                self._playing = False
+                self.state.playing = False
+
+            return output
+
+        # ── Python fallback path ────────────────────────────────────
+
+        # --- Envelope computation (vectorized ramp, zero-alloc) ---
         if self._releasing:
             frames_to_zero = max(1, int(self._envelope * release_samples) + 1)
             active_frames = min(active_frames, frames_to_zero)
-            env = self._envelope - self._arange_f32[:active_frames] / release_samples
+            env = self._env_buf[:active_frames]
+            np.divide(self._arange_f32[:active_frames], release_samples, out=env)
+            np.subtract(self._envelope, env, out=env)
             np.maximum(env, 0.0, out=env)
             self._envelope = float(env[-1]) if active_frames > 0 else 0.0
             if self._envelope <= 0:
@@ -360,12 +474,16 @@ class Channel:
                 frames_to_full = max(1, int((1.0 - self._envelope) * attack_samples) + 1)
                 if frames_to_full >= active_frames:
                     # Still ramping at end of block
-                    env = self._envelope + self._arange_f32[:active_frames] / attack_samples
+                    env = self._env_buf[:active_frames]
+                    np.divide(self._arange_f32[:active_frames], attack_samples, out=env)
+                    np.add(env, self._envelope, out=env)
                     np.minimum(env, 1.0, out=env)
                 else:
                     # Attack -> sustain transition within block
-                    env = np.ones(active_frames, dtype=np.float32)
-                    env[:frames_to_full] = self._envelope + self._arange_f32[:frames_to_full] / attack_samples
+                    env = self._env_buf[:active_frames]
+                    env[:] = 1.0
+                    np.divide(self._arange_f32[:frames_to_full], attack_samples, out=env[:frames_to_full])
+                    np.add(env[:frames_to_full], self._envelope, out=env[:frames_to_full])
                     np.minimum(env[:frames_to_full], 1.0, out=env[:frames_to_full])
                 self._envelope = float(env[-1])
             else:
@@ -374,20 +492,22 @@ class Channel:
         if active_frames == 0:
             return output
 
-        # --- Position computation (vectorized) ---
-        positions = self._position + self._arange_f64[:active_frames] * speed
+        # --- Position computation (vectorized, zero-alloc) ---
+        positions = self._pos_buf[:active_frames]
+        np.multiply(self._arange_f64[:active_frames], speed, out=positions)
+        np.add(positions, self._position, out=positions)
 
         # Handle oneshot boundary (ONESHOT and SEQ both play through once then stop)
         # PITCH mode stops at boundary unless pitch_hold is active (loop behaviour)
         stop_after = False
-        pitch_loops = (self.state.mode == PlaybackMode.PITCH and self.state.pitch_hold)
-        if self.state.mode in (PlaybackMode.ONESHOT, PlaybackMode.SEQ, PlaybackMode.PITCH) and not pitch_loops:
+        if not do_loop:
+            out_of_bounds = self._bool_buf[:active_frames]
             if speed > 0:
-                out_of_bounds = positions >= loop_end
+                np.greater_equal(positions, loop_end, out=out_of_bounds)
             elif speed < 0:
-                out_of_bounds = positions < loop_start
+                np.less(positions, loop_start, out=out_of_bounds)
             else:
-                out_of_bounds = np.zeros(active_frames, dtype=bool)
+                out_of_bounds[:] = False
 
             if out_of_bounds.any():
                 stop_idx = int(np.argmax(out_of_bounds))
@@ -401,38 +521,59 @@ class Channel:
                     env = env[:active_frames]
                 stop_after = True
         else:
-            # Loop wrapping via modular arithmetic
+            # Loop wrapping via modular arithmetic (in-place)
             if loop_len > 0:
                 if speed >= 0:
-                    positions = loop_start + np.mod(positions - loop_start, loop_len)
+                    np.subtract(positions, loop_start, out=positions)
+                    np.mod(positions, loop_len, out=positions)
+                    np.add(positions, loop_start, out=positions)
                 else:
-                    positions = loop_end - np.mod(loop_end - positions, loop_len)
+                    np.subtract(loop_end, positions, out=positions)
+                    np.mod(positions, loop_len, out=positions)
+                    np.subtract(loop_end, positions, out=positions)
 
         # Clamp to valid sample range
         np.clip(positions, 0, num_sample_frames - 1.0, out=positions)
 
-        # --- Vectorized linear interpolation ---
-        pos_int = positions.astype(np.intp)
-        pos_frac = (positions - pos_int).astype(np.float32)
-        next_pos = np.minimum(pos_int + 1, num_sample_frames - 1)
+        # --- Vectorized linear interpolation (zero-alloc) ---
+        pos_int = self._pos_int_buf[:active_frames]
+        pos_int[:] = positions  # float64 → intp truncation
+        frac_f64 = self._frac_f64_buf[:active_frames]
+        np.subtract(positions, pos_int, out=frac_f64)
+        pos_frac = self._pos_frac_buf[:active_frames]
+        pos_frac[:] = frac_f64  # float64 → float32
+        next_pos = self._next_pos_buf[:active_frames]
+        np.add(pos_int, 1, out=next_pos)
+        np.minimum(next_pos, num_sample_frames - 1, out=next_pos)
+
+        inv_frac = self._inv_frac_buf[:active_frames]
+        np.subtract(1.0, pos_frac, out=inv_frac)
+        samp_a = self._samp_a_buf[:active_frames]
+        samp_b = self._samp_b_buf[:active_frames]
 
         if num_channels >= 2:
             for ch in range(2):
-                output[:active_frames, ch] += (
-                    sample_data[pos_int, ch] * (1.0 - pos_frac) +
-                    sample_data[next_pos, ch] * pos_frac
-                )
+                np.take(sample_data[:, ch], pos_int, out=samp_a)
+                np.take(sample_data[:, ch], next_pos, out=samp_b)
+                np.multiply(samp_a, inv_frac, out=samp_a)
+                np.multiply(samp_b, pos_frac, out=samp_b)
+                np.add(samp_a, samp_b, out=samp_b)
+                output[:active_frames, ch] += samp_b
         else:
             # Mono -> stereo
-            mono = (sample_data[pos_int, 0] * (1.0 - pos_frac) +
-                    sample_data[next_pos, 0] * pos_frac)
-            output[:active_frames, 0] += mono
-            output[:active_frames, 1] += mono
+            np.take(sample_data[:, 0], pos_int, out=samp_a)
+            np.take(sample_data[:, 0], next_pos, out=samp_b)
+            np.multiply(samp_a, inv_frac, out=samp_a)
+            np.multiply(samp_b, pos_frac, out=samp_b)
+            np.add(samp_a, samp_b, out=samp_b)
+            output[:active_frames, 0] += samp_b
+            output[:active_frames, 1] += samp_b
 
-        # Apply envelope and gain
+        # Apply envelope and gain (zero-alloc)
         gain = self.state.gain * self.state.velocity
         if env is not None:
-            env_gain = env * gain
+            env_gain = self._env_gain_buf[:active_frames]
+            np.multiply(env, gain, out=env_gain)
             output[:active_frames, 0] *= env_gain
             output[:active_frames, 1] *= env_gain
         else:
@@ -449,7 +590,9 @@ class Channel:
             self._fade_in_remaining -= n
 
         # Mix in crossfade tail AFTER all gain/envelope/fade-in processing
-        # so the pre-baked tail doesn't get double-gained
+        # so the pre-baked tail doesn't get double-gained.
+        # Use num_frames (not active_frames) — the tail must ring out even when
+        # playback stopped mid-buffer, since it's a fade-out of the OLD audio.
         if self._xfade_active and self._xfade_pos < self._xfade_len:
             remaining = self._xfade_len - self._xfade_pos
             n = min(remaining, num_frames)
@@ -461,7 +604,7 @@ class Channel:
         # Update position for next block
         if self._playing:
             next_position = self._position + active_frames * speed
-            if self.state.mode not in (PlaybackMode.ONESHOT, PlaybackMode.SEQ, PlaybackMode.PITCH) or pitch_loops:
+            if do_loop:
                 if loop_len > 0:
                     if speed >= 0:
                         self._position = loop_start + ((next_position - loop_start) % loop_len)

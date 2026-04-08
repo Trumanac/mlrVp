@@ -107,6 +107,9 @@ class WaveformWidget(QWidget):
             base_color = QColor(GROUP_COLORS[self._group_color_idx])
             num_points = len(self._waveform_data)
 
+            if w < 1:
+                return
+
             # Vectorized: compute all bar heights at once
             px_arr = np.arange(w)
             indices = np.minimum((px_arr * num_points // w), num_points - 1)

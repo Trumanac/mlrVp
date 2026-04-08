@@ -46,7 +46,7 @@ def load_sample(filepath: str, target_sr: int = SAMPLE_RATE) -> Optional[SampleB
         except ImportError:
             # Fallback: simple linear interpolation
             ratio = target_sr / sr
-            new_length = int(len(data) * ratio)
+            new_length = max(1, int(len(data) * ratio))
             indices = np.linspace(0, len(data) - 1, new_length)
             int_indices = indices.astype(int)
             frac = (indices - int_indices).reshape(-1, 1).astype(np.float32)
