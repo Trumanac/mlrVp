@@ -136,19 +136,57 @@ class AudioEngine:
         self.ether_drift_b = EtherDriftProcessor(self.sample_rate, self.buffer_size)
         self.ether_drift_m = EtherDriftProcessor(self.sample_rate, self.buffer_size)
 
+        # Bus C (FX3) instances:
+        self.delay_c = StereoDelay(self.sample_rate)
+        self.tape_delay_c = TapeDelay(self.sample_rate)
+        self.filter_a_c = GlobalFilter(self.sample_rate)
+        self.filter_b_c = MoogLadderFilter(self.sample_rate)
+        self.fx_bus_c = FXBus(self.sample_rate)
+        self.reel_to_reel_c = ReelToReelProcessor(self.sample_rate, self.buffer_size)
+        self.cassette_tape_c = CassetteTapeProcessor(self.sample_rate, self.buffer_size)
+        self.vhs_c = VHSProcessor(self.sample_rate, self.buffer_size)
+        self.vinyl_c = VinylProcessor(self.sample_rate, self.buffer_size)
+        self.compressor_c = CompressorProcessor(self.sample_rate)
+        self.glue_compressor_c = GlueCompressorProcessor(self.sample_rate)
+        self.hall_reverb_c = HallReverbProcessor(self.sample_rate)
+        self.plate_reverb_c = PlateReverbProcessor(self.sample_rate)
+        self.bit_crusher_c = BitCrusherProcessor(self.sample_rate)
+        self.tube_overdrive_c = TubeOverdriveProcessor(self.sample_rate)
+        self.ether_drift_c = EtherDriftProcessor(self.sample_rate, self.buffer_size)
+
+        # Bus D (FX4) instances:
+        self.delay_d = StereoDelay(self.sample_rate)
+        self.tape_delay_d = TapeDelay(self.sample_rate)
+        self.filter_a_d = GlobalFilter(self.sample_rate)
+        self.filter_b_d = MoogLadderFilter(self.sample_rate)
+        self.fx_bus_d = FXBus(self.sample_rate)
+        self.reel_to_reel_d = ReelToReelProcessor(self.sample_rate, self.buffer_size)
+        self.cassette_tape_d = CassetteTapeProcessor(self.sample_rate, self.buffer_size)
+        self.vhs_d = VHSProcessor(self.sample_rate, self.buffer_size)
+        self.vinyl_d = VinylProcessor(self.sample_rate, self.buffer_size)
+        self.compressor_d = CompressorProcessor(self.sample_rate)
+        self.glue_compressor_d = GlueCompressorProcessor(self.sample_rate)
+        self.hall_reverb_d = HallReverbProcessor(self.sample_rate)
+        self.plate_reverb_d = PlateReverbProcessor(self.sample_rate)
+        self.bit_crusher_d = BitCrusherProcessor(self.sample_rate)
+        self.tube_overdrive_d = TubeOverdriveProcessor(self.sample_rate)
+        self.ether_drift_d = EtherDriftProcessor(self.sample_rate, self.buffer_size)
+
         # Recorder
         self.recorder = Recorder(self.sample_rate)
 
         # Per-bus in-rack flags — True when the module is present in that rack.
-        # Rack A → FX1 (Creative Bus): compressor → multiband filter → moog filter → delay
-        # Rack B → FX2 (Character Bus): glue compressor → reel → tape delay → vinyl
+        # Rack A → FX1 (Clean Studio): compressor → multiband filter → delay
+        # Rack B → FX2 (Tape Warmth): glue compressor → reel → tape delay
+        # Rack C → FX3 (Space & Mod): hall reverb → plate reverb → chorus
+        # Rack D → FX4 (Lo-Fi/Destroy): bit crusher → tube overdrive → vinyl
         self.delay_in_rack_a = True
         self.delay_in_rack_b = False
         self.tape_delay_in_rack_a = False
         self.tape_delay_in_rack_b = True
         self.filter_a_in_rack_a = True
         self.filter_a_in_rack_b = False
-        self.filter_b_in_rack_a = True
+        self.filter_b_in_rack_a = False
         self.filter_b_in_rack_b = False
         self.mod_in_rack_a = False
         self.mod_in_rack_b = False
@@ -163,7 +201,7 @@ class AudioEngine:
         self.vhs_in_rack_a = False
         self.vhs_in_rack_b = False
         self.vinyl_in_rack_a = False
-        self.vinyl_in_rack_b = True
+        self.vinyl_in_rack_b = False
         self.compressor_in_rack_a = True
         self.compressor_in_rack_b = False
         self.hall_reverb_in_rack_a = False
@@ -172,9 +210,45 @@ class AudioEngine:
         self.plate_reverb_in_rack_b = False
         self.glue_compressor_in_rack_a = False
         self.glue_compressor_in_rack_b = True
+        self.ether_drift_in_rack_a = False
+        self.ether_drift_in_rack_b = False
 
-        # Master bus in-rack flags — Master chain: glue compressor → multiband EQ
-        self.filter_a_in_rack_m = True
+        # Rack C in-rack flags (FX3 — Space & Mod)
+        self.delay_in_rack_c = False
+        self.tape_delay_in_rack_c = False
+        self.filter_a_in_rack_c = False
+        self.filter_b_in_rack_c = False
+        self.mod_in_rack_c = True   # chorus in default C rack
+        self.reel_to_reel_in_rack_c = False
+        self.cassette_tape_in_rack_c = False
+        self.vhs_in_rack_c = False
+        self.vinyl_in_rack_c = False
+        self.compressor_in_rack_c = False
+        self.glue_compressor_in_rack_c = False
+        self.hall_reverb_in_rack_c = True
+        self.plate_reverb_in_rack_c = True
+        self.bit_crusher_in_rack_c = False
+        self.tube_overdrive_in_rack_c = False
+        self.ether_drift_in_rack_c = False
+
+        # Rack D in-rack flags (FX4 — Lo-Fi / Destroy)
+        self.delay_in_rack_d = False
+        self.tape_delay_in_rack_d = False
+        self.filter_a_in_rack_d = False
+        self.filter_b_in_rack_d = False
+        self.mod_in_rack_d = False
+        self.reel_to_reel_in_rack_d = False
+        self.cassette_tape_in_rack_d = False
+        self.vhs_in_rack_d = False
+        self.vinyl_in_rack_d = True
+        self.compressor_in_rack_d = False
+        self.glue_compressor_in_rack_d = False
+        self.hall_reverb_in_rack_d = False
+        self.plate_reverb_in_rack_d = False
+        self.bit_crusher_in_rack_d = True
+        self.tube_overdrive_in_rack_d = True
+        self.ether_drift_in_rack_d = False
+        self.filter_a_in_rack_m = False
         self.filter_b_in_rack_m = False
         self.mod_in_rack_m = False
         self.delay_in_rack_m = False
@@ -189,10 +263,6 @@ class AudioEngine:
         self.bit_crusher_in_rack_m = False
         self.tube_overdrive_in_rack_m = False
         self.glue_compressor_in_rack_m = True
-
-        # Ether Drift in-rack flags (off by default — add via + menu)
-        self.ether_drift_in_rack_a = False
-        self.ether_drift_in_rack_b = False
         self.ether_drift_in_rack_m = False
 
         # Master filter (gentle HP/LP trim)
@@ -239,6 +309,8 @@ class AudioEngine:
         self.output_peak = np.zeros(2, dtype=np.float32)
         self._fx1_peak = np.zeros(2, dtype=np.float32)
         self._fx2_peak = np.zeros(2, dtype=np.float32)
+        self._fx3_peak = np.zeros(2, dtype=np.float32)
+        self._fx4_peak = np.zeros(2, dtype=np.float32)
 
         # Pre-allocated temp buffer for peak metering (avoids allocation in callback)
         self._peak_tmp = np.zeros(self.buffer_size, dtype=np.float32)
@@ -255,6 +327,10 @@ class AudioEngine:
         self._wf_fx1_r = np.zeros(self._wf_len, dtype=np.float32)
         self._wf_fx2_l = np.zeros(self._wf_len, dtype=np.float32)
         self._wf_fx2_r = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_fx3_l = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_fx3_r = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_fx4_l = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_fx4_r = np.zeros(self._wf_len, dtype=np.float32)
 
         # Pre-allocated channel output list to avoid per-callback allocation
         self._channel_outputs: list[tuple[int, np.ndarray]] = []
@@ -298,17 +374,27 @@ class AudioEngine:
             "groups": [0.0] * NUM_GROUPS,
             "fx1": [0.0, 0.0],
             "fx2": [0.0, 0.0],
+            "fx3": [0.0, 0.0],
+            "fx4": [0.0, 0.0],
             "waveform_l": [],
             "waveform_r": [],
             "waveform_fx1_l": [],
             "waveform_fx1_r": [],
             "waveform_fx2_l": [],
             "waveform_fx2_r": [],
+            "waveform_fx3_l": [],
+            "waveform_fx3_r": [],
+            "waveform_fx4_l": [],
+            "waveform_fx4_r": [],
             "compressor_gr_a": 0.0,
             "compressor_gr_b": 0.0,
+            "compressor_gr_c": 0.0,
+            "compressor_gr_d": 0.0,
             "compressor_gr_m": 0.0,
             "glue_compressor_gr_a": 0.0,
             "glue_compressor_gr_b": 0.0,
+            "glue_compressor_gr_c": 0.0,
+            "glue_compressor_gr_d": 0.0,
             "glue_compressor_gr_m": 0.0,
         }
 
@@ -543,7 +629,7 @@ class AudioEngine:
                 _t1 = time.perf_counter()
 
             # Mix through groups (now returns FX bus outputs too)
-            main_bus, aux_send, fx1_bus, fx2_bus = self.mixer.process_groups(channel_outputs, frames)
+            main_bus, aux_send, fx1_bus, fx2_bus, fx3_bus, fx4_bus = self.mixer.process_groups(channel_outputs, frames)
 
             # Add recorder thru to main bus if active
             if thru is not None:
@@ -558,6 +644,10 @@ class AudioEngine:
                     fx1_bus += aux_scaled
                 elif aux_route == 2:
                     fx2_bus += aux_scaled
+                elif aux_route == 3:
+                    fx3_bus += aux_scaled
+                elif aux_route == 4:
+                    fx4_bus += aux_scaled
                 else:
                     main_bus += aux_scaled
 
@@ -660,6 +750,76 @@ class AudioEngine:
             if self.ether_drift_in_rack_b:
                 fx2_bus = self.ether_drift_b.process(fx2_bus)
 
+            # --- FX Processing Chain C (rack C → FX3) ---
+            if self.filter_a_in_rack_c and self.filter_a_c.state.enabled:
+                fx3_bus = self.filter_a_c.process(fx3_bus)
+            if self.filter_b_in_rack_c and self.filter_b_c.state.enabled:
+                fx3_bus = self.filter_b_c.process(fx3_bus)
+            if self.mod_in_rack_c:
+                fx3_bus = self.fx_bus_c.process_mod_only(fx3_bus)
+            if self.delay_in_rack_c and self.delay_c.state.enabled:
+                fx3_bus = self.delay_c.process(fx3_bus)
+            if self.tape_delay_in_rack_c and self.tape_delay_c.state.enabled:
+                fx3_bus = self.tape_delay_c.process(fx3_bus)
+            if self.reel_to_reel_in_rack_c:
+                fx3_bus = self.reel_to_reel_c.process(fx3_bus)
+            if self.cassette_tape_in_rack_c:
+                fx3_bus = self.cassette_tape_c.process(fx3_bus)
+            if self.vhs_in_rack_c:
+                fx3_bus = self.vhs_c.process(fx3_bus)
+            if self.vinyl_in_rack_c:
+                fx3_bus = self.vinyl_c.process(fx3_bus)
+            if self.hall_reverb_in_rack_c:
+                fx3_bus = self.hall_reverb_c.process(fx3_bus)
+            if self.plate_reverb_in_rack_c:
+                fx3_bus = self.plate_reverb_c.process(fx3_bus)
+            if self.compressor_in_rack_c:
+                sc_c = self._get_compressor_sidechain(self.compressor_c, fx3_bus, frames)
+                fx3_bus = self.compressor_c.process(fx3_bus, sc_c)
+            if self.glue_compressor_in_rack_c:
+                fx3_bus = self.glue_compressor_c.process(fx3_bus)
+            if self.bit_crusher_in_rack_c:
+                fx3_bus = self.bit_crusher_c.process(fx3_bus)
+            if self.tube_overdrive_in_rack_c:
+                fx3_bus = self.tube_overdrive_c.process(fx3_bus)
+            if self.ether_drift_in_rack_c:
+                fx3_bus = self.ether_drift_c.process(fx3_bus)
+
+            # --- FX Processing Chain D (rack D → FX4) ---
+            if self.filter_a_in_rack_d and self.filter_a_d.state.enabled:
+                fx4_bus = self.filter_a_d.process(fx4_bus)
+            if self.filter_b_in_rack_d and self.filter_b_d.state.enabled:
+                fx4_bus = self.filter_b_d.process(fx4_bus)
+            if self.mod_in_rack_d:
+                fx4_bus = self.fx_bus_d.process_mod_only(fx4_bus)
+            if self.delay_in_rack_d and self.delay_d.state.enabled:
+                fx4_bus = self.delay_d.process(fx4_bus)
+            if self.tape_delay_in_rack_d and self.tape_delay_d.state.enabled:
+                fx4_bus = self.tape_delay_d.process(fx4_bus)
+            if self.reel_to_reel_in_rack_d:
+                fx4_bus = self.reel_to_reel_d.process(fx4_bus)
+            if self.cassette_tape_in_rack_d:
+                fx4_bus = self.cassette_tape_d.process(fx4_bus)
+            if self.vhs_in_rack_d:
+                fx4_bus = self.vhs_d.process(fx4_bus)
+            if self.vinyl_in_rack_d:
+                fx4_bus = self.vinyl_d.process(fx4_bus)
+            if self.hall_reverb_in_rack_d:
+                fx4_bus = self.hall_reverb_d.process(fx4_bus)
+            if self.plate_reverb_in_rack_d:
+                fx4_bus = self.plate_reverb_d.process(fx4_bus)
+            if self.compressor_in_rack_d:
+                sc_d = self._get_compressor_sidechain(self.compressor_d, fx4_bus, frames)
+                fx4_bus = self.compressor_d.process(fx4_bus, sc_d)
+            if self.glue_compressor_in_rack_d:
+                fx4_bus = self.glue_compressor_d.process(fx4_bus)
+            if self.bit_crusher_in_rack_d:
+                fx4_bus = self.bit_crusher_d.process(fx4_bus)
+            if self.tube_overdrive_in_rack_d:
+                fx4_bus = self.tube_overdrive_d.process(fx4_bus)
+            if self.ether_drift_in_rack_d:
+                fx4_bus = self.ether_drift_d.process(fx4_bus)
+
             # Track FX bus peaks before summing (for per-rack metering)
             tmp = self._peak_tmp[:frames]
             np.abs(fx1_bus[:, 0], out=tmp)
@@ -670,6 +830,14 @@ class AudioEngine:
             self._fx2_peak[0] = max(self._fx2_peak[0] * 0.95, float(tmp.max()))
             np.abs(fx2_bus[:, 1], out=tmp)
             self._fx2_peak[1] = max(self._fx2_peak[1] * 0.95, float(tmp.max()))
+            np.abs(fx3_bus[:, 0], out=tmp)
+            self._fx3_peak[0] = max(self._fx3_peak[0] * 0.95, float(tmp.max()))
+            np.abs(fx3_bus[:, 1], out=tmp)
+            self._fx3_peak[1] = max(self._fx3_peak[1] * 0.95, float(tmp.max()))
+            np.abs(fx4_bus[:, 0], out=tmp)
+            self._fx4_peak[0] = max(self._fx4_peak[0] * 0.95, float(tmp.max()))
+            np.abs(fx4_bus[:, 1], out=tmp)
+            self._fx4_peak[1] = max(self._fx4_peak[1] * 0.95, float(tmp.max()))
 
             # Capture per-bus waveform for oscilloscopes (before summing)
             # Only compute waveform data when we'll actually send it
@@ -685,9 +853,15 @@ class AudioEngine:
                     self._wf_fx1_r[:_wn] = fx1_bus[::_bus_step, 1]
                     self._wf_fx2_l[:_wn] = fx2_bus[::_bus_step, 0]
                     self._wf_fx2_r[:_wn] = fx2_bus[::_bus_step, 1]
+                    self._wf_fx3_l[:_wn] = fx3_bus[::_bus_step, 0]
+                    self._wf_fx3_r[:_wn] = fx3_bus[::_bus_step, 1]
+                    self._wf_fx4_l[:_wn] = fx4_bus[::_bus_step, 0]
+                    self._wf_fx4_r[:_wn] = fx4_bus[::_bus_step, 1]
 
             main_bus += fx1_bus
             main_bus += fx2_bus
+            main_bus += fx3_bus
+            main_bus += fx4_bus
 
             if _prof:
                 _t3 = time.perf_counter()
@@ -765,17 +939,29 @@ class AudioEngine:
                 md["fx1"][1] = float(self._fx1_peak[1])
                 md["fx2"][0] = float(self._fx2_peak[0])
                 md["fx2"][1] = float(self._fx2_peak[1])
+                md["fx3"][0] = float(self._fx3_peak[0])
+                md["fx3"][1] = float(self._fx3_peak[1])
+                md["fx4"][0] = float(self._fx4_peak[0])
+                md["fx4"][1] = float(self._fx4_peak[1])
                 md["waveform_l"] = self._wf_master_l[:_wn]
                 md["waveform_r"] = self._wf_master_r[:_wn]
                 md["waveform_fx1_l"] = self._wf_fx1_l[:_wn]
                 md["waveform_fx1_r"] = self._wf_fx1_r[:_wn]
                 md["waveform_fx2_l"] = self._wf_fx2_l[:_wn]
                 md["waveform_fx2_r"] = self._wf_fx2_r[:_wn]
+                md["waveform_fx3_l"] = self._wf_fx3_l[:_wn]
+                md["waveform_fx3_r"] = self._wf_fx3_r[:_wn]
+                md["waveform_fx4_l"] = self._wf_fx4_l[:_wn]
+                md["waveform_fx4_r"] = self._wf_fx4_r[:_wn]
                 md["compressor_gr_a"] = self.compressor.gr_db
                 md["compressor_gr_b"] = self.compressor_b.gr_db
+                md["compressor_gr_c"] = self.compressor_c.gr_db
+                md["compressor_gr_d"] = self.compressor_d.gr_db
                 md["compressor_gr_m"] = self.compressor_m.gr_db
                 md["glue_compressor_gr_a"] = self.glue_compressor.gr_db
                 md["glue_compressor_gr_b"] = self.glue_compressor_b.gr_db
+                md["glue_compressor_gr_c"] = self.glue_compressor_c.gr_db
+                md["glue_compressor_gr_d"] = self.glue_compressor_d.gr_db
                 md["glue_compressor_gr_m"] = self.glue_compressor_m.gr_db
                 self._meter_callback(md)
 
@@ -904,142 +1090,34 @@ class AudioEngine:
 
         Args:
             effect_type: e.g. "delay", "tape_delay", "filter_a", etc.
-            bus: 1 for Rack A / FX1, 2 for Rack B / FX2.
+            bus: 1=Rack A/FX1, 2=Rack B/FX2, 3=Master, 4=Rack C/FX3, 5=Rack D/FX4.
             in_rack: True if the module is present.
         """
-        if effect_type == "delay":
-            if bus == 1:
-                self.delay_in_rack_a = in_rack
-            elif bus == 2:
-                self.delay_in_rack_b = in_rack
-        elif effect_type == "tape_delay":
-            if bus == 1:
-                self.tape_delay_in_rack_a = in_rack
-            elif bus == 2:
-                self.tape_delay_in_rack_b = in_rack
-        elif effect_type == "filter_a":
-            if bus == 1:
-                self.filter_a_in_rack_a = in_rack
-            elif bus == 2:
-                self.filter_a_in_rack_b = in_rack
-        elif effect_type == "filter_b":
-            if bus == 1:
-                self.filter_b_in_rack_a = in_rack
-            elif bus == 2:
-                self.filter_b_in_rack_b = in_rack
-        elif effect_type in ("phaser", "chorus", "flanger"):
-            fx_bus = self.fx_bus_1 if bus == 1 else self.fx_bus_2
-            attr = f"{effect_type}_in_rack"
-            setattr(fx_bus, attr, in_rack)
-            # Also update per-bus mod flag
-            if bus == 1:
-                self.mod_in_rack_a = (
-                    self.fx_bus_1.phaser_in_rack
-                    or self.fx_bus_1.chorus_in_rack
-                    or self.fx_bus_1.flanger_in_rack
-                )
-            else:
-                self.mod_in_rack_b = (
-                    self.fx_bus_2.phaser_in_rack
-                    or self.fx_bus_2.chorus_in_rack
-                    or self.fx_bus_2.flanger_in_rack
-                )
-        elif effect_type == "reel_to_reel":
-            if bus == 1:
-                self.reel_to_reel_in_rack_a = in_rack
-            elif bus == 2:
-                self.reel_to_reel_in_rack_b = in_rack
-        elif effect_type == "cassette_tape":
-            if bus == 1:
-                self.cassette_tape_in_rack_a = in_rack
-            elif bus == 2:
-                self.cassette_tape_in_rack_b = in_rack
-        elif effect_type == "vhs":
-            if bus == 1:
-                self.vhs_in_rack_a = in_rack
-            elif bus == 2:
-                self.vhs_in_rack_b = in_rack
-        elif effect_type == "vinyl":
-            if bus == 1:
-                self.vinyl_in_rack_a = in_rack
-            elif bus == 2:
-                self.vinyl_in_rack_b = in_rack
-        elif effect_type == "compressor":
-            if bus == 1:
-                self.compressor_in_rack_a = in_rack
-            elif bus == 2:
-                self.compressor_in_rack_b = in_rack
-        elif effect_type == "hall_reverb":
-            if bus == 1:
-                self.hall_reverb_in_rack_a = in_rack
-            elif bus == 2:
-                self.hall_reverb_in_rack_b = in_rack
-        elif effect_type == "plate_reverb":
-            if bus == 1:
-                self.plate_reverb_in_rack_a = in_rack
-            elif bus == 2:
-                self.plate_reverb_in_rack_b = in_rack
-        elif effect_type == "bit_crusher":
-            if bus == 1:
-                self.bit_crusher_in_rack_a = in_rack
-            elif bus == 2:
-                self.bit_crusher_in_rack_b = in_rack
-        elif effect_type == "tube_overdrive":
-            if bus == 1:
-                self.tube_overdrive_in_rack_a = in_rack
-            elif bus == 2:
-                self.tube_overdrive_in_rack_b = in_rack
-            else:
-                self.tube_overdrive_in_rack_m = in_rack
-        elif effect_type == "glue_compressor":
-            if bus == 1:
-                self.glue_compressor_in_rack_a = in_rack
-            elif bus == 2:
-                self.glue_compressor_in_rack_b = in_rack
-            else:
-                self.glue_compressor_in_rack_m = in_rack
-        elif effect_type == "ether_drift":
-            if bus == 1:
-                self.ether_drift_in_rack_a = in_rack
-            elif bus == 2:
-                self.ether_drift_in_rack_b = in_rack
-            else:
-                self.ether_drift_in_rack_m = in_rack
-        # --- Master bus (bus == 3) routing for remaining effect types ---
-        if bus == 3:
-            if effect_type == "filter_a":
-                self.filter_a_in_rack_m = in_rack
-            elif effect_type == "filter_b":
-                self.filter_b_in_rack_m = in_rack
-            elif effect_type in ("phaser", "chorus", "flanger"):
-                setattr(self.fx_bus_m, f"{effect_type}_in_rack", in_rack)
-                self.mod_in_rack_m = (
-                    self.fx_bus_m.phaser_in_rack
-                    or self.fx_bus_m.chorus_in_rack
-                    or self.fx_bus_m.flanger_in_rack
-                )
-            elif effect_type == "delay":
-                self.delay_in_rack_m = in_rack
-            elif effect_type == "tape_delay":
-                self.tape_delay_in_rack_m = in_rack
-            elif effect_type == "reel_to_reel":
-                self.reel_to_reel_in_rack_m = in_rack
-            elif effect_type == "cassette_tape":
-                self.cassette_tape_in_rack_m = in_rack
-            elif effect_type == "vhs":
-                self.vhs_in_rack_m = in_rack
-            elif effect_type == "vinyl":
-                self.vinyl_in_rack_m = in_rack
-            elif effect_type == "compressor":
-                self.compressor_in_rack_m = in_rack
-            elif effect_type == "hall_reverb":
-                self.hall_reverb_in_rack_m = in_rack
-            elif effect_type == "plate_reverb":
-                self.plate_reverb_in_rack_m = in_rack
-            elif effect_type == "bit_crusher":
-                self.bit_crusher_in_rack_m = in_rack
-            elif effect_type == "glue_compressor":
-                self.glue_compressor_in_rack_m = in_rack
+        # Map bus → suffix for simple flag-based effects
+        _SUFFIX = {1: '_a', 2: '_b', 3: '_m', 4: '_c', 5: '_d'}
+        suffix = _SUFFIX.get(bus)
+        if suffix is None:
+            return
+
+        # --- Mod effects (phaser/chorus/flanger) need special FXBus handling ---
+        if effect_type in ("phaser", "chorus", "flanger"):
+            _BUS_MAP = {
+                1: (self.fx_bus_1, 'mod_in_rack_a'),
+                2: (self.fx_bus_2, 'mod_in_rack_b'),
+                3: (self.fx_bus_m, 'mod_in_rack_m'),
+                4: (self.fx_bus_c, 'mod_in_rack_c'),
+                5: (self.fx_bus_d, 'mod_in_rack_d'),
+            }
+            fx_bus, mod_flag = _BUS_MAP[bus]
+            setattr(fx_bus, f"{effect_type}_in_rack", in_rack)
+            setattr(self, mod_flag,
+                    fx_bus.phaser_in_rack or fx_bus.chorus_in_rack or fx_bus.flanger_in_rack)
+            return
+
+        # --- All other effect types — direct flag set ---
+        flag_name = f"{effect_type}_in_rack{suffix}"
+        if hasattr(self, flag_name):
+            setattr(self, flag_name, in_rack)
 
     def set_master_hp(self, freq: float):
         """Set master highpass trim frequency (20-500 Hz)."""

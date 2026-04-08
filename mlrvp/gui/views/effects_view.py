@@ -1132,17 +1132,21 @@ from mlrvp.gui.rack_modules.cassette_tape import MixtapeModule
 from mlrvp.gui.rack_modules.vhs import VHSModule
 from mlrvp.gui.rack_modules.vinyl import VinylModule
 from mlrvp.gui.rack_modules.ether_drift import EtherDriftModule
+from mlrvp.gui.rack_modules.hall_reverb import HallReverbModule
+from mlrvp.gui.rack_modules.plate_spring_reverb import PlateSpringReverbModule
+from mlrvp.gui.rack_modules.bit_crusher import BitCrusherModule
+from mlrvp.gui.rack_modules.tube_overdrive import TubeOverdriveModule
 # Ensure registry is populated
 import mlrvp.gui.rack_modules  # noqa: F401
 
-# Total effects across both FX groups must stay under this cap.
+# Total effects across all FX groups must stay under this cap.
 # Budget: 512 samples @ 44100 Hz → 11.6ms callback, ~10.1ms for FX (after ~1.5ms routing overhead).
 # Benchmarked timings (post-optimisation):
 #   MoogLadder 0.43ms  |  HallReverb 0.16ms  |  PlateReverb 0.13ms
 #   Compressor 0.15ms  |  LoFi processors 0.08–0.13ms  |  everything else < 0.08ms
-# Worst-case (all 20 × MoogLadder) = 8.6ms — within the 10.1ms FX budget.
-# 30% safety margin reserved for GC pauses and OS jitter.
-MAX_TOTAL_EFFECTS = 20
+# Worst-case (all 28 × MoogLadder) = 12.04ms — ring buffer (8 blocks, ~93ms)
+# absorbs transient spikes.  Realistic 28-module mix ≈ 4.64ms — very comfortable.
+MAX_TOTAL_EFFECTS = 28
 
 
 class _GroupTabButton(QPushButton):
@@ -1214,15 +1218,21 @@ class EffectsView(QWidget):
         tab_bar = QHBoxLayout()
         tab_bar.setContentsMargins(4, 4, 4, 0)
         tab_bar.setSpacing(4)
-        self._tab_a = _GroupTabButton("FX GROUP A", active=True)
-        self._tab_b = _GroupTabButton("FX GROUP B", active=False)
-        self._tab_m = _GroupTabButton("FX GROUP M", active=False)
+        self._tab_a = _GroupTabButton("FX 1", active=True)
+        self._tab_b = _GroupTabButton("FX 2", active=False)
+        self._tab_c = _GroupTabButton("FX 3", active=False)
+        self._tab_d = _GroupTabButton("FX 4", active=False)
+        self._tab_m = _GroupTabButton("MASTER", active=False)
         self._tab_a.setToolTip("FX Group A — independent effects chain routed from mixer channels set to FX1")
         self._tab_b.setToolTip("FX Group B — independent effects chain routed from mixer channels set to FX2")
+        self._tab_c.setToolTip("FX Group C — independent effects chain routed from mixer channels set to FX3")
+        self._tab_d.setToolTip("FX Group D — independent effects chain routed from mixer channels set to FX4")
         self._tab_m.setToolTip("FX Group M — master bus effects chain applied to the final mix output")
         self._tab_a.clicked.connect(lambda: self._switch_group(0))
         self._tab_b.clicked.connect(lambda: self._switch_group(1))
-        self._tab_m.clicked.connect(lambda: self._switch_group(2))
+        self._tab_c.clicked.connect(lambda: self._switch_group(2))
+        self._tab_d.clicked.connect(lambda: self._switch_group(3))
+        self._tab_m.clicked.connect(lambda: self._switch_group(4))
 
         # MIDI map toggle
         self._midi_map_btn = QPushButton("MIDI MAP")
@@ -1244,6 +1254,8 @@ class EffectsView(QWidget):
 
         tab_bar.addWidget(self._tab_a)
         tab_bar.addWidget(self._tab_b)
+        tab_bar.addWidget(self._tab_c)
+        tab_bar.addWidget(self._tab_d)
         tab_bar.addWidget(self._tab_m)
         tab_bar.addStretch()
         tab_bar.addWidget(self._midi_map_btn)
@@ -1262,51 +1274,70 @@ class EffectsView(QWidget):
         self._stack = QStackedWidget()
         self._rack_a = RackContainer()
         self._rack_b = RackContainer()
+        self._rack_c = RackContainer()
+        self._rack_d = RackContainer()
         self._rack_m = RackContainer()
         self._stack.addWidget(self._rack_a)
         self._stack.addWidget(self._rack_b)
+        self._stack.addWidget(self._rack_c)
+        self._stack.addWidget(self._rack_d)
         self._stack.addWidget(self._rack_m)
         layout.addWidget(self._stack, stretch=1)
 
         # Cross-rack global limit enforcement
         self._rack_a.set_global_limit_fn(self._at_global_limit)
         self._rack_b.set_global_limit_fn(self._at_global_limit)
+        self._rack_c.set_global_limit_fn(self._at_global_limit)
+        self._rack_d.set_global_limit_fn(self._at_global_limit)
         self._rack_m.set_global_limit_fn(self._at_global_limit)
 
         # Track MIDI highlight state so newly-added modules get highlighted
         self._midi_highlight_on = False
         self._rack_a.rack_changed.connect(self._on_rack_changed)
         self._rack_b.rack_changed.connect(self._on_rack_changed)
+        self._rack_c.rack_changed.connect(self._on_rack_changed)
+        self._rack_d.rack_changed.connect(self._on_rack_changed)
         self._rack_m.rack_changed.connect(self._on_rack_changed)
 
-        # --- Populate Group A (FX Bus 1) — Creative Bus: dynamics → EQ → delay ---
+        # --- Populate Group A (FX Bus 1) — Clean Studio: dynamics → EQ → delay ---
         self._vu_a = DualVUMeterModule()
         self._compressor_a = CompressorModule()
         self._filter_a_module = MultibandFilterModule()
-        self._filter_b_module = MoogFilterModule()
         self._delay_module = DigitalDelayModule()
 
         for mod in [self._vu_a, self._compressor_a, self._filter_a_module,
-                    self._filter_b_module, self._delay_module]:
+                    self._delay_module]:
             self._rack_a.add_module(mod)
 
-        # --- Populate Group B (FX Bus 2) — Character Bus: glue → tape ---
+        # --- Populate Group B (FX Bus 2) — Tape Warmth: glue → reel → tape delay ---
         self._vu_b = DualVUMeterModule()
         self._glue_compressor_b = GlueCompressorModule()
         self._reel_module = ReelToReelModule()
-        # Scope, tape delay, and vinyl kept as hidden instances (property access /
-        # state mgmt) but not added to the default rack — add via the ＋ menu.
-        self._scope_b = OscilloscopeModule(parent=self)
-        self._scope_b.setVisible(False)
-        self._tape_delay_module = TapeDelayModule(parent=self)
-        self._tape_delay_module.setVisible(False)
-        self._vinyl_b = VinylModule(parent=self)
-        self._vinyl_b.setVisible(False)
+        self._tape_delay_module = TapeDelayModule()
 
-        self._cassette_module = MixtapeModule()
         for mod in [self._vu_b, self._glue_compressor_b, self._reel_module,
-                    self._cassette_module]:
+                    self._tape_delay_module]:
             self._rack_b.add_module(mod)
+
+        # --- Populate Group C (FX Bus 3) — Space & Modulation: reverbs → chorus ---
+        self._vu_c = DualVUMeterModule()
+        self._hall_reverb_c = HallReverbModule()
+        self._plate_reverb_c = PlateSpringReverbModule()
+        self._chorus_module = ChorusModule()
+
+        for mod in [self._vu_c, self._hall_reverb_c, self._plate_reverb_c,
+                    self._chorus_module]:
+            self._rack_c.add_module(mod)
+
+        # --- Populate Group D (FX Bus 4) — Lo-Fi / Destroy: crush → drive → vinyl ---
+        self._vu_d = DualVUMeterModule()
+        self._bit_crusher_d = BitCrusherModule()
+        self._tube_overdrive_d = TubeOverdriveModule()
+        self._vinyl_d = VinylModule()
+
+        for mod in [self._vu_d, self._bit_crusher_d, self._tube_overdrive_d,
+                    self._vinyl_d]:
+            self._rack_d.add_module(mod)
 
         # --- Populate Group M (Master bus) — Mastering chain: glue → EQ → monitor ---
         self._vu_m = DualVUMeterModule()
@@ -1322,25 +1353,35 @@ class EffectsView(QWidget):
             lambda cls, p, v: self._route_module_param(cls, p, v, 1))
         self._rack_b.module_param_changed.connect(
             lambda cls, p, v: self._route_module_param(cls, p, v, 2))
+        self._rack_c.module_param_changed.connect(
+            lambda cls, p, v: self._route_module_param(cls, p, v, 4))
+        self._rack_d.module_param_changed.connect(
+            lambda cls, p, v: self._route_module_param(cls, p, v, 5))
         self._rack_m.module_param_changed.connect(
             lambda cls, p, v: self._route_module_param(cls, p, v, 3))
 
         # --- Legacy panel shims for app.py property access ---
-        # Phaser/Chorus/Flanger instances exist for state management even when
-        # not in the default rack — they can still be added via the ＋ menu.
+        # Hidden instances for effects not in any default rack but still
+        # needed for state management and the ＋ menu add workflow.
         # Parent them to self so Qt keeps their C++ objects alive.
+        self._filter_b_module = MoogFilterModule(parent=self)
+        self._filter_b_module.setVisible(False)
         self._phaser_module = PhaserModule(parent=self)
         self._phaser_module.setVisible(False)
-        self._chorus_module = ChorusModule(parent=self)
-        self._chorus_module.setVisible(False)
         self._flanger_module = FlangerModule(parent=self)
         self._flanger_module.setVisible(False)
-        # Hidden instances for effects not in the default racks but still
-        # needed for state management and the + menu add workflow.
+        self._cassette_module = MixtapeModule(parent=self)
+        self._cassette_module.setVisible(False)
         self._vhs_module = VHSModule(parent=self)
         self._vhs_module.setVisible(False)
         self._vinyl_module = VinylModule(parent=self)
         self._vinyl_module.setVisible(False)
+        self._vinyl_b = VinylModule(parent=self)
+        self._vinyl_b.setVisible(False)
+        self._scope_b = OscilloscopeModule(parent=self)
+        self._scope_b.setVisible(False)
+        self._ether_drift_module = EtherDriftModule(parent=self)
+        self._ether_drift_module.setVisible(False)
         self._delay_panel = _LegacyPanelShim(self._delay_module)
         self._tape_delay_panel = _LegacyPanelShim(self._tape_delay_module)
         self._filter_a_panel = _LegacyPanelShim(self._filter_a_module)
@@ -1354,20 +1395,24 @@ class EffectsView(QWidget):
         self._stack.setCurrentIndex(idx)
         self._tab_a.setChecked(idx == 0)
         self._tab_b.setChecked(idx == 1)
-        self._tab_m.setChecked(idx == 2)
+        self._tab_c.setChecked(idx == 2)
+        self._tab_d.setChecked(idx == 3)
+        self._tab_m.setChecked(idx == 4)
 
     # --- Global effects limit ---
     def _at_global_limit(self) -> bool:
         """Return True if total effects across all racks hit the cap."""
         total = (len(self._rack_a.get_modules())
                  + len(self._rack_b.get_modules())
+                 + len(self._rack_c.get_modules())
+                 + len(self._rack_d.get_modules())
                  + len(self._rack_m.get_modules()))
         return total > MAX_TOTAL_EFFECTS
 
     # --- MIDI mapping mode ---
     def _toggle_midi_map(self, on: bool):
         self._midi_highlight_on = on
-        for rack in (self._rack_a, self._rack_b, self._rack_m):
+        for rack in (self._rack_a, self._rack_b, self._rack_c, self._rack_d, self._rack_m):
             for mod in rack.get_modules():
                 mod.set_midi_highlight(on)
         self.midi_map_toggled.emit(on)
@@ -1378,14 +1423,14 @@ class EffectsView(QWidget):
         self._midi_map_btn.blockSignals(True)
         self._midi_map_btn.setChecked(on)
         self._midi_map_btn.blockSignals(False)
-        for rack in (self._rack_a, self._rack_b, self._rack_m):
+        for rack in (self._rack_a, self._rack_b, self._rack_c, self._rack_d, self._rack_m):
             for mod in rack.get_modules():
                 mod.set_midi_highlight(on)
 
     def _on_rack_changed(self):
         """Sync MIDI highlight and effect in-rack status when rack contents change."""
         if self._midi_highlight_on:
-            for rack in (self._rack_a, self._rack_b, self._rack_m):
+            for rack in (self._rack_a, self._rack_b, self._rack_c, self._rack_d, self._rack_m):
                 for mod in rack.get_modules():
                     mod.set_midi_highlight(True)
         self.rack_contents_changed.emit(self.get_rack_sync_state())
@@ -1398,6 +1443,14 @@ class EffectsView(QWidget):
         }
         b_types = {
             mod.effect_type for mod in self._rack_b.get_modules()
+            if hasattr(mod, "effect_type")
+        }
+        c_types = {
+            mod.effect_type for mod in self._rack_c.get_modules()
+            if hasattr(mod, "effect_type")
+        }
+        d_types = {
+            mod.effect_type for mod in self._rack_d.get_modules()
             if hasattr(mod, "effect_type")
         }
         m_types = {
@@ -1414,6 +1467,8 @@ class EffectsView(QWidget):
         return {
             "presence_a": {et: (et in a_types) for et in all_fx},
             "presence_b": {et: (et in b_types) for et in all_fx},
+            "presence_c": {et: (et in c_types) for et in all_fx},
+            "presence_d": {et: (et in d_types) for et in all_fx},
             "presence_master": {et: (et in m_types) for et in all_fx},
         }
 
@@ -1460,16 +1515,24 @@ class EffectsView(QWidget):
             return
         fx1 = levels.get("fx1", [0.0, 0.0])
         fx2 = levels.get("fx2", [0.0, 0.0])
+        fx3 = levels.get("fx3", [0.0, 0.0])
+        fx4 = levels.get("fx4", [0.0, 0.0])
 
         # Per-bus waveform for oscilloscope isolation
         bus_waveforms = {
             id(self._rack_a): (levels.get("waveform_fx1_l"), levels.get("waveform_fx1_r")),
             id(self._rack_b): (levels.get("waveform_fx2_l"), levels.get("waveform_fx2_r")),
+            id(self._rack_c): (levels.get("waveform_fx3_l"), levels.get("waveform_fx3_r")),
+            id(self._rack_d): (levels.get("waveform_fx4_l"), levels.get("waveform_fx4_r")),
             id(self._rack_m): (levels.get("waveform_l"), levels.get("waveform_r")),
         }
 
         master = levels.get("master", [0.0, 0.0])
-        for rack, bus_levels in ((self._rack_a, fx1), (self._rack_b, fx2), (self._rack_m, master)):
+        for rack, bus_levels in (
+            (self._rack_a, fx1), (self._rack_b, fx2),
+            (self._rack_c, fx3), (self._rack_d, fx4),
+            (self._rack_m, master),
+        ):
             bus_l, bus_r = bus_levels[0], bus_levels[1]
             wf_l, wf_r = bus_waveforms.get(id(rack), (None, None))
             for mod in rack.get_modules():
@@ -1483,6 +1546,10 @@ class EffectsView(QWidget):
                             gr_key = "compressor_gr_a"
                         elif rack is self._rack_b:
                             gr_key = "compressor_gr_b"
+                        elif rack is self._rack_c:
+                            gr_key = "compressor_gr_c"
+                        elif rack is self._rack_d:
+                            gr_key = "compressor_gr_d"
                         else:
                             gr_key = "compressor_gr_m"
                         gr = levels.get(gr_key, 0.0)
@@ -1493,6 +1560,10 @@ class EffectsView(QWidget):
                             gr_key = "glue_compressor_gr_a"
                         elif rack is self._rack_b:
                             gr_key = "glue_compressor_gr_b"
+                        elif rack is self._rack_c:
+                            gr_key = "glue_compressor_gr_c"
+                        elif rack is self._rack_d:
+                            gr_key = "glue_compressor_gr_d"
                         else:
                             gr_key = "glue_compressor_gr_m"
                         gr = levels.get(gr_key, 0.0)

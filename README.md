@@ -32,7 +32,7 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 ### Core
 - **Grid-based sample triggering**: Load audio files and trigger them from rows on a monome grid, Launchpad, any MIDI controller, or the on-screen virtual grid
 - **Up to 16 rows** with independent sample playback, each synced to a master tempo
-- **4 group buses** with volume/send faders, mute, solo, and FX routing (OFF / FX1 / FX2)
+- **4 group buses** with volume/send faders, mute, solo, and FX routing (OFF / FX1 / FX2 / FX3 / FX4)
 - **Group-exclusive playback**: Only one row per group can play at a time — triggering a new row automatically stops any other playing row in the same group (allows simultaneous playback across different groups)
 - **Playback modes**: Loop, Pitch, Reverse, Shot (one-shot), Slice (hold-to-play with 2-button loop), SEQ (step sequencer), Step — **Step** plays the slice under the pressed button once then stops; **Pitch** plays each grid column at a different pitch using the selected scale map
 - **Per-channel controls**: Speed (halve/double + continuous), gain, attack/release envelope, start/end selection, transpose (time-stretch-free pitch shift, −24 to +24 semitones), steps (1–32 for SEQ/slice mapping), velocity, filter sweep
@@ -43,7 +43,7 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 - **Crossfade retrigger**: Equal-power cosine crossfade (~5.8 ms) for click-free re-triggering and pitch changes
 
 ### Effects & Processing
-- **Modular FX Rack UI**: Skeuomorphic rack with three independent effect groups (FX Group A / FX Group B / Master) — add, remove, and reorder effect modules freely; each module has a **power toggle** (green/gray icon) on its right rack ear to enable or bypass the effect without removing it
+- **Modular FX Rack UI**: Skeuomorphic rack with five independent effect groups (**FX 1 / FX 2 / FX 3 / FX 4 / Master**) accessible via tab buttons — add, remove, and reorder effect modules freely; each module has a **power toggle** (green/gray icon) on its right rack ear to enable or bypass the effect without removing it
 - **20 rack effect modules** with unique vintage-inspired faceplates:
   - **Déjà Vu Delay** — stereo digital delay with tempo-synced beat divisions or free ms mode, feedback envelope, LP/HP feedback filters, gain
   - **Rewind** — vintage tape delay with wow/flutter, saturation, tone shaping, and sync
@@ -65,8 +65,8 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
   - **Twin Peaks** — dual analog VU meter with selectable **VU** (ballistic), **PEAK** (fast attack/slow decay), and **RMS** (power average) modes; reads per-FX-bus signal levels
   - **CRT:// Scope** — oscilloscope for waveform visualization; reads per-FX-bus waveform data
   - **Ether Drift** — bipolar infinite phaser for vaporwave/slushwave textures; two allpass chains (RISE ↑ sawtooth / FALL ↓ inverted) with stereo spread, SYNC lock, ROUTE selector (BOTH / UP / DOWN), rate, depth, feedback, and dry/wet mix
-- **Max 8 modules per rack, 20 total** across all three groups
-- **2 FX buses** with per-group wet/dry send routing
+- **Max 8 modules per rack, 28 total** across all five groups
+- **4 independent FX send buses** (FX1–FX4) plus a post-mix **Master** bus; each mixer group routes independently to any bus or OFF
 - **Master HP/LP filter** with resonance control and response curve display
 - **Per-channel sweepable filter** (lowpass ↔ highpass)
 - **MIDI MAP mode** in the FX rack — highlights all mappable controls for quick MIDI CC assignment
@@ -303,7 +303,7 @@ MLRVp/
 │       ├── views/          # Panels
 │       │   ├── channel_view.py
 │       │   ├── mixer_view.py
-│       │   ├── effects_view.py  # FX Rack (Group A / Group B / Master)
+│       │   ├── effects_view.py  # FX Rack (FX 1 / FX 2 / FX 3 / FX 4 / Master)
 │       │   ├── master_filter_view.py
 │       │   ├── transport_view.py
 │       │   ├── tools_view.py
@@ -742,7 +742,14 @@ At the bottom of the Slice tab is a scrollable **SLICES** library panel listing 
 
 #### FX Rack
 
-The effects section uses a modular **FX Rack** interface with three independent effect groups accessible via **FX GROUP A** / **FX GROUP B** / **MASTER** backlit tab buttons. Group A and Group B each process their own bus; the Master group processes the combined stereo output.
+The effects section uses a modular **FX Rack** interface with five independent effect groups accessible via the **FX 1** / **FX 2** / **FX 3** / **FX 4** / **MASTER** tab buttons. FX 1–4 each process their own dedicated send bus; the Master group processes the combined stereo output post-mix.
+
+Each FX group has a curated default loadout:
+- **FX 1** — Clean Studio: Compressor → Multiband Filter → Delay
+- **FX 2** — Tape Warmth: Glue Compressor → Reel-to-Reel → Tape Delay
+- **FX 3** — Space & Mod: Hall Reverb → Plate Reverb → Chorus
+- **FX 4** — Lo-Fi / Destroy: Bit Crusher → Tube Overdrive → Vinyl
+- **Master** — Mastering: Glue Compressor → Multiband Filter → Oscilloscope
 
 ##### Adding and Removing Effects
 
@@ -751,7 +758,7 @@ The effects section uses a modular **FX Rack** interface with three independent 
 - Each module's **right rack ear** has two controls:
   - **Power button** (green/gray circle icon) — toggles the effect on or bypass. Bypassed modules pass audio through unprocessed; their state is still saved with the preset. Power can also be MIDI-mapped.
   - **Remove button** (red ✕) — permanently removes the module from the rack.
-- **Limit**: Maximum 8 modules per rack, 20 total across all three groups.
+- **Limit**: Maximum 8 modules per rack, 28 total across all five groups.
 
 ##### Available Modules
 
@@ -784,13 +791,17 @@ Click the **MIDI MAP** button in the FX Rack header to enter MIDI mapping mode. 
 
 #### FX Routing
 
-mlrVp has two independent FX buses (FX1 and FX2) plus a Master bus. Each group can be routed to OFF, FX1, or FX2 via the group FX route control in the mixer:
+mlrVp has **four independent pre-mix FX send buses** (FX1–FX4) plus a **Master** bus. Each mixer group routes to its own bus via the FX route button — click to cycle through:
 
 - **OFF** — dry signal only, no effects processing.
-- **FX1** — signal is processed through Filter A and the modulation effects (if routed to FX1).
-- **FX2** — signal is processed through Filter B and the modulation effects (if routed to FX2).
+- **FX1** — routes through the FX 1 rack (golden, Group 1 color).
+- **FX2** — routes through the FX 2 rack (green, Group 2 color).
+- **FX3** — routes through the FX 3 rack (salmon, Group 3 color).
+- **FX4** — routes through the FX 4 rack (teal, Group 4 color).
 
-The **Master** FX rack processes the combined stereo output post-mix and is always active alongside any Group A/B chains.
+The route button displays the active bus label with its group color as the font and border on a contrasting dark background for easy reading.
+
+The **Master** FX rack processes the combined stereo output post-mix and is always active regardless of send routing.
 
 The **Delay** and **Modulation** effects each have their own route selector to choose which FX bus they belong to.
 

@@ -1628,37 +1628,44 @@ class AppController:
 
     # --- Effects handlers ---
 
+    # Bus→suffix mapping for per-bus config/engine attribute resolution
+    _BUS_CFG_SUFFIX = {1: "", 2: "_b", 3: "_m", 4: "_c", 5: "_d"}
+    _BUS_MOD_MAP = {1: "fx_bus_1", 2: "fx_bus_2", 3: "fx_bus_m", 4: "fx_bus_c", 5: "fx_bus_d"}
+
+    def _resolve_bus(self, fx_name: str, bus: int):
+        """Return (config_state, engine_instance) for an effect on the given bus."""
+        suffix = self._BUS_CFG_SUFFIX.get(bus, "")
+        cfg_key = f"{fx_name}{suffix}" if suffix else fx_name
+        eng_key = f"{fx_name}{suffix}" if suffix else fx_name
+        return getattr(self.config, cfg_key), getattr(self.engine, eng_key) if self.engine else None
+
     def _gui_delay_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.delay if bus == 1 else (self.config.delay_b if bus == 2 else self.config.delay_m)
+        cfg, inst = self._resolve_bus("delay", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.delay if bus == 1 else (self.engine.delay_b if bus == 2 else self.engine.delay_m)
+        if inst:
             setattr(inst.state, param, value)
             if param in ("filter_freq_lp", "filter_freq_hp"):
                 inst._update_filters()
 
     def _gui_tape_delay_param(self, param: str, value, bus: int = 1):
         """Handle tape delay parameter change."""
-        cfg = self.config.tape_delay if bus == 1 else (self.config.tape_delay_b if bus == 2 else self.config.tape_delay_m)
+        cfg, inst = self._resolve_bus("tape_delay", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.tape_delay if bus == 1 else (self.engine.tape_delay_b if bus == 2 else self.engine.tape_delay_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_filter_a_param(self, param: str, value, bus: int = 1):
         """Handle filter A (shapeable LP/HP) parameter change."""
-        cfg = self.config.filter_a if bus == 1 else (self.config.filter_a_b if bus == 2 else self.config.filter_a_m)
+        cfg, inst = self._resolve_bus("filter_a", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.filter_a if bus == 1 else (self.engine.filter_a_b if bus == 2 else self.engine.filter_a_m)
+        if inst:
             inst.update_from_state(cfg)
 
     def _gui_filter_b_param(self, param: str, value, bus: int = 1):
         """Handle filter B (Moog ladder) parameter change."""
-        cfg = self.config.filter_b if bus == 1 else (self.config.filter_b_b if bus == 2 else self.config.filter_b_m)
+        cfg, inst = self._resolve_bus("filter_b", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.filter_b if bus == 1 else (self.engine.filter_b_b if bus == 2 else self.engine.filter_b_m)
+        if inst:
             inst.update_from_state(cfg)
 
     def _gui_effect_route(self, effect_name: str, route: int):
@@ -1680,87 +1687,77 @@ class AppController:
 
     def _gui_mod_param(self, param: str, value, bus: int = 1):
         """Handle modulation effect parameter change."""
-        cfg = self.config.mod if bus == 1 else (self.config.mod_b if bus == 2 else self.config.mod_m)
+        suffix = self._BUS_CFG_SUFFIX.get(bus, "")
+        cfg = getattr(self.config, f"mod{suffix}" if suffix else "mod")
         setattr(cfg, param, value)
         if self.engine:
-            fx_bus = self.engine.fx_bus_1 if bus == 1 else (self.engine.fx_bus_2 if bus == 2 else self.engine.fx_bus_m)
+            fx_bus = getattr(self.engine, self._BUS_MOD_MAP[bus])
             fx_bus.update_mod(cfg)
 
     def _gui_reel_to_reel_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.reel_to_reel if bus == 1 else (self.config.reel_to_reel_b if bus == 2 else self.config.reel_to_reel_m)
+        cfg, inst = self._resolve_bus("reel_to_reel", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.reel_to_reel if bus == 1 else (self.engine.reel_to_reel_b if bus == 2 else self.engine.reel_to_reel_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_cassette_tape_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.cassette_tape if bus == 1 else (self.config.cassette_tape_b if bus == 2 else self.config.cassette_tape_m)
+        cfg, inst = self._resolve_bus("cassette_tape", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.cassette_tape if bus == 1 else (self.engine.cassette_tape_b if bus == 2 else self.engine.cassette_tape_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_vhs_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.vhs if bus == 1 else (self.config.vhs_b if bus == 2 else self.config.vhs_m)
+        cfg, inst = self._resolve_bus("vhs", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.vhs if bus == 1 else (self.engine.vhs_b if bus == 2 else self.engine.vhs_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_vinyl_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.vinyl if bus == 1 else (self.config.vinyl_b if bus == 2 else self.config.vinyl_m)
+        cfg, inst = self._resolve_bus("vinyl", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.vinyl if bus == 1 else (self.engine.vinyl_b if bus == 2 else self.engine.vinyl_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_compressor_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.compressor if bus == 1 else (self.config.compressor_b if bus == 2 else self.config.compressor_m)
+        cfg, inst = self._resolve_bus("compressor", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.compressor if bus == 1 else (self.engine.compressor_b if bus == 2 else self.engine.compressor_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_glue_compressor_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.glue_compressor if bus == 1 else (self.config.glue_compressor_b if bus == 2 else self.config.glue_compressor_m)
+        cfg, inst = self._resolve_bus("glue_compressor", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.glue_compressor if bus == 1 else (self.engine.glue_compressor_b if bus == 2 else self.engine.glue_compressor_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_hall_reverb_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.hall_reverb if bus == 1 else (self.config.hall_reverb_b if bus == 2 else self.config.hall_reverb_m)
+        cfg, inst = self._resolve_bus("hall_reverb", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.hall_reverb if bus == 1 else (self.engine.hall_reverb_b if bus == 2 else self.engine.hall_reverb_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_bit_crusher_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.bit_crusher if bus == 1 else (self.config.bit_crusher_b if bus == 2 else self.config.bit_crusher_m)
+        cfg, inst = self._resolve_bus("bit_crusher", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.bit_crusher if bus == 1 else (self.engine.bit_crusher_b if bus == 2 else self.engine.bit_crusher_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_tube_overdrive_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.tube_overdrive if bus == 1 else (self.config.tube_overdrive_b if bus == 2 else self.config.tube_overdrive_m)
+        cfg, inst = self._resolve_bus("tube_overdrive", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.tube_overdrive if bus == 1 else (self.engine.tube_overdrive_b if bus == 2 else self.engine.tube_overdrive_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_ether_drift_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.ether_drift if bus == 1 else (self.config.ether_drift_b if bus == 2 else self.config.ether_drift_m)
+        cfg, inst = self._resolve_bus("ether_drift", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.ether_drift if bus == 1 else (self.engine.ether_drift_b if bus == 2 else self.engine.ether_drift_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_plate_reverb_param(self, param: str, value, bus: int = 1):
-        cfg = self.config.plate_reverb if bus == 1 else (self.config.plate_reverb_b if bus == 2 else self.config.plate_reverb_m)
+        cfg, inst = self._resolve_bus("plate_reverb", bus)
         setattr(cfg, param, value)
-        if self.engine:
-            inst = self.engine.plate_reverb if bus == 1 else (self.engine.plate_reverb_b if bus == 2 else self.engine.plate_reverb_m)
+        if inst:
             setattr(inst.state, param, value)
 
     def _gui_record_toggle(self, armed: bool):
@@ -1786,6 +1783,8 @@ class AppController:
         pres_a = payload.get("presence_a", {}) if isinstance(payload, dict) else {}
         pres_b = payload.get("presence_b", {}) if isinstance(payload, dict) else {}
         pres_m = payload.get("presence_master", {}) if isinstance(payload, dict) else {}
+        pres_c = payload.get("presence_c", {}) if isinstance(payload, dict) else {}
+        pres_d = payload.get("presence_d", {}) if isinstance(payload, dict) else {}
 
         for effect_type, in_rack in pres_a.items():
             self.engine.set_effect_in_rack(effect_type, 1, in_rack)
@@ -1793,6 +1792,10 @@ class AppController:
             self.engine.set_effect_in_rack(effect_type, 2, in_rack)
         for effect_type, in_rack in pres_m.items():
             self.engine.set_effect_in_rack(effect_type, 3, in_rack)
+        for effect_type, in_rack in pres_c.items():
+            self.engine.set_effect_in_rack(effect_type, 4, in_rack)
+        for effect_type, in_rack in pres_d.items():
+            self.engine.set_effect_in_rack(effect_type, 5, in_rack)
 
     # --- Setup handlers ---
 
@@ -2231,7 +2234,7 @@ class AppController:
             },
         }
 
-        for rack_name, rack in (("A", ev._rack_a), ("B", ev._rack_b), ("M", ev._rack_m)):
+        for rack_name, rack in (("A", ev._rack_a), ("B", ev._rack_b), ("M", ev._rack_m), ("C", ev._rack_c), ("D", ev._rack_d)):
             for mi, mod in enumerate(rack.get_modules()):
                 et = getattr(mod, "effect_type", "")
                 spec = fx_specs.get(et)
@@ -2699,54 +2702,40 @@ class AppController:
             self.engine.mixer.groups[i].fx_route = grp.fx_route
 
         # FX: sync per-bus instances from per-bus config
-        self.engine.filter_a.update_from_state(self.config.filter_a)
-        self.engine.filter_a_b.update_from_state(self.config.filter_a_b)
-        self.engine.filter_b.update_from_state(self.config.filter_b)
-        self.engine.filter_b_b.update_from_state(self.config.filter_b_b)
-        self.engine.fx_bus_1.update_mod(self.config.mod)
-        self.engine.fx_bus_2.update_mod(self.config.mod_b)
+        _suffixes = ("", "_b", "_m", "_c", "_d")
+        for sfx in _suffixes:
+            fa = getattr(self.engine, f"filter_a{sfx}")
+            fa.update_from_state(getattr(self.config, f"filter_a{sfx}"))
+            fb = getattr(self.engine, f"filter_b{sfx}")
+            fb.update_from_state(getattr(self.config, f"filter_b{sfx}"))
+
+        for bus_key, cfg_sfx in (("fx_bus_1", ""), ("fx_bus_2", "_b"),
+                                  ("fx_bus_m", "_m"), ("fx_bus_c", "_c"),
+                                  ("fx_bus_d", "_d")):
+            getattr(self.engine, bus_key).update_mod(
+                getattr(self.config, f"mod{cfg_sfx}"))
 
         # Sync delay/tape_delay state per-bus
-        for attr, val in vars(self.config.delay).items():
-            if not attr.startswith('_'):
-                setattr(self.engine.delay.state, attr, val)
-        for attr, val in vars(self.config.delay_b).items():
-            if not attr.startswith('_'):
-                setattr(self.engine.delay_b.state, attr, val)
-        self.engine.delay._update_filters()
-        self.engine.delay_b._update_filters()
-        for attr, val in vars(self.config.tape_delay).items():
-            if not attr.startswith('_'):
-                setattr(self.engine.tape_delay.state, attr, val)
-        for attr, val in vars(self.config.tape_delay_b).items():
-            if not attr.startswith('_'):
-                setattr(self.engine.tape_delay_b.state, attr, val)
+        for sfx in _suffixes:
+            for attr, val in vars(getattr(self.config, f"delay{sfx}")).items():
+                if not attr.startswith('_'):
+                    setattr(getattr(self.engine, f"delay{sfx}").state, attr, val)
+            getattr(self.engine, f"delay{sfx}")._update_filters()
+            for attr, val in vars(getattr(self.config, f"tape_delay{sfx}")).items():
+                if not attr.startswith('_'):
+                    setattr(getattr(self.engine, f"tape_delay{sfx}").state, attr, val)
 
-        # Sync lo-fi media effect + compressor + reverb state per-bus
+        # Sync remaining effect states across all buses
         for fx_name in ("reel_to_reel", "cassette_tape", "vhs", "vinyl", "compressor",
                         "hall_reverb", "plate_reverb", "glue_compressor",
                         "bit_crusher", "tube_overdrive", "ether_drift"):
-            cfg_a = getattr(self.config, fx_name)
-            for attr, val in vars(cfg_a).items():
-                if not attr.startswith('_'):
-                    setattr(getattr(self.engine, fx_name).state, attr, val)
-            cfg_b = getattr(self.config, f"{fx_name}_b")
-            for attr, val in vars(cfg_b).items():
-                if not attr.startswith('_'):
-                    setattr(getattr(self.engine, f"{fx_name}_b").state, attr, val)
-
-        # Sync master bus (_m) effect states
-        for fx_name in ("reel_to_reel", "cassette_tape", "vhs", "vinyl", "compressor",
-                        "hall_reverb", "plate_reverb", "glue_compressor",
-                        "bit_crusher", "tube_overdrive", "ether_drift"):
-            cfg_m_key = f"{fx_name}_m"
-            if hasattr(self.config, cfg_m_key):
-                cfg_m = getattr(self.config, cfg_m_key)
-                eng_m_key = f"{fx_name}_m"
-                if hasattr(self.engine, eng_m_key):
-                    for attr, val in vars(cfg_m).items():
-                        if not attr.startswith('_'):
-                            setattr(getattr(self.engine, eng_m_key).state, attr, val)
+            for sfx in _suffixes:
+                cfg_key = f"{fx_name}{sfx}"
+                cfg = getattr(self.config, cfg_key)
+                eng = getattr(self.engine, cfg_key)
+                for attr, val in vars(cfg).items():
+                    if not attr.startswith('_'):
+                        setattr(eng.state, attr, val)
 
         # Re-sync in-rack flags from current rack layout
         if self.window:
@@ -2788,54 +2777,40 @@ class AppController:
 
         # FX: sync both bus instances from config
         # FX: sync per-bus instances from per-bus config
-        self.engine.filter_a.update_from_state(self.config.filter_a)
-        self.engine.filter_a_b.update_from_state(self.config.filter_a_b)
-        self.engine.filter_b.update_from_state(self.config.filter_b)
-        self.engine.filter_b_b.update_from_state(self.config.filter_b_b)
-        self.engine.fx_bus_1.update_mod(self.config.mod)
-        self.engine.fx_bus_2.update_mod(self.config.mod_b)
+        _suffixes = ("", "_b", "_m", "_c", "_d")
+        for sfx in _suffixes:
+            fa = getattr(self.engine, f"filter_a{sfx}")
+            fa.update_from_state(getattr(self.config, f"filter_a{sfx}"))
+            fb = getattr(self.engine, f"filter_b{sfx}")
+            fb.update_from_state(getattr(self.config, f"filter_b{sfx}"))
+
+        for bus_key, cfg_sfx in (("fx_bus_1", ""), ("fx_bus_2", "_b"),
+                                  ("fx_bus_m", "_m"), ("fx_bus_c", "_c"),
+                                  ("fx_bus_d", "_d")):
+            getattr(self.engine, bus_key).update_mod(
+                getattr(self.config, f"mod{cfg_sfx}"))
 
         # Sync delay/tape_delay state per-bus
-        for attr, val in vars(self.config.delay).items():
-            if not attr.startswith('_'):
-                setattr(self.engine.delay.state, attr, val)
-        for attr, val in vars(self.config.delay_b).items():
-            if not attr.startswith('_'):
-                setattr(self.engine.delay_b.state, attr, val)
-        self.engine.delay._update_filters()
-        self.engine.delay_b._update_filters()
-        for attr, val in vars(self.config.tape_delay).items():
-            if not attr.startswith('_'):
-                setattr(self.engine.tape_delay.state, attr, val)
-        for attr, val in vars(self.config.tape_delay_b).items():
-            if not attr.startswith('_'):
-                setattr(self.engine.tape_delay_b.state, attr, val)
+        for sfx in _suffixes:
+            for attr, val in vars(getattr(self.config, f"delay{sfx}")).items():
+                if not attr.startswith('_'):
+                    setattr(getattr(self.engine, f"delay{sfx}").state, attr, val)
+            getattr(self.engine, f"delay{sfx}")._update_filters()
+            for attr, val in vars(getattr(self.config, f"tape_delay{sfx}")).items():
+                if not attr.startswith('_'):
+                    setattr(getattr(self.engine, f"tape_delay{sfx}").state, attr, val)
 
-        # Sync lo-fi media effect + compressor + reverb state per-bus
+        # Sync remaining effect states across all buses
         for fx_name in ("reel_to_reel", "cassette_tape", "vhs", "vinyl", "compressor",
                         "hall_reverb", "plate_reverb", "glue_compressor",
                         "bit_crusher", "tube_overdrive", "ether_drift"):
-            cfg_a = getattr(self.config, fx_name)
-            for attr, val in vars(cfg_a).items():
-                if not attr.startswith('_'):
-                    setattr(getattr(self.engine, fx_name).state, attr, val)
-            cfg_b = getattr(self.config, f"{fx_name}_b")
-            for attr, val in vars(cfg_b).items():
-                if not attr.startswith('_'):
-                    setattr(getattr(self.engine, f"{fx_name}_b").state, attr, val)
-
-        # Sync master bus (_m) effect states
-        for fx_name in ("reel_to_reel", "cassette_tape", "vhs", "vinyl", "compressor",
-                        "hall_reverb", "plate_reverb", "glue_compressor",
-                        "bit_crusher", "tube_overdrive", "ether_drift"):
-            cfg_m_key = f"{fx_name}_m"
-            if hasattr(self.config, cfg_m_key):
-                cfg_m = getattr(self.config, cfg_m_key)
-                eng_m_key = f"{fx_name}_m"
-                if hasattr(self.engine, eng_m_key):
-                    for attr, val in vars(cfg_m).items():
-                        if not attr.startswith('_'):
-                            setattr(getattr(self.engine, eng_m_key).state, attr, val)
+            for sfx in _suffixes:
+                cfg_key = f"{fx_name}{sfx}"
+                cfg = getattr(self.config, cfg_key)
+                eng = getattr(self.engine, cfg_key)
+                for attr, val in vars(cfg).items():
+                    if not attr.startswith('_'):
+                        setattr(eng.state, attr, val)
 
         # Re-sync in-rack flags from current rack layout
         if self.window:
@@ -3015,13 +2990,23 @@ class AppController:
             w.effects_view.set_effect_route("filter_b", self.config.filter_b.fx_route)
             w.effects_view.set_effect_route("mod", self.config.mod_route)
 
-            # Rack modules state recall
-            w.effects_view.reel_module.set_state(self.config.reel_to_reel)
-            w.effects_view.cassette_module.set_state(self.config.cassette_tape)
-            w.effects_view.vhs_module.set_state(self.config.vhs)
-            w.effects_view.vinyl_module.set_state(self.config.vinyl)
-            w.effects_view.vinyl_b_module.set_state(self.config.vinyl_b)
-            w.effects_view.compressor_module.set_state(self.config.compressor_b)
+            # Rack modules state recall — push config to every module in all 5 racks
+            _MOD_TYPES = {"chorus", "flanger", "phaser"}
+            _SKIP_TYPES = {"vu_meter", "oscilloscope"}
+            for rack, sfx in ((w.effects_view._rack_a, ""),
+                              (w.effects_view._rack_b, "_b"),
+                              (w.effects_view._rack_m, "_m"),
+                              (w.effects_view._rack_c, "_c"),
+                              (w.effects_view._rack_d, "_d")):
+                for mod in rack.get_modules():
+                    et = getattr(mod, "effect_type", "")
+                    if et in _SKIP_TYPES or not et:
+                        continue
+                    cfg_base = "mod" if et in _MOD_TYPES else et
+                    cfg_key = f"{cfg_base}{sfx}" if sfx else cfg_base
+                    cfg = getattr(self.config, cfg_key, None)
+                    if cfg is not None and hasattr(mod, "set_state"):
+                        mod.set_state(cfg)
         finally:
             ControlDisplaySettings.notifications_suspended = False
 
