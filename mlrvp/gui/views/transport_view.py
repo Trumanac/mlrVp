@@ -47,12 +47,14 @@ class PatternButton(QWidget):
 
     Layout: [▼] [P1: 4] [▲]  — click label to cycle idle→recording→playing.
     Hold label 3 seconds to erase (clear) the pattern.
-    Up/down arrows change bar count: 4 → 8 → 16 → 32 → 4 …"""
+    Up/down arrows change bar count freely between 1 and 32 bars.
+    Default starting values are 4, 8, 16, 32 for P1–P4."""
 
     state_changed = Signal(int, str)  # idx, state: 'idle'|'recording'|'playing'|'clear'
     length_changed = Signal(int, int)  # idx, new_length
 
-    BAR_SIZES = [4, 8, 16, 32]
+    MIN_BARS = 1
+    MAX_BARS = 32
 
     def __init__(self, idx: int, length: int, parent=None):
         super().__init__(parent)
@@ -133,16 +135,12 @@ class PatternButton(QWidget):
         self.state_changed.emit(self._idx, self._state)
 
     def _inc_length(self):
-        idx = self.BAR_SIZES.index(self._length) if self._length in self.BAR_SIZES else 0
-        idx = (idx + 1) % len(self.BAR_SIZES)
-        self._length = self.BAR_SIZES[idx]
+        self._length = min(self._length + 1, self.MAX_BARS)
         self._update_label()
         self.length_changed.emit(self._idx, self._length)
 
     def _dec_length(self):
-        idx = self.BAR_SIZES.index(self._length) if self._length in self.BAR_SIZES else 0
-        idx = (idx - 1) % len(self.BAR_SIZES)
-        self._length = self.BAR_SIZES[idx]
+        self._length = max(self._length - 1, self.MIN_BARS)
         self._update_label()
         self.length_changed.emit(self._idx, self._length)
 

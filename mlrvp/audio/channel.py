@@ -69,6 +69,10 @@ class Channel:
         self._seq_columns: int = 8             # total grid columns (set at trigger time)
         self._seq_playing_step: bool = False    # True while the sample is sounding this step
 
+        # STEP mode state (play one slice then stop)
+        self._step_mode_start: float = 0.0
+        self._step_mode_end: float = 0.0
+
         # PITCH mode state
         self._pitch_mode_mult: float = 1.0     # rate multiplier from scale degree
         self._pitch_mode_col: int = -1         # last triggered column (for LED feedback)
@@ -212,6 +216,16 @@ class Channel:
         steps = self.state.steps if self.state.steps > 0 else total_columns
         slice_index = int((column / total_columns) * steps)
         col_frac = slice_index / steps
+
+        # STEP mode: play only the slice this button covers, then stop
+        if self.state.mode == PlaybackMode.STEP:
+            self._step_mode_start = sel_start_samp + col_frac * sel_length
+            self._step_mode_end = sel_start_samp + ((slice_index + 1) / steps) * sel_length
+            self._position = self._step_mode_start
+            self._playing = True
+            self._releasing = False
+            self.state.playing = True
+            return
 
         # Reverse mode: invert mapping so column 0 starts from end
         if self.state.mode == PlaybackMode.REVERSE:
@@ -407,6 +421,9 @@ class Channel:
                 else:
                     # Inverted or equal bounds — fall back to full selection
                     pass
+        if self.state.mode == PlaybackMode.STEP:
+            loop_start = self._step_mode_start
+            loop_end = self._step_mode_end
         loop_len = loop_end - loop_start
 
         # Attack/release times in samples
@@ -417,7 +434,7 @@ class Channel:
 
         # Determine loop mode
         pitch_loops = (self.state.mode == PlaybackMode.PITCH and self.state.pitch_hold)
-        do_loop = not (self.state.mode in (PlaybackMode.ONESHOT, PlaybackMode.SEQ, PlaybackMode.PITCH) and not pitch_loops)
+        do_loop = not (self.state.mode in (PlaybackMode.ONESHOT, PlaybackMode.SEQ, PlaybackMode.PITCH, PlaybackMode.STEP) and not pitch_loops)
 
         # ── Numba JIT path ──────────────────────────────────────────
         if _HAS_CH_JIT:

@@ -53,7 +53,7 @@ apply modular effects, and build setlists for live performance.</p>
 <ul>
 <li>Each row is one sample channel. The waveform shows playback position, active selection (bright), out-of-loop content (dim), and grid column dividers.</li>
 <li><b>Drag a file</b> onto the waveform to load it. Dragging onto a <i>playing</i> row stages the new sample — the old audio keeps looping until the next trigger.</li>
-<li><b>Mode</b> (LOOP / RVRS / SHOT / SLCE / SQNC / <b>PTCH</b>) — Loop: continuous loop; Reverse: reverse loop; Shot: one-shot to end; Slice: hold a button to play, hold two to latch a sub-loop; Sequence: step sequencer — toggle grid buttons to define active steps, the sample is divided into equal slices and each active step triggers its slice in sync with the clock; <b>Pitch</b>: each grid column plays the sample at a different pitch based on the selected scale map.</li>
+<li><b>Mode</b> (LOOP / PTCH / RVRS / SHOT / SLCE / SQNC / STEP, alphabetical) — Loop: continuous loop; Pitch: each grid column plays at a different pitch based on the selected scale map; Reverse: reverse loop; Shot: one-shot to end; Slice: hold a button to play, hold two to latch a sub-loop; Sequence: step sequencer — toggle grid buttons to define active steps, the sample is divided into equal slices and each active step triggers its slice in sync with the clock; <b>Step</b>: press a button to play exactly the one slice it covers, once then stop — great for triggering individual hits or phrases without looping.</li>
 <li><b>Group</b> (G1–G4) — only one row per group plays at a time. Triggering a new row in the same group auto-stops the current one.</li>
 <li><b>Speed</b> spinner — playback rate (0.00–8.00×). <b>−½</b> halves, <b>+2×</b> doubles. Snap Speed to Rate (Setup → Grid) rounds to the nearest ½×/2× step on load.</li>
 <li><b>Pitch</b> spinner — transpose in semitones (−24 to +24 st). Uses time-stretch pitch shifting so playback speed is unaffected. Computed in the background; audio switches seamlessly once ready.</li>
@@ -158,7 +158,7 @@ Click <b>ARM</b> and recording starts on the next beat, writing directly into th
 <li><b>SYNC</b> — auto-detects BPM from the loaded samples and updates the tempo spinner.</li>
 <li><b>TAP</b> — tap repeatedly to set BPM by feel. Shows current beat position (e.g. <code>2.3</code>) when idle.</li>
 <li><b>Quantize</b> — Off, 1/4, 1/8, 1/16, Bar. Controls when grid triggers fire.</li>
-<li><b>P1–P4 pattern recorders</b> — click to cycle idle → recording → playing. Click <b>−</b> / <b>+</b> arrows to change bar count (4→8→16→32). Hold the label 3 seconds to erase the pattern.</li>
+<li><b>P1–P4 pattern recorders</b> — click to cycle idle → recording → playing. Click <b>−</b> / <b>+</b> arrows to change bar count freely between 1 and 32 bars (defaults: 4, 8, 16, 32). Hold the label 3 seconds to erase the pattern.</li>
 <li><b>G1–G4 GROUP STOP</b> buttons — stop all channels in that group. <b>ALL</b> stops all channels.</li>
 </ul>
 
@@ -512,11 +512,7 @@ class MainWindow(QMainWindow):
         self.scale_change_requested.emit(factor)
 
     def _on_about(self):
-        try:
-            from importlib.metadata import version as _pkg_version
-            _ver = _pkg_version("mlrVp")
-        except Exception:
-            _ver = "0.6.9"
+        from mlrvp import __version__ as _ver
         QMessageBox.about(
             self, "About mlrVp",
             "<h2>mlrVp</h2>"

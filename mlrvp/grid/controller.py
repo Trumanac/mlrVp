@@ -16,9 +16,20 @@ from dataclasses import dataclass
 from mlrvp.config import MAX_ROWS, MAX_COLUMNS, LED_OFF, LED_DIM, LED_MED, LED_BRIGHT
 from mlrvp.grid.midi_grid import MidiGridAdapter, scan_midi_grid_devices
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QObject, Signal, Qt
 
 log = logging.getLogger("mlrvp")
+
+
+class _GridSignalBridge(QObject):
+    """Thread-safe bridge for forwarding grid events to the Qt main thread.
+
+    QTimer.singleShot called from non-Qt threads (rtmidi, asyncio) can
+    silently fail in PySide6.  Signals with QueuedConnection are the
+    correct cross-thread mechanism.
+    """
+    button_event = Signal(int, int, int)    # x, y, state
+    control_event = Signal(int, int)        # btn_idx, state
 
 
 @dataclass
@@ -55,6 +66,11 @@ class GridController:
         self._thread: Optional[threading.Thread] = None
         self._monome_row_offset = 0  # 1 when monome connected (top row = control)
         self._pending_monome_connect = False
+
+        # Thread-safe bridge for forwarding grid events to Qt main thread
+        self._bridge = _GridSignalBridge()
+        self._bridge.button_event.connect(self._dispatch_button, Qt.ConnectionType.QueuedConnection)
+        self._bridge.control_event.connect(self._dispatch_control, Qt.ConnectionType.QueuedConnection)
 
         # MIDI grid controller (Launchpad, etc.)
         self._midi_grid: Optional[MidiGridAdapter] = None
@@ -143,17 +159,25 @@ class GridController:
             if self._monome is None:
                 self._connected = False
 
-    def _on_midi_grid_button(self, x: int, y: int, state: int):
-        """Forward MIDI grid button events to the main callback (on Qt thread)."""
+    def _dispatch_button(self, x: int, y: int, state: int):
+        """Slot executed on the Qt main thread via queued connection."""
         cb = self._button_callback
         if cb:
-            QTimer.singleShot(0, lambda: cb(x, y, state))
+            cb(x, y, state)
+
+    def _dispatch_control(self, btn_idx: int, state: int):
+        """Slot executed on the Qt main thread via queued connection."""
+        cb = self._control_button_callback
+        if cb:
+            cb(btn_idx, state)
+
+    def _on_midi_grid_button(self, x: int, y: int, state: int):
+        """Forward MIDI grid button events to the main callback (on Qt thread)."""
+        self._bridge.button_event.emit(x, y, state)
 
     def _on_midi_grid_control_button(self, btn_idx: int, state: int):
         """Forward MIDI grid control button events (on Qt thread)."""
-        cb = self._control_button_callback
-        if cb:
-            QTimer.singleShot(0, lambda: cb(btn_idx, state))
+        self._bridge.control_event.emit(btn_idx, state)
 
     @staticmethod
     def scan_midi_grids() -> list[dict]:
@@ -188,15 +212,11 @@ class GridController:
                 def on_grid_key(self, x, y, s):
                     if self.controller._monome_row_offset > 0 and y == 0:
                         # Top row → control buttons
-                        cb = self.controller._control_button_callback
-                        if cb:
-                            QTimer.singleShot(0, lambda: cb(x, s))
+                        self.controller._bridge.control_event.emit(x, s)
                     else:
-                        cb = self.controller._button_callback
-                        if cb:
-                            # Data rows: offset y for channel mapping
-                            adj_y = y - self.controller._monome_row_offset
-                            QTimer.singleShot(0, lambda: cb(x, adj_y, s))
+                        # Data rows: offset y for channel mapping
+                        adj_y = y - self.controller._monome_row_offset
+                        self.controller._bridge.button_event.emit(x, adj_y, s)
 
                 def on_grid_disconnect(self):
                     self.controller._connected = False

@@ -13,6 +13,7 @@ class PlaybackMode(IntEnum):
     SLICE = 3      # hold-to-play, supports 2-button slice loop
     SEQ = 4        # step sequencer — grid buttons toggle steps, sample triggers per step
     PITCH = 5      # pitched one-shot — each button plays the sample at a different pitch
+    STEP = 6       # play the slice under the pressed button once then stop
 
 
 class QuantizeMode(IntEnum):
