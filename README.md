@@ -34,7 +34,7 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 - **Up to 16 rows** with independent sample playback, each synced to a master tempo
 - **4 group buses** with volume/send faders, mute, solo, and FX routing (OFF / FX1 / FX2)
 - **Group-exclusive playback**: Only one row per group can play at a time — triggering a new row automatically stops any other playing row in the same group (allows simultaneous playback across different groups)
-- **Playback modes**: Loop, Reverse, Shot (one-shot), Slice (hold-to-play with 2-button loop), SEQ (step sequencer), **Pitch** (each grid column plays the sample at a different pitch)
+- **Playback modes**: Loop, Pitch, Reverse, Shot (one-shot), Slice (hold-to-play with 2-button loop), SEQ (step sequencer), Step — **Step** plays the slice under the pressed button once then stops; **Pitch** plays each grid column at a different pitch using the selected scale map
 - **Per-channel controls**: Speed (halve/double + continuous), gain, attack/release envelope, start/end selection, transpose (time-stretch-free pitch shift, −24 to +24 semitones), steps (1–32 for SEQ/slice mapping), velocity, filter sweep
 - **Pitch mode extras**: 5 musical scale maps (Major, Minor, Pentatonic, Chord, Chromatic), root offset (−24 to +24 st), and a **HOLD** toggle that loops the sample continuously instead of one-shot behaviour
 - **Snap Speed to Rate**: When loading a sample, speed auto-snaps to the nearest ½× / 2× step of 1.0 (e.g. 0.25×, 0.5×, 1.0×, 2.0×, 4.0×, 8.0×) for clean grid-synced loops — toggle on/off in Setup → Grid
@@ -366,7 +366,7 @@ Each channel row consists of a control bar at the top and a **waveform display**
 |---------|----------|-------------|
 | *(left edge)* | Color bar + row number | Group color indicator and 1-based channel number |
 | **SAMPLE** | Sample name label (clickable) + **LOAD** button | Shows loaded filename; click name to pick from history, LOAD to browse files |
-| **MODE** | Dropdown: LOOP / RVRS / SHOT / SLCE / SQNC / PTCH | Playback mode selector |
+| **MODE** | Dropdown: LOOP / PTCH / RVRS / SHOT / SLCE / SQNC / STEP | Playback mode selector (alphabetical order) |
 | **GROUP** | Buttons 1–4 | Assigns the channel to a group (one active at a time) |
 | **GAIN** | Horizontal fader | Channel output level (0.0–1.0) |
 | **RATE** | Speed spinner (0.00–8.00×) + **-½** + **+2×** | Playback speed; halve or double with shortcut buttons |
@@ -481,7 +481,7 @@ Rows are assigned to one of 4 groups (yellow, green, red, blue). **Only one row 
 
 - If row 1 and row 2 are both in Group 1 and row 1 is playing, pressing a button on row 2 will **automatically stop row 1** and start row 2.
 - Rows in **different** groups play simultaneously — you can have up to 4 samples playing at once (one per group).
-- This applies to all playback modes (Loop, Reverse, Shot, Slice, SEQ, Pitch) and to pattern recorder playback.
+- This applies to all playback modes (Loop, Pitch, Reverse, Shot, Slice, SEQ, Step) and to pattern recorder playback.
 - To change a row's group, use the group selector in the channel strip.
 
 #### Stopping Playback
@@ -502,7 +502,7 @@ The transport bar runs along the top of the main window. From left to right:
 | **SYNC** button | Auto-detects BPM from the loaded samples and updates the tempo spinner instantly. |
 | **TAP** button | Tap tempo — click repeatedly to set the BPM by feel. Shows current beat position (e.g. `2.3`) when idle; resets after 2 seconds of no tapping. |
 | **QUANTIZE** dropdown | Trigger quantization — Off (immediate), 1/4, 1/8, 1/16, or Bar. Quantized triggers wait for the next grid boundary before starting playback. |
-| **PATTERN** buttons (P1–P4) | Pattern recorders — see Pattern Recorders section below. |
+| **PATTERN** buttons (P1–P4) | Pattern recorders — see Pattern Recorders section below. Click **−** / **+** to change bar count freely from 1 to 32 bars (defaults: 4, 8, 16, 32). Hold the label 3 seconds to erase. |
 | **GROUP STOP** (G1–G4 + ALL) | Stops all channels in the specified group, or ALL to stop everything at once. |
 | **PRESET** section | Preset selector dropdown, SAVE, NEW, ◀ ▶ navigation, and ⚙ setlist manager. |
 
@@ -815,7 +815,7 @@ Pattern recorders capture grid gestures (button presses) and play them back in a
 4. **Third press** stops playback.
 5. **Hold** the pattern label for 3 seconds to erase/clear the pattern.
 
-Pattern lengths are configurable: 4, 8, 16, or 32 bars. Click the **−** or **+** arrows flanking the label to cycle through bar counts.
+Pattern lengths are freely configurable from **1 to 32 bars** using the **−** / **+** arrows flanking each pattern label. The four recorders default to 4, 8, 16, and 32 bars respectively.
 
 ### Recording Audio
 
@@ -829,16 +829,17 @@ The Tools → Record tab lets you capture audio output:
 
 ### Playback Modes
 
-Each channel can operate in one of six modes, selected via the MODE section in the channel strip:
+Each channel can operate in one of seven modes, selected via the MODE section in the channel strip. The dropdown is listed in alphabetical order:
 
-| Mode | Behaviour |
-|------|----------|
-| **Loop** | Plays forward in a continuous loop between selection start and end markers. |
-| **Reverse** | Plays backward through the selection in a continuous loop. |
-| **Shot** | One-shot playback — plays once from the triggered position to the end, then stops. |
-| **Slice** | Hold-to-play mode. Hold one button to play from that column. Hold two buttons simultaneously to create a latched sub-loop between them. Press any button while latched to stop. |
-| **SEQ** | Step sequencer mode. Toggle grid columns on/off to define active steps. The sample is divided into equal slices and each active step triggers its slice in order, synced to the master clock. The STEP count is locked to the grid column count in SEQ mode. |
-| **Pitch** | Each grid column plays the sample at a different pitch based on the selected scale map. Uses rate-based pitch shifting (higher pitch = faster playback). Choose a scale (Major, Minor, Pentatonic, Chord, Chromatic), set a root offset (−24 to +24 st) to transpose the whole keyboard, and toggle **HOLD** to loop the sample continuously instead of one-shot. All columns light DIM; the active column lights BRIGHT. |
+| Mode | Label | Behaviour |
+|------|-------|-----------|
+| **Loop** | LOOP | Plays forward in a continuous loop between selection start and end markers. |
+| **Pitch** | PTCH | Each grid column plays the sample at a different pitch based on the selected scale map. Uses rate-based pitch shifting (higher pitch = faster playback). Choose a scale (Major, Minor, Pentatonic, Chord, Chromatic), set a root offset (−24 to +24 st) to transpose the whole keyboard, and toggle **HOLD** to loop the sample continuously instead of one-shot. All columns light DIM; the active column lights BRIGHT. |
+| **Reverse** | RVRS | Plays backward through the selection in a continuous loop. |
+| **Shot** | SHOT | One-shot playback — plays once from the triggered position to the end, then stops. |
+| **Slice** | SLCE | Hold-to-play mode. Hold one button to play from that column. Hold two buttons simultaneously to create a latched sub-loop between them. Press any button while latched to stop. |
+| **SEQ** | SQNC | Step sequencer mode. Toggle grid columns on/off to define active steps. The sample is divided into equal slices and each active step triggers its slice in order, synced to the master clock. The STEP count is locked to the grid column count in SEQ mode. |
+| **Step** | STEP | Slice-trigger one-shot. Each button press plays exactly the one slice it covers (based on current STEP count), from start to end, then stops automatically. Great for triggering individual drum hits or phrases without looping. |
 
 #### Pitch Scale Maps
 

@@ -190,8 +190,18 @@ class ChannelStrip(QFrame):
         _ss_vb.addWidget(_ss_hw)
         top_row.addWidget(_sample_sec, stretch=1)
 
+        # Alphabetically sorted mode labels with their PlaybackMode values
+        self._mode_map = [
+            ("LOOP", PlaybackMode.LOOP),
+            ("PTCH", PlaybackMode.PITCH),
+            ("RVRS", PlaybackMode.REVERSE),
+            ("SHOT", PlaybackMode.ONESHOT),
+            ("SLCE", PlaybackMode.SLICE),
+            ("SQNC", PlaybackMode.SEQ),
+            ("STEP", PlaybackMode.STEP),
+        ]
         self._mode_combo = QComboBox()
-        self._mode_combo.addItems(["LOOP", "RVRS", "SHOT", "SLCE", "SQNC", "PTCH"])
+        self._mode_combo.addItems([label for label, _ in self._mode_map])
         self._mode_combo.setFixedHeight(20)
         self._mode_combo.setMaximumWidth(48)
         self._mode_combo.setStyleSheet(
@@ -480,7 +490,7 @@ class ChannelStrip(QFrame):
 
     def _on_mode_changed(self, idx: int):
         """Handle mode combo change — show/hide PITCH-mode controls."""
-        mode = PlaybackMode(idx)
+        _, mode = self._mode_map[idx]
         is_pitch = mode == PlaybackMode.PITCH
         # Show SCALE and ROOT sections only in PTCH mode
         self._scale_section.setVisible(is_pitch)
@@ -560,7 +570,8 @@ class ChannelStrip(QFrame):
 
     def set_state(self, state: ChannelState):
         self._mode_combo.blockSignals(True)
-        self._mode_combo.setCurrentIndex(int(state.mode))
+        combo_idx = next(i for i, (_, m) in enumerate(self._mode_map) if m == state.mode)
+        self._mode_combo.setCurrentIndex(combo_idx)
         self._mode_combo.blockSignals(False)
 
         for i, btn in enumerate(self._group_btns):
