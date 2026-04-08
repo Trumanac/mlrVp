@@ -18,7 +18,7 @@ class Mixer:
         self.aux_volume = 1.0
         self.aux_send_level = 1.0
         self.aux_mute = False
-        self.aux_fx_route = 0  # 0=OFF (main), 1=FX1, 2=FX2
+        self.aux_fx_route = 0  # 0=OFF (main), 1=FX1, 2=FX2, 3=FX3, 4=FX4
         self.master_volume = 1.0
 
         # Peak levels per group (updated each process call)
@@ -32,11 +32,13 @@ class Mixer:
         self._aux_send = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
         self._fx1_bus = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
         self._fx2_bus = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
+        self._fx3_bus = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
+        self._fx4_bus = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
         # Temp buffer for wet/dry routing (avoids per-group temporaries)
         self._route_tmp = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
 
     def process_groups(self, channel_outputs: list[tuple[int, np.ndarray]],
-                       num_frames: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                       num_frames: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Mix channel outputs into group buses.
 
         Args:
@@ -44,7 +46,7 @@ class Mixer:
             num_frames: number of audio frames
 
         Returns:
-            (main_bus, aux_send_bus, fx1_bus, fx2_bus) - all stereo arrays
+            (main_bus, aux_send_bus, fx1_bus, fx2_bus, fx3_bus, fx4_bus) - all stereo arrays
         """
         # Re-allocate if buffer size changed
         if num_frames != self._buf_size:
@@ -55,6 +57,8 @@ class Mixer:
             self._aux_send = np.zeros((num_frames, 2), dtype=np.float32)
             self._fx1_bus = np.zeros((num_frames, 2), dtype=np.float32)
             self._fx2_bus = np.zeros((num_frames, 2), dtype=np.float32)
+            self._fx3_bus = np.zeros((num_frames, 2), dtype=np.float32)
+            self._fx4_bus = np.zeros((num_frames, 2), dtype=np.float32)
             self._route_tmp = np.zeros((num_frames, 2), dtype=np.float32)
 
         # Zero pre-allocated buffers
@@ -64,12 +68,16 @@ class Mixer:
         self._aux_send[:] = 0
         self._fx1_bus[:] = 0
         self._fx2_bus[:] = 0
+        self._fx3_bus[:] = 0
+        self._fx4_bus[:] = 0
 
         group_buses = self._group_buses
         main_bus = self._main_bus
         aux_send = self._aux_send
         fx1_bus = self._fx1_bus
         fx2_bus = self._fx2_bus
+        fx3_bus = self._fx3_bus
+        fx4_bus = self._fx4_bus
 
         # Sum channels into their assigned groups
         for group_idx, audio in channel_outputs:
@@ -107,6 +115,22 @@ class Mixer:
                 main_bus += tmp
                 np.multiply(scaled, wet, out=tmp)
                 fx2_bus += tmp
+            elif fx_route == 3:
+                wet = group.send
+                dry = 1.0 - wet
+                tmp = self._route_tmp[:num_frames]
+                np.multiply(scaled, dry, out=tmp)
+                main_bus += tmp
+                np.multiply(scaled, wet, out=tmp)
+                fx3_bus += tmp
+            elif fx_route == 4:
+                wet = group.send
+                dry = 1.0 - wet
+                tmp = self._route_tmp[:num_frames]
+                np.multiply(scaled, dry, out=tmp)
+                main_bus += tmp
+                np.multiply(scaled, wet, out=tmp)
+                fx4_bus += tmp
             else:
                 main_bus += scaled
 
@@ -116,7 +140,7 @@ class Mixer:
                 np.multiply(scaled, group.send * self.aux_send_level, out=tmp)
                 aux_send += tmp
 
-        return main_bus, aux_send, fx1_bus, fx2_bus
+        return main_bus, aux_send, fx1_bus, fx2_bus, fx3_bus, fx4_bus
 
     def apply_master(self, main_bus: np.ndarray, aux_return: np.ndarray) -> np.ndarray:
         """Apply master volume and sum in aux return.

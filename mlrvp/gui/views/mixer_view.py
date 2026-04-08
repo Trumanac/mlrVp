@@ -19,7 +19,7 @@ from mlrvp.gui.styles import (
     GROUP_COLORS, BG_PANEL, BG_BLACK, SEPARATOR, FADER_SLIDER,
     SEND_FADER_COLOR, PURPLE, TEXT_PRIMARY, TEXT_SECONDARY,
     ACCENT_GOLD, ACCENT_BLUE, LOGO_MAGENTA, BG_MAIN,
-    FX1_COLOR, FX2_COLOR, AUX_COLOR,
+    FX1_COLOR, FX2_COLOR, FX3_COLOR, FX4_COLOR, AUX_COLOR,
 )
 from mlrvp.gui.widgets.fader import VerticalFader
 from mlrvp.gui.widgets.vu_meter import VUMeter
@@ -129,8 +129,8 @@ class GroupChannel(QFrame):
         send_row.addStretch(1)
         layout.addLayout(send_row)
 
-        # ── FX route button (cycles OFF → FX1 → FX2) ──
-        self._fx_route = 0  # 0=OFF, 1=FX1, 2=FX2
+        # ── FX route button (cycles OFF → FX1 → FX2 → FX3 → FX4) ──
+        self._fx_route = 0  # 0=OFF, 1=FX1, 2=FX2, 3=FX3, 4=FX4
         self._fx_route_btn = QPushButton("OFF")
         self._fx_route_btn.setFixedHeight(17)
         self._fx_route_btn.setStyleSheet(
@@ -143,7 +143,9 @@ class GroupChannel(QFrame):
             "FX routing for this group:\n"
             "OFF — no FX send\n"
             "FX1 — route through FX Group A\n"
-            "FX2 — route through FX Group B"
+            "FX2 — route through FX Group B\n"
+            "FX3 — route through FX Group C\n"
+            "FX4 — route through FX Group D"
         )
         layout.addWidget(self._fx_route_btn)
 
@@ -168,14 +170,16 @@ class GroupChannel(QFrame):
         self.mute_toggled.emit(self._group, muted)
 
     def _cycle_fx_route(self):
-        """Cycle through OFF → FX1 → FX2."""
-        self._fx_route = (self._fx_route + 1) % 3
+        """Cycle through OFF → FX1 → FX2 → FX3 → FX4."""
+        self._fx_route = (self._fx_route + 1) % 5
         self._update_fx_route_display()
         self.fx_route_changed.emit(self._group, self._fx_route)
 
     def _update_fx_route_display(self):
-        _FX_LABELS = ["OFF", "FX1", "FX2"]
-        _FX_COLORS = [SEPARATOR, FX1_COLOR, FX2_COLOR]
+        _FX_LABELS = ["OFF", "FX1", "FX2", "FX3", "FX4"]
+        _FX_COLORS = [SEPARATOR, FX1_COLOR, FX2_COLOR, FX3_COLOR, FX4_COLOR]
+        # Dark contrasting backgrounds that make the bright text/border pop
+        _FX_BGS = [None, "#2a2210", "#112a10", "#2a1210", "#0e2228"]
         label = _FX_LABELS[self._fx_route]
         color = _FX_COLORS[self._fx_route]
         self._fx_route_btn.setText(label)
@@ -186,15 +190,16 @@ class GroupChannel(QFrame):
                 f"border-radius: 0px; padding: 0px; }}"
             )
         else:
+            bg = _FX_BGS[self._fx_route]
             self._fx_route_btn.setStyleSheet(
-                f"QPushButton {{ background: {color}30; color: {color}; "
+                f"QPushButton {{ background: {bg}; color: {color}; "
                 f"font-weight: bold; font-size: 9px; border: 2px solid {color}; "
                 f"border-radius: 0px; padding: 0px; }}"
-                f"QPushButton:hover {{ background: {color}60; }}"
+                f"QPushButton:hover {{ background: {color}30; }}"
             )
 
     def set_fx_route(self, route: int):
-        self._fx_route = route % 3
+        self._fx_route = route % 5
         self._update_fx_route_display()
 
     def set_level(self, level: float):
@@ -323,7 +328,7 @@ class MixerView(QWidget):
         aux_send_row.addStretch(1)
         aux_layout.addLayout(aux_send_row)
 
-        # AUX FX route button (cycles OFF → FX1 → FX2)
+        # AUX FX route button (cycles OFF → FX1 → FX2 → FX3 → FX4)
         self._aux_fx_route = 0
         self._aux_fx_route_btn = QPushButton("OFF")
         self._aux_fx_route_btn.setFixedHeight(17)
@@ -337,7 +342,9 @@ class MixerView(QWidget):
             "FX routing for the AUX return:\n"
             "OFF — no FX send\n"
             "FX1 — route through FX Group A\n"
-            "FX2 — route through FX Group B"
+            "FX2 — route through FX Group B\n"
+            "FX3 — route through FX Group C\n"
+            "FX4 — route through FX Group D"
         )
         aux_layout.addWidget(self._aux_fx_route_btn)
 
@@ -464,14 +471,14 @@ class MixerView(QWidget):
             self._groups[group].set_fx_route(route)
 
     def _cycle_aux_fx_route(self):
-        """Cycle AUX FX route: OFF → FX1 → FX2."""
-        self._aux_fx_route = (self._aux_fx_route + 1) % 3
+        """Cycle AUX FX route: OFF → FX1 → FX2 → FX3 → FX4."""
+        self._aux_fx_route = (self._aux_fx_route + 1) % 5
         self._update_aux_fx_route_display()
         self.aux_fx_route_changed.emit(self._aux_fx_route)
 
     def _update_aux_fx_route_display(self):
-        _FX_LABELS = ["OFF", "FX1", "FX2"]
-        _FX_COLORS = [SEPARATOR, FX1_COLOR, FX2_COLOR]
+        _FX_LABELS = ["OFF", "FX1", "FX2", "FX3", "FX4"]
+        _FX_COLORS = [SEPARATOR, FX1_COLOR, FX2_COLOR, FX3_COLOR, FX4_COLOR]
         label = _FX_LABELS[self._aux_fx_route]
         color = _FX_COLORS[self._aux_fx_route]
         self._aux_fx_route_btn.setText(label)
@@ -490,7 +497,7 @@ class MixerView(QWidget):
             )
 
     def set_aux_fx_route(self, route: int):
-        self._aux_fx_route = route % 3
+        self._aux_fx_route = route % 5
         self._update_aux_fx_route_display()
 
     def set_aux_send(self, level: float):

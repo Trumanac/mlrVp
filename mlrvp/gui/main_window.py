@@ -84,15 +84,16 @@ apply modular effects, and build setlists for live performance.</p>
 <h2>Mixer (Right Panel → Mixer Tab)</h2>
 <ul>
 <li><b>G1–G4 faders</b> — volume per group. <b>Send fader</b> — wet/dry amount sent to the FX bus.</li>
-<li><b>FX route</b> (OFF / FX1 / FX2) — choose which effect bus the group feeds.</li>
+<li><b>FX route</b> (OFF / FX1 / FX2 / FX3 / FX4) — choose which of the four independent send buses the group feeds. The button cycles through all options and displays the active bus in its group color.</li>
 <li><b>AUX</b> — aux send bus volume, mute, and FX route.</li>
 <li><b>Master fader</b> — final output level with stereo VU meter.</li>
 <li><b>MUTE</b> and <b>STOP</b> per group. Transport bar <b>G1–G4</b> buttons are group stops; <b>ALL</b> stops everything.</li>
 </ul>
 
 <h2>Effects — FX Rack (Right Panel → Effects Tab)</h2>
-<p>The Effects tab contains a modular <b>FX Rack</b> with three independent effect groups: <b>FX GROUP A</b>, <b>FX GROUP B</b>, and <b>FX GROUP M</b> (Master).
-Click the backlit tab buttons to switch between them. Each group can hold up to 8 modules (20 total across all three groups).</p>
+<p>The Effects tab contains a modular <b>FX Rack</b> with five independent effect groups: <b>FX 1</b>, <b>FX 2</b>, <b>FX 3</b>, <b>FX 4</b>, and <b>MASTER</b>.
+Click the tab buttons to switch between them. Each group can hold up to 8 modules (28 total across all five groups).</p>
+<p>Default loadouts: <b>FX 1</b> — Clean Studio (Compressor → Filter → Delay); <b>FX 2</b> — Tape Warmth (Glue Compressor → Reel-to-Reel → Tape Delay); <b>FX 3</b> — Space &amp; Mod (Hall Reverb → Plate Reverb → Chorus); <b>FX 4</b> — Lo-Fi / Destroy (Bit Crusher → Tube Overdrive → Vinyl); <b>Master</b> — Mastering (Glue Compressor → Multiband Filter → Oscilloscope).</p>
 
 <h3>Adding / Removing Modules</h3>
 <ul>
@@ -127,7 +128,7 @@ Click the backlit tab buttons to switch between them. Each group can hold up to 
 
 <h3>FX Routing</h3>
 <ul>
-<li>Each mixer group routes to <b>OFF</b>, <b>FX1</b>, or <b>FX2</b>. Rack A processes FX1 signal; Rack B processes FX2. Rack M (Master) sits after both FX buses and processes the full mixed output before the master fader — ideal for glue compression, EQ, and metering.</li>
+<li>Each mixer group routes to <b>OFF</b>, <b>FX1</b>, <b>FX2</b>, <b>FX3</b>, or <b>FX4</b>. Each FX rack processes its own independent pre-mix send bus. The <b>Master</b> rack sits after all FX buses and processes the full mixed output — ideal for glue compression, EQ, and metering.</li>
 <li>The <b>Master Filter</b> (HP/LP with resonance and response curve) sits above the mixer and applies to the master output.</li>
 </ul>
 

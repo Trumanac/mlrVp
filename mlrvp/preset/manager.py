@@ -337,7 +337,7 @@ class PresetManager:
                     g.send = max(0.0, min(1.0, float(g_data.get("send", g.send))))
                     g.mute = g_data.get("mute", g.mute)
                     g.route = g_data.get("route", g.route)
-                    g.fx_route = max(0, min(2, int(g_data.get("fx_route", g.fx_route))))
+                    g.fx_route = max(0, min(4, int(g_data.get("fx_route", g.fx_route))))
                 except (ValueError, TypeError):
                     pass
 
@@ -425,29 +425,16 @@ class PresetManager:
                              "spread", "route", "sync", "mix", "fx_route"]),
         )
         for fx_name, fx_keys in _FX_KEYS:
-            # Bus A
-            fx_data = cfg_data.get(fx_name, {})
-            if fx_data:
-                state = getattr(config, fx_name)
-                for key in fx_keys:
-                    if key in fx_data:
-                        _safe_setattr(state, key, fx_data[key])
-            # Bus B
-            fx_data_b = cfg_data.get(f"{fx_name}_b", {})
-            if fx_data_b:
-                state_b = getattr(config, f"{fx_name}_b")
-                for key in fx_keys:
-                    if key in fx_data_b:
-                        _safe_setattr(state_b, key, fx_data_b[key])
-            # Bus M
-            fx_data_m = cfg_data.get(f"{fx_name}_m", {})
-            if fx_data_m:
-                state_m = getattr(config, f"{fx_name}_m")
-                for key in fx_keys:
-                    if key in fx_data_m:
-                        _safe_setattr(state_m, key, fx_data_m[key])
+            for suffix in ("", "_b", "_m", "_c", "_d"):
+                cfg_key = f"{fx_name}{suffix}" if suffix else fx_name
+                fx_data = cfg_data.get(cfg_key, {})
+                if fx_data:
+                    state = getattr(config, cfg_key)
+                    for key in fx_keys:
+                        if key in fx_data:
+                            _safe_setattr(state, key, fx_data[key])
 
-        # Per-bus B + M state for delay / tape_delay / filters / mod
+        # Per-bus state for delay / tape_delay / filters / mod
         _EXTRA_KEYS = (
             ("delay", ["sync_time", "ms_time", "time_mode", "fb_attack",
                        "fb_release", "fb_range_low", "fb_range_high",
@@ -466,7 +453,7 @@ class PresetManager:
                      "flanger_feedback", "flanger_mix"]),
         )
         for base_name, base_keys in _EXTRA_KEYS:
-            for suffix in ("_b", "_m"):
+            for suffix in ("_b", "_m", "_c", "_d"):
                 cfg_name = f"{base_name}{suffix}"
                 entry = cfg_data.get(cfg_name, {})
                 if entry:
@@ -493,7 +480,7 @@ class PresetManager:
         # Aux bus
         config.aux_volume = max(0.0, min(2.0, float(cfg_data.get("aux_volume", config.aux_volume))))
         config.aux_mute = cfg_data.get("aux_mute", config.aux_mute)
-        config.aux_fx_route = max(0, min(2, int(cfg_data.get("aux_fx_route", config.aux_fx_route))))
+        config.aux_fx_route = max(0, min(4, int(cfg_data.get("aux_fx_route", config.aux_fx_route))))
         # Support both new float key and legacy bool key from older presets
         if "aux_send_level" in cfg_data:
             config.aux_send_level = max(0.0, min(1.0, float(cfg_data["aux_send_level"])))
@@ -515,7 +502,7 @@ class PresetManager:
 
     def _serialize_config(self, config: AppConfig) -> dict:
         """Serialize config to a JSON-compatible dict."""
-        return {
+        result = {
             "tempo": config.tempo,
             "quantize": int(config.quantize),
             "row_count": config.row_count,
@@ -1062,3 +1049,22 @@ class PresetManager:
                 "fx_route": config.ether_drift_m.fx_route,
             },
         }
+
+        # Per-bus C and D state — auto-serialize all dataclass fields
+        _ALL_FX = (
+            "delay", "tape_delay", "filter_a", "filter_b", "mod",
+            "reel_to_reel", "cassette_tape", "vhs", "vinyl",
+            "compressor", "hall_reverb", "plate_reverb",
+            "glue_compressor", "bit_crusher", "tube_overdrive",
+            "ether_drift",
+        )
+        for suffix in ("_c", "_d"):
+            for fx_base in _ALL_FX:
+                cfg_key = f"{fx_base}{suffix}"
+                state = getattr(config, cfg_key)
+                result[cfg_key] = {
+                    k: v for k, v in vars(state).items()
+                    if not k.startswith('_')
+                }
+
+        return result

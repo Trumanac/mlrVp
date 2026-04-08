@@ -48,8 +48,10 @@ ORANGE = "#cc8844"
 PURPLE = "#a769ed"     # AUX send button [0.654902, 0.411765, 0.929412, 1.0]
 
 # FX bus colors — aligned with the effect rack tab accent colors
-FX1_COLOR = "#f5d97a"  # ACCENT_GOLD — matches FX Group A active tab
-FX2_COLOR = "#79b1ff"  # ACCENT_BLUE — matches FX Group B active tab
+FX1_COLOR = "#dec261"  # GROUP 1 golden — FX Group A
+FX2_COLOR = "#82e875"  # GROUP 2 green — FX Group B
+FX3_COLOR = "#e88273"  # GROUP 3 salmon — FX Group C
+FX4_COLOR = "#40b5cc"  # GROUP 4 teal — FX Group D
 
 # AUX channel color
 AUX_COLOR = "#888888"  # medium grey

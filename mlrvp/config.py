@@ -94,8 +94,8 @@ class GroupState:
     volume: float = 1.0
     send: float = 0.0
     mute: bool = False
-    route: int = 0  # 0 = OFF, 1 = FX1, 2 = FX2
-    fx_route: int = 0  # 0 = OFF, 1 = FX1, 2 = FX2
+    route: int = 0  # 0 = OFF, 1 = FX1, 2 = FX2, 3 = FX3, 4 = FX4
+    fx_route: int = 0  # 0 = OFF, 1 = FX1, 2 = FX2, 3 = FX3, 4 = FX4
 
 
 @dataclass
@@ -453,6 +453,42 @@ class AppConfig:
     ether_drift: EtherDriftState = field(default_factory=EtherDriftState)
     ether_drift_b: EtherDriftState = field(default_factory=EtherDriftState)
     ether_drift_m: EtherDriftState = field(default_factory=EtherDriftState)
+
+    # Per-bus C state (FX Group C / FX3 — independent send bus)
+    delay_c: DelayState = field(default_factory=DelayState)
+    tape_delay_c: TapeDelayState = field(default_factory=TapeDelayState)
+    filter_a_c: FilterState = field(default_factory=FilterState)
+    filter_b_c: FilterBState = field(default_factory=FilterBState)
+    mod_c: ModState = field(default_factory=ModState)
+    reel_to_reel_c: ReelToReelState = field(default_factory=ReelToReelState)
+    cassette_tape_c: CassetteTapeState = field(default_factory=CassetteTapeState)
+    vhs_c: VHSState = field(default_factory=VHSState)
+    vinyl_c: VinylState = field(default_factory=VinylState)
+    compressor_c: CompressorState = field(default_factory=CompressorState)
+    glue_compressor_c: GlueCompressorState = field(default_factory=GlueCompressorState)
+    hall_reverb_c: HallReverbState = field(default_factory=HallReverbState)
+    plate_reverb_c: PlateReverbState = field(default_factory=PlateReverbState)
+    bit_crusher_c: BitCrusherState = field(default_factory=BitCrusherState)
+    tube_overdrive_c: TubeOverdriveState = field(default_factory=TubeOverdriveState)
+    ether_drift_c: EtherDriftState = field(default_factory=EtherDriftState)
+
+    # Per-bus D state (FX Group D / FX4 — independent send bus)
+    delay_d: DelayState = field(default_factory=DelayState)
+    tape_delay_d: TapeDelayState = field(default_factory=TapeDelayState)
+    filter_a_d: FilterState = field(default_factory=FilterState)
+    filter_b_d: FilterBState = field(default_factory=FilterBState)
+    mod_d: ModState = field(default_factory=ModState)
+    reel_to_reel_d: ReelToReelState = field(default_factory=ReelToReelState)
+    cassette_tape_d: CassetteTapeState = field(default_factory=CassetteTapeState)
+    vhs_d: VHSState = field(default_factory=VHSState)
+    vinyl_d: VinylState = field(default_factory=VinylState)
+    compressor_d: CompressorState = field(default_factory=CompressorState)
+    glue_compressor_d: GlueCompressorState = field(default_factory=GlueCompressorState)
+    hall_reverb_d: HallReverbState = field(default_factory=HallReverbState)
+    plate_reverb_d: PlateReverbState = field(default_factory=PlateReverbState)
+    bit_crusher_d: BitCrusherState = field(default_factory=BitCrusherState)
+    tube_overdrive_d: TubeOverdriveState = field(default_factory=TubeOverdriveState)
+    ether_drift_d: EtherDriftState = field(default_factory=EtherDriftState)
 
     # Recorder
     recorder: RecorderState = field(default_factory=RecorderState)
