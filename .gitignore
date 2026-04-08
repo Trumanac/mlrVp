@@ -45,7 +45,10 @@ data/setlists/TEST/
 FX_RACK_PLAN.md
 generate_icon.py
 stress_test.py
+stress_test_ringbuf.py
 stress_results.txt
+stress_output.txt
+stress_out.txt
 
 # Local dev backups
 _backup/

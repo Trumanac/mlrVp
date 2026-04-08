@@ -581,7 +581,7 @@ class MidiSetupPanel(QFrame):
     def _on_input_combo_changed(self, row_idx: int, combo_value: int):
         """User selected a different MIDI input port for this row."""
         port = combo_value - 1  # -1 = None
-        if row_idx < len(self._midi_input_rows):
+        if row_idx < len(self._midi_input_rows) and self._midi_input_rows[row_idx] is not None:
             old_port = self._midi_input_rows[row_idx]["port"]
             if old_port >= 0:
                 self.midi_input_removed.emit(old_port)
@@ -591,7 +591,7 @@ class MidiSetupPanel(QFrame):
 
     def _on_remove_input(self, row_idx: int):
         """Remove a MIDI input row."""
-        if row_idx < len(self._midi_input_rows):
+        if row_idx < len(self._midi_input_rows) and self._midi_input_rows[row_idx] is not None:
             row_info = self._midi_input_rows[row_idx]
             port = row_info["port"]
             if port >= 0:

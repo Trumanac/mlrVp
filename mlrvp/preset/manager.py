@@ -5,6 +5,7 @@ mixer state, effect parameters, MIDI mappings, and setlist.
 """
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Optional
@@ -16,6 +17,16 @@ from mlrvp.config import (
     PlaybackMode, QuantizeMode,
     get_presets_dir, get_setlists_dir, NUM_PRESETS, NUM_SETLIST_SLOTS
 )
+
+log = logging.getLogger("mlrvp")
+
+
+def _safe_setattr(obj, key, value):
+    """setattr wrapped in try/except so a bad preset value won't crash."""
+    try:
+        setattr(obj, key, value)
+    except (ValueError, TypeError, AttributeError) as exc:
+        log.warning("Preset load: skipping bad value %s=%r (%s)", key, value, exc)
 
 
 def _sanitize_name(name: str) -> str:
@@ -79,7 +90,7 @@ class PresetManager:
                 json.dump(data, f, indent=2)
             return True
         except Exception as e:
-            print(f"Preset save error: {e}")
+            log.error("Preset save error: %s", e)
             return False
 
     def load_preset(self, name: str) -> Optional[dict]:
@@ -91,7 +102,7 @@ class PresetManager:
             with open(fp) as f:
                 return json.load(f)
         except Exception as e:
-            print(f"Preset load error: {e}")
+            log.error("Preset load error: %s", e)
             return None
 
     def delete_preset(self, name: str):
@@ -252,38 +263,68 @@ class PresetManager:
         cfg_data = preset_data.get("config", {})
 
         # Tempo
-        config.tempo = max(20.0, min(999.0, float(cfg_data.get("tempo", config.tempo))))
-        config.quantize = QuantizeMode(cfg_data.get("quantize", config.quantize))
-        config.row_count = max(1, min(16, int(cfg_data.get("row_count", config.row_count))))
-        config.master_volume = max(0.0, min(2.0, float(cfg_data.get("master_volume", config.master_volume))))
-        config.fadetime = max(0.0, min(5000.0, float(cfg_data.get("fadetime", config.fadetime))))
+        try:
+            config.tempo = max(20.0, min(999.0, float(cfg_data.get("tempo", config.tempo))))
+        except (ValueError, TypeError):
+            pass
+        try:
+            config.quantize = QuantizeMode(cfg_data.get("quantize", config.quantize))
+        except (ValueError, KeyError):
+            pass
+        try:
+            config.row_count = max(1, min(16, int(cfg_data.get("row_count", config.row_count))))
+        except (ValueError, TypeError):
+            pass
+        try:
+            config.master_volume = max(0.0, min(2.0, float(cfg_data.get("master_volume", config.master_volume))))
+        except (ValueError, TypeError):
+            pass
+        try:
+            config.fadetime = max(0.0, min(5000.0, float(cfg_data.get("fadetime", config.fadetime))))
+        except (ValueError, TypeError):
+            pass
 
         # Channels
         channels_data = cfg_data.get("channels", [])
         for i, ch_data in enumerate(channels_data):
             if i < len(config.channels):
                 ch = config.channels[i]
-                ch.speed = max(0.125, min(8.0, float(ch_data.get("speed", ch.speed))))
-                ch.normal_speed = max(0.125, min(8.0, float(ch_data.get("normal_speed", ch_data.get("speed", ch.speed)))))
-                ch.mode = PlaybackMode(ch_data.get("mode", ch.mode))
+                try:
+                    ch.speed = max(0.125, min(8.0, float(ch_data.get("speed", ch.speed))))
+                    ch.normal_speed = max(0.125, min(8.0, float(ch_data.get("normal_speed", ch_data.get("speed", ch.speed)))))
+                except (ValueError, TypeError):
+                    pass
+                try:
+                    ch.mode = PlaybackMode(ch_data.get("mode", ch.mode))
+                except (ValueError, KeyError):
+                    pass
                 ch.slave = ch_data.get("slave", ch.slave)
                 ch.filename = ch_data.get("filename", ch.filename)
-                ch.gain = max(0.0, min(2.0, float(ch_data.get("gain", ch.gain))))
-                ch.group = max(0, min(3, int(ch_data.get("group", ch.group))))
+                try:
+                    ch.gain = max(0.0, min(2.0, float(ch_data.get("gain", ch.gain))))
+                    ch.group = max(0, min(3, int(ch_data.get("group", ch.group))))
+                except (ValueError, TypeError):
+                    pass
                 ch.reverse = ch_data.get("reverse", ch.reverse)
-                ch.steps = max(1, min(64, int(ch_data.get("steps", ch.steps))))
-                ch.transpose = max(-24, min(24, int(ch_data.get("transpose", ch.transpose))))
-                ch.octave = max(-4, min(4, int(ch_data.get("octave", ch.octave))))
-                ch.sel_start = max(0.0, min(1.0, float(ch_data.get("sel_start", ch.sel_start))))
-                ch.sel_end = max(0.0, min(1.0, float(ch_data.get("sel_end", ch.sel_end))))
+                try:
+                    ch.steps = max(1, min(64, int(ch_data.get("steps", ch.steps))))
+                    ch.transpose = max(-24, min(24, int(ch_data.get("transpose", ch.transpose))))
+                    ch.octave = max(-4, min(4, int(ch_data.get("octave", ch.octave))))
+                    ch.sel_start = max(0.0, min(1.0, float(ch_data.get("sel_start", ch.sel_start))))
+                    ch.sel_end = max(0.0, min(1.0, float(ch_data.get("sel_end", ch.sel_end))))
+                except (ValueError, TypeError):
+                    pass
                 ch.mute = ch_data.get("mute", ch.mute)
-                ch.attack = max(0.0, min(5000.0, float(ch_data.get("attack", ch.attack))))
-                ch.release = max(0.0, min(5000.0, float(ch_data.get("release", ch.release))))
-                ch.pitch = max(-24.0, min(24.0, float(ch_data.get("pitch", ch.pitch))))
-                ch.velocity = max(0.0, min(1.0, float(ch_data.get("velocity", ch.velocity))))
-                ch.filter_val = max(-1.0, min(1.0, float(ch_data.get("filter_val", ch.filter_val))))
-                ch.pitch_scale = max(0, min(4, int(ch_data.get("pitch_scale", ch.pitch_scale))))
-                ch.pitch_root = max(-24, min(24, int(ch_data.get("pitch_root", ch.pitch_root))))
+                try:
+                    ch.attack = max(0.0, min(5000.0, float(ch_data.get("attack", ch.attack))))
+                    ch.release = max(0.0, min(5000.0, float(ch_data.get("release", ch.release))))
+                    ch.pitch = max(-24.0, min(24.0, float(ch_data.get("pitch", ch.pitch))))
+                    ch.velocity = max(0.0, min(1.0, float(ch_data.get("velocity", ch.velocity))))
+                    ch.filter_val = max(-1.0, min(1.0, float(ch_data.get("filter_val", ch.filter_val))))
+                    ch.pitch_scale = max(0, min(4, int(ch_data.get("pitch_scale", ch.pitch_scale))))
+                    ch.pitch_root = max(-24, min(24, int(ch_data.get("pitch_root", ch.pitch_root))))
+                except (ValueError, TypeError):
+                    pass
                 ch.pitch_hold = bool(ch_data.get("pitch_hold", ch.pitch_hold))
 
         # Groups
@@ -291,11 +332,14 @@ class PresetManager:
         for i, g_data in enumerate(groups_data):
             if i < len(config.groups):
                 g = config.groups[i]
-                g.volume = max(0.0, min(2.0, float(g_data.get("volume", g.volume))))
-                g.send = max(0.0, min(1.0, float(g_data.get("send", g.send))))
-                g.mute = g_data.get("mute", g.mute)
-                g.route = g_data.get("route", g.route)
-                g.fx_route = max(0, min(2, int(g_data.get("fx_route", g.fx_route))))
+                try:
+                    g.volume = max(0.0, min(2.0, float(g_data.get("volume", g.volume))))
+                    g.send = max(0.0, min(1.0, float(g_data.get("send", g.send))))
+                    g.mute = g_data.get("mute", g.mute)
+                    g.route = g_data.get("route", g.route)
+                    g.fx_route = max(0, min(2, int(g_data.get("fx_route", g.fx_route))))
+                except (ValueError, TypeError):
+                    pass
 
         # Delay
         delay_data = cfg_data.get("delay", {})
@@ -306,7 +350,7 @@ class PresetManager:
                         "filter_lp", "filter_hp", "filter_freq_lp",
                         "filter_freq_hp", "gain", "enabled", "fx_route"]:
                 if key in delay_data:
-                    setattr(d, key, delay_data[key])
+                    _safe_setattr(d, key, delay_data[key])
 
         # Tape Delay
         tape_delay_data = cfg_data.get("tape_delay", {})
@@ -316,7 +360,7 @@ class PresetManager:
                         "wow_flutter", "saturation", "tone", "gain",
                         "enabled", "fx_route"]:
                 if key in tape_delay_data:
-                    setattr(td, key, tape_delay_data[key])
+                    _safe_setattr(td, key, tape_delay_data[key])
 
         # Filter A
         filter_a_data = cfg_data.get("filter_a", cfg_data.get("filter", {}))
@@ -325,7 +369,7 @@ class PresetManager:
             for key in ["lp_enabled", "hp_enabled", "lp_freq", "hp_freq",
                         "lp_q", "hp_q", "enabled", "fx_route"]:
                 if key in filter_a_data:
-                    setattr(fa, key, filter_a_data[key])
+                    _safe_setattr(fa, key, filter_a_data[key])
             # Backward compat: old presets used single "resonance" for both Q
             if "resonance" in filter_a_data and "lp_q" not in filter_a_data:
                 fa.lp_q = filter_a_data["resonance"]
@@ -337,7 +381,7 @@ class PresetManager:
             fb = config.filter_b
             for key in ["cutoff", "resonance", "drive", "enabled", "fx_route"]:
                 if key in filter_b_data:
-                    setattr(fb, key, filter_b_data[key])
+                    _safe_setattr(fb, key, filter_b_data[key])
             # Backward compat: old presets had LP/HP fields for filter_b
             if "lp_freq" in filter_b_data and "cutoff" not in filter_b_data:
                 fb.cutoff = filter_b_data["lp_freq"]
@@ -351,7 +395,7 @@ class PresetManager:
                         "flanger_enabled", "flanger_rate", "flanger_depth",
                         "flanger_feedback", "flanger_mix"]:
                 if key in mod_data:
-                    setattr(m, key, mod_data[key])
+                    _safe_setattr(m, key, mod_data[key])
 
         # Lo-fi media effects + compressor (bus A and bus B)
         _FX_KEYS = (
@@ -387,21 +431,21 @@ class PresetManager:
                 state = getattr(config, fx_name)
                 for key in fx_keys:
                     if key in fx_data:
-                        setattr(state, key, fx_data[key])
+                        _safe_setattr(state, key, fx_data[key])
             # Bus B
             fx_data_b = cfg_data.get(f"{fx_name}_b", {})
             if fx_data_b:
                 state_b = getattr(config, f"{fx_name}_b")
                 for key in fx_keys:
                     if key in fx_data_b:
-                        setattr(state_b, key, fx_data_b[key])
+                        _safe_setattr(state_b, key, fx_data_b[key])
             # Bus M
             fx_data_m = cfg_data.get(f"{fx_name}_m", {})
             if fx_data_m:
                 state_m = getattr(config, f"{fx_name}_m")
                 for key in fx_keys:
                     if key in fx_data_m:
-                        setattr(state_m, key, fx_data_m[key])
+                        _safe_setattr(state_m, key, fx_data_m[key])
 
         # Per-bus B + M state for delay / tape_delay / filters / mod
         _EXTRA_KEYS = (
@@ -429,7 +473,7 @@ class PresetManager:
                     st = getattr(config, cfg_name)
                     for key in base_keys:
                         if key in entry:
-                            setattr(st, key, entry[key])
+                            _safe_setattr(st, key, entry[key])
 
         # Patterns
         patterns_data = cfg_data.get("patterns", [])

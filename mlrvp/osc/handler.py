@@ -48,9 +48,16 @@ class OscHandler:
             self._running = True
 
         except ImportError:
-            print("python-osc not available - OSC disabled")
+            import logging
+            logging.getLogger("mlrvp").warning("python-osc not available — OSC disabled")
+            self._running = False
+            self._client = None
         except Exception as e:
-            print(f"OSC start error: {e}")
+            import logging
+            logging.getLogger("mlrvp").warning("OSC start error: %s", e)
+            self._running = False
+            self._client = None
+            self._server = None
 
     def stop(self):
         self._running = False
@@ -67,8 +74,9 @@ class OscHandler:
         if self._client is not None:
             try:
                 self._client.send_message(address, list(args))
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger("mlrvp").debug("OSC send failed: %s", e)
 
     def mirror_button(self, x: int, y: int, state: int):
         """Mirror a grid button press via OSC (serialosnoopy-style)."""

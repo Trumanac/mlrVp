@@ -116,6 +116,7 @@ class MidiGridAdapter:
         self.device_name: str = ""
         self._midi_in = None
         self._midi_out = None
+        self._closed = False
         self._button_callback: Optional[Callable] = None
         self._control_callback: Optional[Callable] = None
         self._connected = False
@@ -231,6 +232,7 @@ class MidiGridAdapter:
 
     def disconnect(self):
         """Close MIDI ports."""
+        self._closed = True
         if self._midi_in is not None:
             self._midi_in.close_port()
             self._midi_in = None
@@ -246,41 +248,47 @@ class MidiGridAdapter:
 
     def _on_midi_message(self, event, data=None):
         """Handle incoming MIDI messages from the grid controller."""
-        message, _delta = event
-        if len(message) < 3:
+        if self._closed:
             return
+        try:
+            message, _delta = event
+            if len(message) < 3:
+                return
 
-        # Forward raw message to MIDI handler (for MIDI learn etc.)
-        if self._midi_forward:
-            self._midi_forward(message)
+            # Forward raw message to MIDI handler (for MIDI learn etc.)
+            if self._midi_forward:
+                self._midi_forward(message)
 
-        status = message[0] & 0xF0
-        note = message[1]
-        velocity = message[2]
+            status = message[0] & 0xF0
+            note = message[1]
+            velocity = message[2]
 
-        # Note On (with velocity > 0) = button press
-        # Note Off or Note On with velocity 0 = button release
-        if status == 0x90:  # Note On
-            state = 1 if velocity > 0 else 0
-        elif status == 0x80:  # Note Off
-            state = 0
-        elif status == 0xB0:  # CC — some Launchpads send CC for top row
-            cc = message[1]
-            value = message[2]
-            if cc in self._control_cc_map:
-                btn_idx = self._control_cc_map[cc]
-                state = 1 if value > 0 else 0
-                if self._control_callback:
-                    self._control_callback(btn_idx, state)
-            return
-        else:
-            return
+            # Note On (with velocity > 0) = button press
+            # Note Off or Note On with velocity 0 = button release
+            if status == 0x90:  # Note On
+                state = 1 if velocity > 0 else 0
+            elif status == 0x80:  # Note Off
+                state = 0
+            elif status == 0xB0:  # CC — some Launchpads send CC for top row
+                cc = message[1]
+                value = message[2]
+                if cc in self._control_cc_map:
+                    btn_idx = self._control_cc_map[cc]
+                    state = 1 if value > 0 else 0
+                    if self._control_callback:
+                        self._control_callback(btn_idx, state)
+                return
+            else:
+                return
 
-        # Map note to grid coordinate
-        if note in self._note_to_xy:
-            x, y = self._note_to_xy[note]
-            if self._button_callback:
-                self._button_callback(x, y, state)
+            # Map note to grid coordinate
+            if note in self._note_to_xy:
+                x, y = self._note_to_xy[note]
+                if self._button_callback:
+                    self._button_callback(x, y, state)
+        except Exception as e:
+            import logging
+            logging.getLogger("mlrvp").error(f"Grid MIDI callback error: {e}")
 
     def set_led(self, x: int, y: int, brightness: int, color: int = 0):
         """Set a single LED on the grid controller.

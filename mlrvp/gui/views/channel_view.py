@@ -5,6 +5,8 @@ indicator, waveform display (668×20 area), mode/group controls, gain fader,
 speed control, and mute button.
 """
 
+import math
+
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
     QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QFileDialog,
@@ -21,6 +23,48 @@ from mlrvp.gui.styles import (
 )
 from mlrvp.gui.widgets.waveform import WaveformWidget
 from mlrvp.gui.widgets.fader import HorizontalFader
+
+
+# ── Gain-fader dB helpers ────────────────────────────────────────────────
+# Fader position 0.0 → silence (-inf dB)
+# Fader position 0.8 → unity (0 dB)
+# Fader position 1.0 → +6 dB boost
+_UNITY_POS = 0.8
+_BOOST_DB = 6.0
+
+
+def _fader_to_gain(pos: float) -> float:
+    """Convert 0-1 fader position to linear gain (audio taper)."""
+    if pos <= 0.0:
+        return 0.0
+    if pos <= _UNITY_POS:
+        t = pos / _UNITY_POS
+        return t * t * t
+    boost_db = (pos - _UNITY_POS) / (1.0 - _UNITY_POS) * _BOOST_DB
+    return 10.0 ** (boost_db / 20.0)
+
+
+def _gain_to_fader(gain: float) -> float:
+    """Convert linear gain back to 0-1 fader position."""
+    if gain <= 0.0:
+        return 0.0
+    if gain <= 1.0:
+        return gain ** (1.0 / 3.0) * _UNITY_POS
+    db = 20.0 * math.log10(gain)
+    return min(1.0, _UNITY_POS + (db / _BOOST_DB) * (1.0 - _UNITY_POS))
+
+
+def _gain_db_label(pos: float) -> str:
+    """Format fader position as a dB string for the overlay."""
+    if pos <= 0.0:
+        return "-inf dB"
+    gain = _fader_to_gain(pos)
+    if gain <= 0.0:
+        return "-inf dB"
+    db = 20.0 * math.log10(gain)
+    if db <= -60.0:
+        return "-inf dB"
+    return f"{db:+.1f} dB"
 
 
 class ChannelStrip(QFrame):
@@ -183,11 +227,12 @@ class ChannelStrip(QFrame):
 
         top_row.addWidget(_vdiv())
 
-        self._gain_fader = HorizontalFader()
-        self._gain_fader.set_value(1.0)
+        self._gain_fader = HorizontalFader(default_value=_UNITY_POS)
+        self._gain_fader.set_value(_UNITY_POS)  # 0 dB unity
         self._gain_fader.setFixedWidth(105)
+        self._gain_fader.set_formatter(_gain_db_label)
         self._gain_fader.value_changed.connect(
-            lambda v: self.param_changed.emit(self._row, "gain", v)
+            lambda v: self.param_changed.emit(self._row, "gain", _fader_to_gain(v))
         )
         top_row.addWidget(_section("GAIN", self._gain_fader))
 
@@ -521,7 +566,7 @@ class ChannelStrip(QFrame):
         for i, btn in enumerate(self._group_btns):
             btn.setChecked(i == state.group)
 
-        self._gain_fader.set_value(state.gain)
+        self._gain_fader.set_value(_gain_to_fader(state.gain))
         self._true_speed = state.speed
         self._speed_spin.blockSignals(True)
         self._speed_spin.setValue(state.speed)

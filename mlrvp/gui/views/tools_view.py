@@ -847,9 +847,9 @@ class SlicePanel(QFrame):
                     self._bar_combo.blockSignals(False)
                     break
 
-        bar_samples = (60.0 / bpm) * 4.0 * sr
-        ideal_samples = int(bar_count * bar_samples)
-        span_frac = min(ideal_samples / total_frames, 1.0)
+        bar_samples = (60.0 / max(1.0, bpm)) * 4.0 * sr
+        ideal_samples = max(1, int(bar_count * bar_samples))
+        span_frac = min(ideal_samples / max(1, total_frames), 1.0)
 
         if ideal_samples >= total_frames:
             self._waveform._locked_span = span_frac
@@ -913,7 +913,7 @@ class SlicePanel(QFrame):
                         snap_start = self._snap_to_zero_crossing(snap_start, mono)
 
             actual_samples = snap_end - snap_start
-            speed_ratio = actual_samples / ideal_samples
+            speed_ratio = actual_samples / ideal_samples if ideal_samples > 0 else 1.0
             self._fit_speed_ratio = speed_ratio
             self._ideal_bar_samples = ideal_samples
             self._fit_active = True

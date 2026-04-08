@@ -44,7 +44,7 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 
 ### Effects & Processing
 - **Modular FX Rack UI**: Skeuomorphic rack with three independent effect groups (FX Group A / FX Group B / Master) — add, remove, and reorder effect modules freely; each module has a **power toggle** (green/gray icon) on its right rack ear to enable or bypass the effect without removing it
-- **19 rack effect modules** with unique vintage-inspired faceplates:
+- **20 rack effect modules** with unique vintage-inspired faceplates:
   - **Déjà Vu Delay** — stereo digital delay with tempo-synced beat divisions or free ms mode, feedback envelope, LP/HP feedback filters, gain
   - **Rewind** — vintage tape delay with wow/flutter, saturation, tone shaping, and sync
   - **Band Practice** — 5-band multiband EQ with sweepable frequency bands
@@ -256,6 +256,7 @@ python generate_icon.py
 | resampy | High-quality sample rate conversion |
 | scipy | Signal processing (filters) |
 | librosa | Time-stretch-free pitch shifting |
+| numba | JIT-compiled DSP kernels for real-time audio processing |
 ---
 
 ## Project Structure
@@ -269,12 +270,13 @@ MLRVp/
 │   ├── app.py              # Application orchestrator
 │   ├── config.py           # Configuration + data classes
 │   ├── audio/              # Audio engine
-│   │   ├── engine.py       # Real-time audio callback
+│   │   ├── engine.py       # Real-time audio callback + ring buffer
 │   │   ├── channel.py      # Per-row sample playback
 │   │   ├── mixer.py        # Group buses + FX routing + master
 │   │   ├── effects.py      # Delay, FX buses, filters, modulation
 │   │   ├── recorder.py     # Live audio recording
-│   │   └── sample.py       # Sample loading + buffering
+│   │   ├── sample.py       # Sample loading + buffering
+│   │   └── _dsp_kernels.py # Numba JIT-compiled DSP kernels
 │   ├── transport/          # Tempo + timing
 │   │   ├── clock.py        # Master clock
 │   │   └── pattern.py      # Pattern recording/playback
@@ -290,9 +292,9 @@ MLRVp/
 │   ├── resources/          # Icons and assets
 │   │   ├── arrow_down.svg  # Spinbox down-arrow icon
 │   │   ├── arrow_up.svg    # Spinbox up-arrow icon
-│   │   ├── icon.icns
-│   │   ├── icon.ico
-│   │   └── icon.png
+│   │   ├── icon.icns / .ico / .png
+│   │   ├── icon_diagonal.icns / .ico / .png
+│   │   └── icon_red.icns / .ico / .png
 │   └── gui/                # PySide6 interface
 │       ├── styles.py       # Colors, fonts, stylesheet
 │       ├── main_window.py  # Main window layout
@@ -301,7 +303,7 @@ MLRVp/
 │       ├── views/          # Panels
 │       │   ├── channel_view.py
 │       │   ├── mixer_view.py
-│       │   ├── effects_view.py  # FX Rack (Group A / Group B)
+│       │   ├── effects_view.py  # FX Rack (Group A / Group B / Master)
 │       │   ├── master_filter_view.py
 │       │   ├── transport_view.py
 │       │   ├── tools_view.py
@@ -347,7 +349,8 @@ MLRVp/
 ├── generate_icon.py        # Icon generation utility
 ├── mlrvp.spec              # PyInstaller spec file
 ├── run.bat                 # Windows launcher
-├── run.sh                  # macOS/Linux launcher
+├── run.command             # macOS launcher
+├── run.sh                  # Linux launcher
 └── README.md
 ```
 
@@ -743,7 +746,7 @@ The effects section uses a modular **FX Rack** interface with three independent 
 
 ##### Adding and Removing Effects
 
-- Click the **＋ ADD EFFECT** button at the bottom of a rack to open a menu of all 19 available effect modules. Each entry shows the effect type in parentheses — e.g. *Byte Me (Bit Crusher)*, *Echo Chamber (Hall Reverb)*.
+- Click the **＋ ADD EFFECT** button at the bottom of a rack to open a menu of all 20 available effect modules. Each entry shows the effect type in parentheses — e.g. *Byte Me (Bit Crusher)*, *Echo Chamber (Hall Reverb)*.
 - Select a module to insert it into the rack.
 - Each module's **right rack ear** has two controls:
   - **Power button** (green/gray circle icon) — toggles the effect on or bypass. Bypassed modules pass audio through unprocessed; their state is still saved with the preset. Power can also be MIDI-mapped.

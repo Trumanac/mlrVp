@@ -216,9 +216,10 @@ class HorizontalFader(_ValueDisplayMixin, QWidget):
 
     value_changed = Signal(float)
 
-    def __init__(self, color: str = FADER_SLIDER, parent=None):
+    def __init__(self, color: str = FADER_SLIDER, default_value: float = 0.5, parent=None):
         super().__init__(parent)
-        self._value: float = 0.5
+        self._value: float = default_value
+        self._default_value: float = default_value
         self._dragging: bool = False
         self._color = QColor(color)
         self._midi_highlight: int = 0  # 0=off, 1=highlight, 2=learning
@@ -303,7 +304,7 @@ class HorizontalFader(_ValueDisplayMixin, QWidget):
             self._dragging = False
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
-        self._value = 0.5
+        self._value = self._default_value
         self.value_changed.emit(self._value)
         self.update()
 

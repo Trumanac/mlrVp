@@ -628,6 +628,7 @@ class MainWindow(QMainWindow):
         self.resize(self.width(), min(needed_h, 1400))
 
     def closeEvent(self, event):
+        self._refresh_timer.stop()
         self._grid_window.close()
         self.quit_requested.emit()
         event.accept()

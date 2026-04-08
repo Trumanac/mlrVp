@@ -4,9 +4,12 @@ Records grid button presses and plays them back in a loop,
 replicating the mlrV2 pattern recorder system.
 """
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Callable
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,7 +61,7 @@ class PatternRecorder:
 
     def set_length(self, length_beats: int):
         """Update the pattern loop length in beats."""
-        self.length_beats = length_beats
+        self.length_beats = max(1, int(length_beats))
 
     def toggle_record(self, current_beat: float):
         """Toggle recording on/off."""
@@ -118,7 +121,10 @@ class PatternRecorder:
                     self._playing = True
                 if self._state_change_callback:
                     state = 'playing' if self._playing else 'idle'
-                    self._state_change_callback(self.index, state)
+                    try:
+                        self._state_change_callback(self.index, state)
+                    except Exception as exc:
+                        log.warning("Pattern state callback error: %s", exc)
 
         if not self._playing or not self.events or self._trigger_callback is None:
             return
@@ -134,11 +140,17 @@ class PatternRecorder:
         for event in self.events:
             # Check if event falls in the window
             if self._last_playback_pos <= event.beat_position < pos:
-                self._trigger_callback(event.row, event.column, event.event_type)
+                try:
+                    self._trigger_callback(event.row, event.column, event.event_type)
+                except Exception as exc:
+                    log.warning("Pattern trigger callback error: %s", exc)
             elif pos < self._last_playback_pos:
                 # Wrapped around
                 if event.beat_position >= self._last_playback_pos or event.beat_position < pos:
-                    self._trigger_callback(event.row, event.column, event.event_type)
+                    try:
+                        self._trigger_callback(event.row, event.column, event.event_type)
+                    except Exception as exc:
+                        log.warning("Pattern trigger callback error: %s", exc)
 
         self._last_playback_pos = pos
 
