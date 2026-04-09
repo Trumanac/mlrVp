@@ -53,7 +53,7 @@ apply modular effects, and build setlists for live performance.</p>
 <ul>
 <li>Each row is one sample channel. The waveform shows playback position, active selection (bright), out-of-loop content (dim), and grid column dividers.</li>
 <li><b>Drag a file</b> onto the waveform to load it. Dragging onto a <i>playing</i> row stages the new sample — the old audio keeps looping until the next trigger.</li>
-<li><b>Mode</b> (LOOP / PTCH / RVRS / SHOT / SLCE / SQNC / STEP, alphabetical) — Loop: continuous loop; Pitch: each grid column plays at a different pitch based on the selected scale map; Reverse: reverse loop; Shot: one-shot to end; Slice: hold a button to play, hold two to latch a sub-loop; Sequence: step sequencer — toggle grid buttons to define active steps, the sample is divided into equal slices and each active step triggers its slice in sync with the clock; <b>Step</b>: press a button to play exactly the one slice it covers, once then stop — great for triggering individual hits or phrases without looping.</li>
+<li><b>Mode</b> (LOOP / PTCH / RVRS / SHOT / SLCE / SQNC / STEP, alphabetical) — Loop: continuous loop; Pitch: each grid column plays at a different pitch based on the selected scale map using <b>duration-preserving pitch shifting</b> (the sample plays at its original speed regardless of pitch); Reverse: reverse loop; Shot: one-shot to end; Slice: hold a button to play, hold two to latch a sub-loop; Sequence: step sequencer — toggle grid buttons to define active steps, the sample is divided into equal slices and each active step triggers its slice in sync with the clock; <b>Step</b>: press a button to play exactly the one slice it covers, once then stop — great for triggering individual hits or phrases without looping.</li>
 <li><b>Group</b> (G1–G4) — only one row per group plays at a time. Triggering a new row in the same group auto-stops the current one.</li>
 <li><b>Speed</b> spinner — playback rate (0.00–8.00×). <b>−½</b> halves, <b>+2×</b> doubles. Snap Speed to Rate (Setup → Grid) rounds to the nearest ½×/2× step on load.</li>
 <li><b>Pitch</b> spinner — transpose in semitones (−24 to +24 st). Uses time-stretch pitch shifting so playback speed is unaffected. Computed in the background; audio switches seamlessly once ready.</li>
@@ -62,6 +62,10 @@ apply modular effects, and build setlists for live performance.</p>
   &nbsp;&nbsp;• <b>SCALE</b> selector — choose from Major, Minor, Pentatonic, Chord, or Chromatic scale maps (defines the pitch per grid column).<br>
   &nbsp;&nbsp;• <b>HOLD</b> button — when active, the sample loops continuously on each pitch trigger instead of playing as a one-shot.</li>
 </ul>
+<p><b>How it works:</b> When entering Pitch mode (or changing scale/root/transpose/sample), mlrVp pre-computes
+pitch-shifted audio for each scale degree in the background using a phase vocoder. Each grid button triggers
+instantly from cache with zero real-time DSP cost. A rate-based fallback plays immediately if the cache
+entry is not yet ready. Only the columns your grid actually uses are computed (e.g. 8 for an 8-column grid).</p>
 
 <h3>Pitch Scale Maps</h3>
 <p>The SCALE selector determines which semitone intervals are assigned across the grid columns. All values are relative to the root (0 = unison). On an 8-column grid the first 8 entries are used; on 16 columns all 16 are used.</p>
@@ -73,7 +77,8 @@ apply modular effects, and build setlists for live performance.</p>
 <tr><td><b>CHORD</b></td><td>0, 1, 2, 3, 5, 7, 9, 10</td><td>12, 13, 14, 15, 17, 19, 21, 22</td><td>Dense cluster spreading into wider intervals. Good for chord voicings.</td></tr>
 <tr><td><b>CHROM</b></td><td>0, 1, 2, 3, 4, 5, 6, 7</td><td>8, 9, 10, 11, 12, 13, 14, 15</td><td>Every semitone in order. Maximum pitch resolution.</td></tr>
 </table>
-<p>The <b>root offset</b> (PITCH spinner, −24 to +24 st) shifts every column’s pitch by a fixed amount, transposing the entire keyboard.</p>
+<p>The <b>root offset</b> (PITCH spinner, −24 to +24 st) shifts every column's pitch by a fixed amount, transposing the entire keyboard.
+Changing the root, scale, transpose, or loading a new sample automatically rebuilds the pitch cache in the background.</p>
 
 <ul>
 <li><b>Step</b> spinner — number of equal slices (1–32) the sample is divided into for grid triggering. Locked to grid column count in SEQ mode.</li>

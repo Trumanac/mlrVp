@@ -34,13 +34,14 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 - **Up to 16 rows** with independent sample playback, each synced to a master tempo
 - **4 group buses** with volume/send faders, mute, solo, and FX routing (OFF / FX1 / FX2 / FX3 / FX4)
 - **Group-exclusive playback**: Only one row per group can play at a time — triggering a new row automatically stops any other playing row in the same group (allows simultaneous playback across different groups)
-- **Playback modes**: Loop, Pitch, Reverse, Shot (one-shot), Slice (hold-to-play with 2-button loop), SEQ (step sequencer), Step — **Step** plays the slice under the pressed button once then stops; **Pitch** plays each grid column at a different pitch using the selected scale map
+- **Playback modes**: Loop, Pitch, Reverse, Shot (one-shot), Slice (hold-to-play with 2-button loop), SEQ (step sequencer), Step — **Step** plays the slice under the pressed button once then stops; **Pitch** plays each grid column at a different pitch using the selected scale map with **duration-preserving pitch shifting** (no speed change)
 - **Per-channel controls**: Speed (halve/double + continuous), gain, attack/release envelope, start/end selection, transpose (time-stretch-free pitch shift, −24 to +24 semitones), steps (1–32 for SEQ/slice mapping), velocity, filter sweep
-- **Pitch mode extras**: 5 musical scale maps (Major, Minor, Pentatonic, Chord, Chromatic), root offset (−24 to +24 st), and a **HOLD** toggle that loops the sample continuously instead of one-shot behaviour
+- **Pitch mode extras**: 5 musical scale maps (Major, Minor, Pentatonic, Chord, Chromatic), root offset (−24 to +24 st), and a **HOLD** toggle that loops the sample continuously instead of one-shot behaviour. Pitch-shifted audio is pre-computed in the background using a phase vocoder — each button plays at its scale degree pitch while keeping the original sample duration and tempo
 - **Snap Speed to Rate**: When loading a sample, speed auto-snaps to the nearest ½× / 2× step of 1.0 (e.g. 0.25×, 0.5×, 1.0×, 2.0×, 4.0×, 8.0×) for clean grid-synced loops — toggle on/off in Setup → Grid
 - **Live sample staging**: Dragging a new sample onto a playing row updates the waveform display immediately but keeps the old audio and grid LEDs looping — the new sample loads on the next trigger, group stop, or ALL stop
 - **Waveform display** with playback cursor, selection markers, grid column dividers, active column highlight, group color coding, and two-pass dim/bright rendering (out-of-loop content shown dim, active loop region shown bright)
 - **Crossfade retrigger**: Equal-power cosine crossfade (~5.8 ms) for click-free re-triggering and pitch changes
+- **Background pitch scale cache**: Pitch mode pre-computes shifted audio for each scale degree asynchronously — triggers play instantly from cache with zero real-time DSP cost; cache updates automatically when scale, root, transpose, or sample changes
 
 ### Effects & Processing
 - **Modular FX Rack UI**: Skeuomorphic rack with five independent effect groups (**FX 1 / FX 2 / FX 3 / FX 4 / Master**) accessible via tab buttons — add, remove, and reorder effect modules freely; each module has a **power toggle** (green/gray icon) on its right rack ear to enable or bypass the effect without removing it

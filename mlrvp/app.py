@@ -791,6 +791,8 @@ class AppController:
                     transpose = self.config.channels[row].transpose
                     if transpose != 0:
                         self._apply_pitch_shift_async(row, transpose)
+                    elif self.config.channels[row].mode == PlaybackMode.PITCH:
+                        self._build_pitch_scale_cache_async(row)
 
                     overview = get_waveform_overview(sample, num_points=800)
                     if self.window:
@@ -1401,6 +1403,7 @@ class AppController:
                 if value == PlaybackMode.PITCH:
                     if self.engine:
                         self._update_pitch_mode_leds(row)
+                        self._build_pitch_scale_cache_async(row)
                 elif old_mode == PlaybackMode.PITCH:
                     # Leaving PITCH mode — clear the DIM LEDs
                     self.grid.clear_row_leds(row, self.config.grid_columns)
@@ -1456,10 +1459,14 @@ class AppController:
             ch.pitch_scale = int(value)
             if self.engine:
                 self.engine.channels[row].state.pitch_scale = int(value)
+                if ch.mode == PlaybackMode.PITCH:
+                    self._build_pitch_scale_cache_async(row)
         elif param == "pitch_root":
             ch.pitch_root = int(value)
             if self.engine:
                 self.engine.channels[row].state.pitch_root = int(value)
+                if ch.mode == PlaybackMode.PITCH:
+                    self._build_pitch_scale_cache_async(row)
         elif param == "pitch_hold":
             ch.pitch_hold = bool(value)
             if self.engine:
@@ -2848,6 +2855,10 @@ class AppController:
         ech = self.engine.channels[row]
         if semitones == 0:
             ech.clear_pitch_cache()
+            # Source audio changed — scale cache entries are stale
+            ech.clear_pitch_scale_cache()
+            if ech.state.mode == PlaybackMode.PITCH:
+                self._build_pitch_scale_cache_async(row)
             return
         sample = ech.sample
         if sample is None:
@@ -2871,8 +2882,99 @@ class AppController:
                 # Only apply if sample and semitones haven't changed by the time we finish
                 if ech.sample is sample and ech.state.transpose == semitones:
                     ech.set_pitch_cache(shifted_data)
+                    # Source audio changed — rebuild scale cache from new base.
+                    # Pass shifted_data directly because _pending_pitch_cache
+                    # hasn't been swapped into _pitch_cache by the audio thread yet.
+                    if ech.state.mode == PlaybackMode.PITCH:
+                        ech.clear_pitch_scale_cache()
+                        self._build_pitch_scale_cache_async(row, source_override=shifted_data)
             except Exception:
                 logging.exception("Pitch shift failed for row %d", row)
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    def _build_pitch_scale_cache_async(self, row: int, source_override: 'np.ndarray | None' = None):
+        """Pre-compute duration-preserving pitch shifts for each scale semitone.
+
+        Entries accumulate — only semitones not already cached are computed.
+        Cleared only when the source audio changes (sample load or transpose).
+
+        Args:
+            source_override: If provided, use this audio instead of reading
+                ech._pitch_cache.  Needed when called from the transpose
+                worker thread where _pending_pitch_cache has been staged
+                but the audio thread hasn't swapped it into _pitch_cache yet.
+        """
+        if not self.engine:
+            return
+        ech = self.engine.channels[row]
+        if ech.sample is None:
+            return
+
+        ech._pitch_scale_cache_gen += 1
+        gen = ech._pitch_scale_cache_gen
+
+        scale = PITCH_SCALE_MAPS.get(ech.state.pitch_scale, PITCH_SCALE_MAPS[0])
+        pitch_root = ech.state.pitch_root
+        sample = ech.sample
+        sr = ech.sample_rate
+
+        # Source audio: explicit override > transpose cache > raw sample data.
+        if source_override is not None:
+            source = source_override
+        elif ech._pitch_cache is not None:
+            source = ech._pitch_cache
+        else:
+            source = sample.data
+
+        # Only compute semitones for columns that actually exist on the grid.
+        num_cols = self.config.grid_columns
+        num_scale = min(num_cols, len(scale))
+
+        # Priority order: root first, then musically useful intervals,
+        # then remaining columns — all clamped to the actual grid size.
+        priority_cols = [c for c in [0, 7, 4, 2] if c < num_scale]
+        priority_cols += [c for c in range(num_scale) if c not in priority_cols]
+        ordered_semitones = list(dict.fromkeys(
+            scale[c] + pitch_root for c in priority_cols
+        ))
+
+        # Filter to semitones not already cached
+        needed = [s for s in ordered_semitones if s not in ech._pitch_scale_cache]
+        if not needed:
+            return
+
+        def _worker():
+            try:
+                import librosa
+                import numpy as np
+                for semitone in needed:
+                    if ech._pitch_scale_cache_gen != gen:
+                        return  # stale — a newer build was requested
+                    if ech.sample is not sample:
+                        return  # sample changed
+                    if semitone == 0:
+                        # Identity: no pitch shift needed
+                        shifted_data = source.copy()
+                    else:
+                        shifted_channels = []
+                        for c in range(source.shape[1]):
+                            shifted = librosa.effects.pitch_shift(
+                                source[:, c].astype(np.float32),
+                                sr=sr,
+                                n_steps=float(semitone),
+                            )
+                            shifted_channels.append(shifted)
+                        shifted_data = np.stack(shifted_channels, axis=1).astype(np.float32)
+                    # Final stale check after heavy compute
+                    if ech._pitch_scale_cache_gen != gen:
+                        return
+                    if ech.sample is not sample:
+                        return
+                    ech.set_pitch_scale_entry(semitone, shifted_data)
+            except Exception:
+                logging.exception("Pitch scale cache build failed for row %d", row)
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
@@ -2898,6 +3000,8 @@ class AppController:
                 transpose = self.config.channels[row].transpose
                 if transpose != 0:
                     self._apply_pitch_shift_async(row, transpose)
+                elif self.config.channels[row].mode == PlaybackMode.PITCH:
+                    self._build_pitch_scale_cache_async(row)
 
                 overview = get_waveform_overview(sample, num_points=800)
                 if self.window:
