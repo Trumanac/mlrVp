@@ -8,6 +8,8 @@ Each channel represents one row of the grid and handles:
 - Group assignment
 """
 
+import collections
+
 import numpy as np
 from typing import Optional
 
@@ -112,6 +114,23 @@ class Channel:
         self._PITCH_CLEAR = _PITCH_CLEAR
         self._pending_pitch_cache = None  # None=no change, _PITCH_CLEAR=clear, ndarray=new data
 
+        # Duration-preserving pitch scale cache — keyed by absolute semitone.
+        # Each entry is a full-sample librosa.effects.pitch_shift result.
+        # Entries accumulate across pitch_root / pitch_scale changes and are
+        # only cleared when the source audio changes (sample load or transpose).
+        self._pitch_scale_cache: dict[int, np.ndarray] = {}
+        _PSC_CLEAR = object()  # sentinel for clearing the scale cache
+        self._PSC_CLEAR = _PSC_CLEAR
+        # Deque of (semitone, ndarray) pairs or _PSC_CLEAR sentinel.
+        # Background thread appends; audio thread drains in process().
+        self._pending_psc_entries: collections.deque = collections.deque()
+        # The shifted audio array for the currently-triggered semitone.
+        # Set in trigger() from _pitch_scale_cache; None = use rate-based fallback.
+        self._active_pitch_data: Optional[np.ndarray] = None
+        self._active_pitch_semitone: int = 0
+        # Incremented to cancel in-flight background builds.
+        self._pitch_scale_cache_gen: int = 0
+
     @property
     def playing(self) -> bool:
         return self._playing
@@ -135,9 +154,18 @@ class Channel:
         self.state.sel_start = 0.0
         self.state.sel_end = 1.0
         self._pitch_cache = None  # invalidate any cached pitch-shifted audio
+        self.clear_pitch_scale_cache()  # invalidate duration-preserving scale cache
 
     def _get_audio_data(self) -> np.ndarray:
-        """Return pitch-shifted audio if cached, otherwise raw sample data."""
+        """Return the best available audio source for playback.
+
+        Priority: per-button pitch scale entry > transpose cache > raw sample.
+        The scale cache is built *from* the transpose cache (if set), so
+        bypassing _pitch_cache when _active_pitch_data is set is correct —
+        transpose is already baked in.
+        """
+        if self._active_pitch_data is not None:
+            return self._active_pitch_data
         if self._pitch_cache is not None:
             return self._pitch_cache
         return self.sample.data
@@ -158,6 +186,17 @@ class Channel:
         """
         self._pending_pitch_cache = self._PITCH_CLEAR
 
+    def set_pitch_scale_entry(self, semitone: int, data: np.ndarray):
+        """Stage a single pitch-scale cache entry from a background thread.
+
+        GIL-atomic deque append — safe from any thread.
+        """
+        self._pending_psc_entries.append((semitone, data))
+
+    def clear_pitch_scale_cache(self):
+        """Stage pitch-scale cache removal from any thread."""
+        self._pending_psc_entries.append(self._PSC_CLEAR)
+
     def _effective_speed(self) -> float:
         """Combined playback rate including mode-specific pitch.
 
@@ -165,6 +204,11 @@ class Channel:
         the generic pitch knob so each column has its own pitch.
         """
         if self.state.mode == PlaybackMode.PITCH:
+            # Duration-preserving path: pitch is baked into the cached audio,
+            # so play at normal speed.  Falls back to rate-based when the
+            # semitone hasn't been pre-computed yet.
+            if self._active_pitch_data is not None:
+                return self.state.speed
             return self.state.speed * self._pitch_mode_mult
         return self.state.speed * self.state.pitch
 
@@ -201,6 +245,10 @@ class Channel:
             scale = PITCH_SCALE_MAPS.get(self.state.pitch_scale, PITCH_SCALE_MAPS[0])
             col_idx = min(column, len(scale) - 1)
             semitone = scale[col_idx] + self.state.pitch_root
+            # Duration-preserving: use pre-shifted audio if available.
+            # Keep rate-based mult as fallback for un-cached semitones.
+            self._active_pitch_data = self._pitch_scale_cache.get(semitone)
+            self._active_pitch_semitone = semitone
             self._pitch_mode_mult = 2.0 ** (semitone / 12.0)
             self._pitch_mode_col = column
             self._position = sel_start_samp
@@ -371,6 +419,23 @@ class Channel:
                     self._snapshot_xfade_tail()
                     self._fade_in_remaining = self.XFADE_LEN
                 self._pitch_cache = pending
+
+        # --- Drain pending pitch-scale cache entries (thread-safe) ---
+        # Background builder appends (semitone, ndarray) pairs; we drain
+        # here so the audio thread owns _pitch_scale_cache exclusively.
+        psc_q = self._pending_psc_entries
+        while psc_q:
+            entry = psc_q.popleft()
+            if entry is self._PSC_CLEAR:
+                self._pitch_scale_cache = {}
+                self._active_pitch_data = None
+            else:
+                st, data = entry
+                self._pitch_scale_cache[st] = data
+                # Auto-update: if this semitone matches the currently-playing
+                # button, apply it immediately (mid-playback pickup).
+                if st == self._active_pitch_semitone and self._active_pitch_data is None:
+                    self._active_pitch_data = data
 
         if not self._playing or self.sample is None:
             # Mix in crossfade tail even when not playing so
