@@ -7,7 +7,7 @@ name = "mlrVp"
 dynamic = ["version"]
 description = "mlrVp - A modern Python reimplementation of mlrV2, a sampling instrument for grid-based music controllers"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "MIT WITH Commons-Clause"}
 requires-python = ">=3.10"
 authors = [
     {name = "mlrVp Contributors"},
@@ -17,7 +17,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: End Users/Desktop",
     "Topic :: Multimedia :: Sound/Audio",
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
