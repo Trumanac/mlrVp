@@ -598,8 +598,10 @@ class AudioEngine:
 
         # ── Ring buffer for decoupled audio output ──
         # The DSP worker fills this ahead of time; the sounddevice callback
-        # just copies the next block out.  8 blocks ≈ 93 ms of lookahead.
-        self._ring_blocks = 8
+        # just copies the next block out.  16 blocks ≈ 186 ms of lookahead.
+        # Extra headroom absorbs BLAS thread-pool warm-up spikes and OS
+        # scheduler jitter that are more pronounced in a frozen exe.
+        self._ring_blocks = 16
         self._ring_buf = np.zeros(
             (self._ring_blocks, self.buffer_size, 2), dtype=np.float32
         )
@@ -1541,8 +1543,11 @@ class AudioEngine:
         try:
             import ctypes
             handle = ctypes.windll.kernel32.GetCurrentThread()
-            # THREAD_PRIORITY_HIGHEST = 2 (above normal, below time-critical)
-            ctypes.windll.kernel32.SetThreadPriority(handle, 2)
+            # THREAD_PRIORITY_TIME_CRITICAL = 15 — matches the priority level
+            # that ASIO drivers and PortAudio use for their own threads.
+            # THREAD_PRIORITY_HIGHEST = 2 is not enough to stay ahead of
+            # background OS threads in a frozen exe.
+            ctypes.windll.kernel32.SetThreadPriority(handle, 15)
         except Exception:
             pass  # Non-Windows or permission denied — no harm
 
