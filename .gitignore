@@ -36,6 +36,9 @@ installer.iss
 # Audio samples / slices (user data)
 data/slices/*.wav
 
+# Runtime-generated user config
+data/ui_scale.txt
+
 # Test / scratch presets and setlists
 data/presets/test.json
 data/setlists/TEST.json
