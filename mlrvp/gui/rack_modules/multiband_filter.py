@@ -141,6 +141,7 @@ class MultibandFilterModule(RackModuleBase):
         self._lo_mid_gain.value_changed.connect(
             lambda v: self.param_changed.emit("lo_mid_gain", v))
         self._lo_mid_gain.setToolTip("LF gain — boost or cut at the low-frequency shelf center (±12 dB)")
+        self._lo_mid_gain.set_formatter(lambda v: f"{(v - 0.5) * 24.0:+.1f} dB")
         lf.addWidget(self._lo_mid_gain, alignment=Qt.AlignmentFlag.AlignCenter)
         lf.addWidget(_lbl("Hz", _DIM, size=5, bold=False))
         self._lo_mid_freq = RotaryKnob(color=_CREAM)
@@ -161,6 +162,7 @@ class MultibandFilterModule(RackModuleBase):
         self._mid_gain.value_changed.connect(
             lambda v: self.param_changed.emit("mid_gain", v))
         self._mid_gain.setToolTip("LMF gain — boost or cut at the lower-midrange bell (±12 dB)")
+        self._mid_gain.set_formatter(lambda v: f"{(v - 0.5) * 24.0:+.1f} dB")
         lmf.addWidget(self._mid_gain, alignment=Qt.AlignmentFlag.AlignCenter)
         lmf.addWidget(_lbl("Hz", _DIM, size=5, bold=False))
         self._mid_freq = RotaryKnob(color=_CREAM)
@@ -176,6 +178,7 @@ class MultibandFilterModule(RackModuleBase):
         self._mid_q.value_changed.connect(
             lambda v: self.param_changed.emit("mid_q", v))
         self._mid_q.setToolTip("LMF Q — bandwidth of the bell curve; high Q = narrow surgical notch, low Q = wide musical boost")
+        self._mid_q.set_formatter(lambda v: f"Q {0.3 + v * 17.7:.1f}")
         lmf.addWidget(self._mid_q, alignment=Qt.AlignmentFlag.AlignCenter)
         outer.addLayout(lmf)
 
@@ -210,6 +213,7 @@ class MultibandFilterModule(RackModuleBase):
         self._hi_mid_gain.value_changed.connect(
             lambda v: self.param_changed.emit("hi_mid_gain", v))
         self._hi_mid_gain.setToolTip("HMF gain — boost or cut at the upper-midrange bell (±12 dB)")
+        self._hi_mid_gain.set_formatter(lambda v: f"{(v - 0.5) * 24.0:+.1f} dB")
         hmf.addWidget(self._hi_mid_gain, alignment=Qt.AlignmentFlag.AlignCenter)
         hmf.addWidget(_lbl("kHz", _DIM, size=5, bold=False))
         self._hi_mid_freq = RotaryKnob(color=_GREEN)
@@ -225,6 +229,7 @@ class MultibandFilterModule(RackModuleBase):
         self._hi_mid_q.value_changed.connect(
             lambda v: self.param_changed.emit("hi_mid_q", v))
         self._hi_mid_q.setToolTip("HMF Q — bandwidth of the bell curve; high Q = narrow surgical notch, low Q = wide musical boost")
+        self._hi_mid_q.set_formatter(lambda v: f"Q {0.3 + v * 17.7:.1f}")
         hmf.addWidget(self._hi_mid_q, alignment=Qt.AlignmentFlag.AlignCenter)
         outer.addLayout(hmf)
 
@@ -244,6 +249,7 @@ class MultibandFilterModule(RackModuleBase):
         self._hp_q.value_changed.connect(
             lambda v: self.param_changed.emit("hp_q", v))
         self._hp_q.setToolTip("HF gain — boost or cut at the high-frequency shelf (±12 dB)")
+        self._hp_q.set_formatter(lambda v: f"{(v - 0.5) * 24.0:+.1f} dB")
         hf.addWidget(self._hp_q, alignment=Qt.AlignmentFlag.AlignCenter)
         hf.addWidget(_lbl("kHz", _DIM, size=5, bold=False))
         self._lp_q = RotaryKnob(color=_CREAM)

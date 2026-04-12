@@ -334,6 +334,255 @@ class EtherDriftState:
 
 
 @dataclass
+class NoiseGateState:
+    """State for the Noise Gate (Drawmer DS201 model)."""
+    enabled: bool = True
+    threshold: float = -40.0    # dB, -80 to 0
+    attack: float = 1.0         # ms, 0.02–20
+    hold: float = 50.0          # ms, 2–4000
+    release: float = 200.0      # ms, 5–4000
+    range_db: float = -80.0     # dB, 0 to -80 (how far gate closes)
+    key_filter: int = 0         # 0=Off 1=LP 2=HP
+    key_freq: float = 1000.0    # Hz, 25–22000
+    fx_route: int = 0
+
+
+@dataclass
+class TremoloState:
+    """State for the Tremolo (Demeter TRM-1 model)."""
+    enabled: bool = True
+    rate: float = 4.0           # Hz, 0.5–15
+    depth: float = 0.6          # 0–1
+    shape: int = 0              # 0=Sine 1=Triangle 2=Square
+    stereo_mode: int = 0        # 0=Mono 1=Stereo(90°) 2=PingPong
+    mix: float = 1.0
+    fx_route: int = 0
+
+
+@dataclass
+class AutoWahState:
+    """State for the Auto-Wah / Envelope Filter (Mutron III model)."""
+    enabled: bool = True
+    sensitivity: float = 0.5    # 0–1, envelope follower gain
+    peak: float = 0.6           # resonance Q 0–1
+    mode: int = 0               # 0=Up 1=Down
+    filter_type: int = 0        # 0=LP 1=BP 2=HP
+    mix: float = 1.0
+    fx_route: int = 0
+
+
+@dataclass
+class FETLimiterState:
+    """State for the FET Limiter (Urei 1176LN model)."""
+    enabled: bool = True
+    input_gain: float = 0.5     # 0–1, maps to 0–40dBu drive
+    output_gain: float = 0.5    # 0–1, maps to -20 to +20dB
+    attack_idx: int = 4         # 0–6 (0=fastest ~20µs, 6=slowest ~800µs)
+    release_idx: int = 2        # 0–4 (0=50ms, 4=1.1s)
+    ratio_idx: int = 0          # 0=4:1, 1=8:1, 2=12:1, 3=20:1, 4=ABI
+    fx_route: int = 0
+
+
+@dataclass
+class RotaryState:
+    """State for the Rotary Speaker (Neo Ventilator II model)."""
+    enabled: bool = True
+    speed: int = 0              # 0=Stop 1=Slow 2=Fast
+    acceleration: float = 0.5   # ramp time 0–1 (maps 0.2–3s)
+    horn_level: float = 0.8     # 0–1
+    rotor_level: float = 0.8    # 0–1
+    mix: float = 1.0
+    fx_route: int = 0
+
+
+@dataclass
+class ExciterState:
+    """State for the Aural Exciter (Aphex Type C model)."""
+    enabled: bool = True
+    tune: float = 5000.0        # Hz, HPF for harmonics path, 1000–12000
+    mix: float = 0.3            # harmonics blend 0–1
+    lo_tune: float = 200.0      # Hz, low end crossover 50–1000
+    lo_mix: float = 0.2         # low-end phase enhancement 0–1
+    output: float = 0.0         # dB makeup, -6 to +6
+    fx_route: int = 0
+
+
+@dataclass
+class TransientShaperState:
+    """State for the SPL Transient Designer 4."""
+    enabled: bool = True
+    attack_shape: float = 0.0   # -1 to +1 (neg reduces, pos boosts attack)
+    sustain_shape: float = 0.0  # -1 to +1 (neg gates tail, pos extends)
+    output: float = 0.0         # dB makeup, -6 to +6
+    stereo_link: bool = True
+    fx_route: int = 0
+
+
+@dataclass
+class StereoWidenerState:
+    """State for the Aphex 124A M-S Stereo Widener."""
+    enabled: bool = True
+    width: float = 1.0            # 0–2 (0=mono, 1=unity, 2=max)
+    center: float = 1.0           # 0–2 mid level
+    low_mono_freq: float = 120.0  # Hz below which side is filtered to mono, 20–500
+    fx_route: int = 0
+
+
+@dataclass
+class FreqShifterState:
+    """State for the Eventide H949 / Bode 1630 Frequency Shifter."""
+    enabled: bool = True
+    shift_hz: float = 0.0        # -500 to +500 Hz
+    feedback: float = 0.0        # 0–0.9
+    mix: float = 0.5
+    fx_route: int = 0
+
+
+@dataclass
+class RingModState:
+    """State for the Ring Leader ring modulator."""
+    enabled: bool = True
+    freq_hz: float = 440.0       # carrier freq 0.1–5000 Hz
+    shape: int = 0               # 0=sine, 1=triangle, 2=square
+    depth: float = 1.0           # 0–1 modulation depth
+    mix: float = 0.5
+    fx_route: int = 0
+
+
+@dataclass
+class HarmonizerState:
+    """State for the Eventide H3000 Dual Harmonizer."""
+    enabled: bool = True
+    voice_a_semitones: int = -7     # -24 to +24
+    voice_a_cents: int = 0          # -50 to +50
+    voice_a_delay_ms: float = 0.0   # 0–250
+    voice_b_semitones: int = 5      # -24 to +24
+    voice_b_cents: int = 0          # -50 to +50
+    voice_b_delay_ms: float = 0.0   # 0–250
+    feedback: float = 0.0           # 0–0.9
+    mix: float = 0.5
+    algorithm: int = 0              # 0=Dual 1=Up 2=Down 3=PtchDly
+    fx_route: int = 0
+
+
+@dataclass
+class SimpleEQState:
+    """State for the Golden Ears 3-band EQ (Pultec-inspired)."""
+    enabled: bool = True
+    low: float = 0.0            # -12 to +12 dB
+    mid: float = 0.0            # -12 to +12 dB
+    high: float = 0.0           # -12 to +12 dB
+    low_freq: float = 200.0     # shelf freq 60–500 Hz
+    high_freq: float = 4000.0   # shelf freq 2000–12000 Hz
+    mix: float = 1.0
+    fx_route: int = 0
+
+
+@dataclass
+class PingPongDelayState:
+    """State for the Table Tennis ping-pong delay."""
+    enabled: bool = True
+    time_ms: float = 375.0      # 10–2000 ms master time
+    ping_ms: float = 375.0      # 10–2000 ms left (ping) tap offset
+    pong_ms: float = 375.0      # 10–2000 ms right (pong) tap offset
+    ping_pong_link: bool = True  # True = both follow time_ms
+    feedback: float = 0.45      # 0–0.95
+    spread: float = 1.0         # 0=mono, 1=full stereo ping-pong
+    damping: float = 0.3        # 0–1 LP on feedback (1=dark)
+    mix: float = 0.35
+    fx_route: int = 0
+
+
+@dataclass
+class ShimmerReverbState:
+    """State for the Stained Glass shimmer reverb."""
+    enabled: bool = True
+    decay: float = 0.8          # 0–1 (maps to RT60 1–20s)
+    shimmer: float = 0.5        # 0–1 pitch-shifted feedback amount
+    pitch: int = 12             # semitones: 5, 7, 12, 24
+    damping: float = 0.4        # 0–1 high-freq damp on verb
+    pre_delay_ms: float = 30.0  # 0–100 ms
+    mix: float = 0.3
+    fx_route: int = 0
+
+
+@dataclass
+class LoFiRadioState:
+    """State for the Tin Can lo-fi radio/telephone filter."""
+    enabled: bool = True
+    band: int = 0               # 0=AM Radio, 1=Telephone, 2=Transistor, 3=Custom
+    lo_cut: float = 300.0       # HP freq 20–2000 Hz
+    hi_cut: float = 3400.0      # LP freq 500–16000 Hz
+    noise: float = 0.15         # static/hiss 0–1
+    distortion: float = 0.2     # speaker breakup 0–1
+    mix: float = 1.0
+    fx_route: int = 0
+
+
+@dataclass
+class AutoPanState:
+    """State for the Pendulum auto-pan (stereo panner)."""
+    enabled: bool = True
+    rate: float = 2.0           # Hz, 0.1–20
+    depth: float = 0.8          # 0–1
+    shape: int = 0              # 0=Sine 1=Triangle 2=Square
+    phase_offset: float = 0.0   # 0–1 (offset for starting position)
+    mix: float = 1.0
+    fx_route: int = 0
+
+
+@dataclass
+class FuzzState:
+    """State for the Wool Over fuzz/distortion (Big Muff-inspired)."""
+    enabled: bool = True
+    gain: float = 0.7           # 0–1 (maps to 0–60 dB drive)
+    tone: float = 0.5           # 0=dark, 1=bright (tone stack)
+    sustain: float = 0.6        # 0–1 compression amount
+    gate: float = 0.02          # noise gate threshold 0–0.1
+    mix: float = 0.5
+    fx_route: int = 0
+
+
+@dataclass
+class GranularFreezeState:
+    """State for the Snow Globe granular freeze processor."""
+    enabled: bool = True
+    grain_size: float = 0.5     # 0–1 → 5–500 ms grain length
+    scatter: float = 0.3        # 0–1 grain position scatter
+    spread: float = 0.2         # 0–1 pitch randomisation per grain
+    density: float = 0.6        # 0–1 grain overlap density
+    freeze: bool = False        # True = lock buffer, stop writing
+    mix: float = 0.4
+    fx_route: int = 0
+
+
+@dataclass
+class GatedReverbState:
+    """State for the Gate Crasher gated/reverse reverb."""
+    enabled: bool = True
+    room: float = 0.6           # 0–1 reverb room size
+    gate_time: float = 0.3      # 0–1 → 50 ms–3 s gate duration
+    slope: float = 0.3          # 0–1 gate closure shape (hard→soft)
+    pre_delay: float = 0.15     # 0–1 → 0–100 ms pre-delay
+    mode: int = 0               # 0=Gate, 1=Reverse
+    mix: float = 0.35
+    fx_route: int = 0
+
+
+@dataclass
+class StutterState:
+    """State for the Broken Record stutter/glitch buffer looper."""
+    enabled: bool = True
+    size: float = 0.3           # 0–1 → 10–2000 ms capture size
+    rate: float = 0.3           # 0–1 → 10–2000 ms repeat rate
+    chaos: float = 0.0          # 0–1 random jump probability
+    smear: float = 0.3          # 0–1 crossfade at loop boundary
+    trigger: bool = False       # True = stutter active, False = pass-through
+    mix: float = 1.0
+    fx_route: int = 0
+
+
+@dataclass
 class RecorderState:
     """State for the live recorder."""
     buffer_idx: int = 0
@@ -363,6 +612,7 @@ class AppConfig:
     buffer_size: int = BUFFER_SIZE
     output_device: int = -1  # -1 = default
     input_device: int = -1
+    host_api: str = ""  # empty = show all drivers
 
     # Grid
     row_count: int = 8
@@ -381,7 +631,7 @@ class AppConfig:
     # Aux / Effects
     aux_volume: float = 1.0
     aux_send_level: float = 1.0
-    aux_mute: bool = False
+    aux_mute: bool = True
     aux_fx_route: int = 0  # 0=OFF, 1=FX1, 2=FX2
     aux_input_channel: int = 0  # audio input channel index
     delay: DelayState = field(default_factory=DelayState)
@@ -454,6 +704,11 @@ class AppConfig:
     ether_drift_b: EtherDriftState = field(default_factory=EtherDriftState)
     ether_drift_m: EtherDriftState = field(default_factory=EtherDriftState)
 
+    # Noise Gate — per-bus (A / B / Master)
+    noise_gate: NoiseGateState = field(default_factory=NoiseGateState)
+    noise_gate_b: NoiseGateState = field(default_factory=NoiseGateState)
+    noise_gate_m: NoiseGateState = field(default_factory=NoiseGateState)
+
     # Per-bus C state (FX Group C / FX3 — independent send bus)
     delay_c: DelayState = field(default_factory=DelayState)
     tape_delay_c: TapeDelayState = field(default_factory=TapeDelayState)
@@ -471,6 +726,7 @@ class AppConfig:
     bit_crusher_c: BitCrusherState = field(default_factory=BitCrusherState)
     tube_overdrive_c: TubeOverdriveState = field(default_factory=TubeOverdriveState)
     ether_drift_c: EtherDriftState = field(default_factory=EtherDriftState)
+    noise_gate_c: NoiseGateState = field(default_factory=NoiseGateState)
 
     # Per-bus D state (FX Group D / FX4 — independent send bus)
     delay_d: DelayState = field(default_factory=DelayState)
@@ -489,6 +745,128 @@ class AppConfig:
     bit_crusher_d: BitCrusherState = field(default_factory=BitCrusherState)
     tube_overdrive_d: TubeOverdriveState = field(default_factory=TubeOverdriveState)
     ether_drift_d: EtherDriftState = field(default_factory=EtherDriftState)
+    noise_gate_d: NoiseGateState = field(default_factory=NoiseGateState)
+    tremolo: TremoloState = field(default_factory=TremoloState)
+    tremolo_b: TremoloState = field(default_factory=TremoloState)
+    tremolo_m: TremoloState = field(default_factory=TremoloState)
+    tremolo_c: TremoloState = field(default_factory=TremoloState)
+    tremolo_d: TremoloState = field(default_factory=TremoloState)
+    auto_wah: AutoWahState = field(default_factory=AutoWahState)
+    auto_wah_b: AutoWahState = field(default_factory=AutoWahState)
+    auto_wah_m: AutoWahState = field(default_factory=AutoWahState)
+    auto_wah_c: AutoWahState = field(default_factory=AutoWahState)
+    auto_wah_d: AutoWahState = field(default_factory=AutoWahState)
+    fet_limiter: FETLimiterState = field(default_factory=FETLimiterState)
+    fet_limiter_b: FETLimiterState = field(default_factory=FETLimiterState)
+    fet_limiter_m: FETLimiterState = field(default_factory=FETLimiterState)
+    fet_limiter_c: FETLimiterState = field(default_factory=FETLimiterState)
+    fet_limiter_d: FETLimiterState = field(default_factory=FETLimiterState)
+    rotary: RotaryState = field(default_factory=RotaryState)
+    rotary_b: RotaryState = field(default_factory=RotaryState)
+    rotary_m: RotaryState = field(default_factory=RotaryState)
+    rotary_c: RotaryState = field(default_factory=RotaryState)
+    rotary_d: RotaryState = field(default_factory=RotaryState)
+    exciter: ExciterState = field(default_factory=ExciterState)
+    exciter_b: ExciterState = field(default_factory=ExciterState)
+    exciter_m: ExciterState = field(default_factory=ExciterState)
+    exciter_c: ExciterState = field(default_factory=ExciterState)
+    exciter_d: ExciterState = field(default_factory=ExciterState)
+    transient_shaper: TransientShaperState = field(default_factory=TransientShaperState)
+    transient_shaper_b: TransientShaperState = field(default_factory=TransientShaperState)
+    transient_shaper_m: TransientShaperState = field(default_factory=TransientShaperState)
+    transient_shaper_c: TransientShaperState = field(default_factory=TransientShaperState)
+    transient_shaper_d: TransientShaperState = field(default_factory=TransientShaperState)
+
+    # Harmonizer
+    harmonizer: HarmonizerState = field(default_factory=HarmonizerState)
+    harmonizer_b: HarmonizerState = field(default_factory=HarmonizerState)
+    harmonizer_m: HarmonizerState = field(default_factory=HarmonizerState)
+    harmonizer_c: HarmonizerState = field(default_factory=HarmonizerState)
+    harmonizer_d: HarmonizerState = field(default_factory=HarmonizerState)
+
+    # Stereo Widener — per-bus (A / B / Master / C / D)
+    stereo_widener: StereoWidenerState = field(default_factory=StereoWidenerState)
+    stereo_widener_b: StereoWidenerState = field(default_factory=StereoWidenerState)
+    stereo_widener_m: StereoWidenerState = field(default_factory=StereoWidenerState)
+    stereo_widener_c: StereoWidenerState = field(default_factory=StereoWidenerState)
+    stereo_widener_d: StereoWidenerState = field(default_factory=StereoWidenerState)
+
+    # Freq Shifter — per-bus (A / B / Master / C / D)
+    freq_shifter: FreqShifterState = field(default_factory=FreqShifterState)
+    freq_shifter_b: FreqShifterState = field(default_factory=FreqShifterState)
+    freq_shifter_m: FreqShifterState = field(default_factory=FreqShifterState)
+    freq_shifter_c: FreqShifterState = field(default_factory=FreqShifterState)
+    freq_shifter_d: FreqShifterState = field(default_factory=FreqShifterState)
+
+    # Ring Modulator — per-bus (A / B / Master / C / D)
+    ring_mod: RingModState = field(default_factory=RingModState)
+    ring_mod_b: RingModState = field(default_factory=RingModState)
+    ring_mod_m: RingModState = field(default_factory=RingModState)
+    ring_mod_c: RingModState = field(default_factory=RingModState)
+    ring_mod_d: RingModState = field(default_factory=RingModState)
+
+    # Simple EQ — per-bus (A / B / Master / C / D)
+    simple_eq: SimpleEQState = field(default_factory=SimpleEQState)
+    simple_eq_b: SimpleEQState = field(default_factory=SimpleEQState)
+    simple_eq_m: SimpleEQState = field(default_factory=SimpleEQState)
+    simple_eq_c: SimpleEQState = field(default_factory=SimpleEQState)
+    simple_eq_d: SimpleEQState = field(default_factory=SimpleEQState)
+
+    # Ping-Pong Delay — per-bus (A / B / Master / C / D)
+    ping_pong_delay: PingPongDelayState = field(default_factory=PingPongDelayState)
+    ping_pong_delay_b: PingPongDelayState = field(default_factory=PingPongDelayState)
+    ping_pong_delay_m: PingPongDelayState = field(default_factory=PingPongDelayState)
+    ping_pong_delay_c: PingPongDelayState = field(default_factory=PingPongDelayState)
+    ping_pong_delay_d: PingPongDelayState = field(default_factory=PingPongDelayState)
+
+    # Shimmer Reverb — per-bus (A / B / Master / C / D)
+    shimmer_reverb: ShimmerReverbState = field(default_factory=ShimmerReverbState)
+    shimmer_reverb_b: ShimmerReverbState = field(default_factory=ShimmerReverbState)
+    shimmer_reverb_m: ShimmerReverbState = field(default_factory=ShimmerReverbState)
+    shimmer_reverb_c: ShimmerReverbState = field(default_factory=ShimmerReverbState)
+    shimmer_reverb_d: ShimmerReverbState = field(default_factory=ShimmerReverbState)
+
+    # Lo-Fi Radio — per-bus (A / B / Master / C / D)
+    lofi_radio: LoFiRadioState = field(default_factory=LoFiRadioState)
+    lofi_radio_b: LoFiRadioState = field(default_factory=LoFiRadioState)
+    lofi_radio_m: LoFiRadioState = field(default_factory=LoFiRadioState)
+    lofi_radio_c: LoFiRadioState = field(default_factory=LoFiRadioState)
+    lofi_radio_d: LoFiRadioState = field(default_factory=LoFiRadioState)
+
+    # Auto-Pan — per-bus (A / B / Master / C / D)
+    auto_pan: AutoPanState = field(default_factory=AutoPanState)
+    auto_pan_b: AutoPanState = field(default_factory=AutoPanState)
+    auto_pan_m: AutoPanState = field(default_factory=AutoPanState)
+    auto_pan_c: AutoPanState = field(default_factory=AutoPanState)
+    auto_pan_d: AutoPanState = field(default_factory=AutoPanState)
+
+    # Fuzz — per-bus (A / B / Master / C / D)
+    fuzz: FuzzState = field(default_factory=FuzzState)
+    fuzz_b: FuzzState = field(default_factory=FuzzState)
+    fuzz_m: FuzzState = field(default_factory=FuzzState)
+    fuzz_c: FuzzState = field(default_factory=FuzzState)
+    fuzz_d: FuzzState = field(default_factory=FuzzState)
+
+    # Granular Freeze — per-bus (A / B / Master / C / D)
+    granular_freeze: GranularFreezeState = field(default_factory=GranularFreezeState)
+    granular_freeze_b: GranularFreezeState = field(default_factory=GranularFreezeState)
+    granular_freeze_m: GranularFreezeState = field(default_factory=GranularFreezeState)
+    granular_freeze_c: GranularFreezeState = field(default_factory=GranularFreezeState)
+    granular_freeze_d: GranularFreezeState = field(default_factory=GranularFreezeState)
+
+    # Gated Reverb — per-bus (A / B / Master / C / D)
+    gate_reverb: GatedReverbState = field(default_factory=GatedReverbState)
+    gate_reverb_b: GatedReverbState = field(default_factory=GatedReverbState)
+    gate_reverb_m: GatedReverbState = field(default_factory=GatedReverbState)
+    gate_reverb_c: GatedReverbState = field(default_factory=GatedReverbState)
+    gate_reverb_d: GatedReverbState = field(default_factory=GatedReverbState)
+
+    # Stutter — per-bus (A / B / Master / C / D)
+    stutter: StutterState = field(default_factory=StutterState)
+    stutter_b: StutterState = field(default_factory=StutterState)
+    stutter_m: StutterState = field(default_factory=StutterState)
+    stutter_c: StutterState = field(default_factory=StutterState)
+    stutter_d: StutterState = field(default_factory=StutterState)
 
     # Recorder
     recorder: RecorderState = field(default_factory=RecorderState)

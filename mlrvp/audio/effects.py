@@ -8,6 +8,14 @@ from mlrvp.config import (
     SAMPLE_RATE, DelayState, FilterState, FilterBState, TapeDelayState, ModState,
     ReelToReelState, CassetteTapeState, VHSState, VinylState, CompressorState,
     HallReverbState, PlateReverbState, GlueCompressorState, EtherDriftState,
+    NoiseGateState,
+    TremoloState,
+    AutoWahState,
+    FETLimiterState,
+    RotaryState,
+    ExciterState,
+    TransientShaperState,
+    HarmonizerState,
 )
 
 # Import Numba JIT kernels — fall back to None if unavailable
@@ -95,6 +103,8 @@ class BiquadFilter:
         buf64[:] = data  # float32 → float64 in-place (no temp alloc)
         filtered, self._zi = lfilter(
             self.b, self.a, buf64, axis=0, zi=self._zi)
+        # Flush denormals from filter state to prevent idle noise
+        self._zi[np.abs(self._zi) < 1e-18] = 0.0
         buf32 = self._f32_buf[:n]
         buf32[:] = filtered  # float64 → float32 in-place (no temp alloc)
         return buf32
@@ -1930,6 +1940,10 @@ class GlueCompressorProcessor:
             self._env = env
             self.gr_db = gr_sum / max(n, 1)
 
+        # Flush denormals from envelope to prevent idle noise
+        if abs(self._env) < 1e-18:
+            self._env = 0.0
+
         return data * gain[:n, np.newaxis] * np.float32(makeup_lin)
 
 
@@ -1951,6 +1965,18 @@ def _circ_read(buf, idx, n, sz):
 
 def _circ_write(buf, idx, data, sz):
     """Block-write stereo samples into a circular buffer."""
+    n = len(data)
+    end = idx + n
+    if end <= sz:
+        buf[idx:end] = data
+    else:
+        split = sz - idx
+        buf[idx:sz] = data[:split]
+        buf[:end - sz] = data[split:]
+
+
+def _circ_write_f64(buf, idx, data, sz):
+    """Block-write stereo samples into a float64 circular buffer."""
     n = len(data)
     end = idx + n
     if end <= sz:
@@ -2017,6 +2043,11 @@ class _CombFilter:
         self._idx = idx
         return out
 
+    def reset(self):
+        self._buf[:] = 0.0
+        self._idx = 0
+        self._damp_zi[:] = 0.0
+
 
 class _AllpassFilter:
     """Schroeder allpass — block-processed in delay-sized chunks.
@@ -2059,6 +2090,10 @@ class _AllpassFilter:
             pos += cn
         self._idx = idx
         return out
+
+    def reset(self):
+        self._buf[:] = 0.0
+        self._idx = 0
 
 
 # Separately-tuned, prime-based comb delay lines per room type (at 44100 Hz).
@@ -2269,3 +2304,2709 @@ class PlateReverbProcessor:
 
         mix = st.mix
         return data * np.float32(1.0 - mix) + wet * np.float32(mix)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Noise Gate — Drawmer DS201 model
+# State machine: OPEN → HOLD → CLOSING → CLOSED
+# Features: key filter sidechain, hysteresis, variable range
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class NoiseGateProcessor:
+    """Drawmer DS201-style frequency-conscious noise gate.
+
+    State machine with four phases:
+      OPEN    — signal above threshold, gate fully open
+      HOLD    — signal dropped below threshold, holding open for hold_ms
+      CLOSING — hold expired, fading toward closed (release envelope)
+      CLOSED  — gate attenuated by range_db
+
+    Key filter: optional LP or HP on the sidechain before envelope detection,
+    enabling frequency-selective gating (e.g. gate on kick but not hi-hat).
+
+    Hysteresis: close threshold is 6 dB below open threshold to prevent
+    chatter near the threshold boundary.
+    """
+
+    _GATE_OPEN    = 0
+    _GATE_HOLD    = 1
+    _GATE_CLOSING = 2
+    _GATE_CLOSED  = 3
+
+    _HYSTERESIS_DB = 6.0  # close threshold is 6 dB below open threshold
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
+        self.sr = sample_rate
+        self.state = NoiseGateState()
+        self._gate_state = self._GATE_CLOSED
+        self._gate_gain = 0.0          # current gate attenuation 0.0–1.0
+        self._env = 0.0                # envelope follower level (linear)
+        self._hold_counter = 0         # samples remaining in hold phase
+        # Key filter biquad state (2 channels × 2 delay elements)
+        self._kf_z1 = np.zeros(2, dtype=np.float64)
+        self._kf_z2 = np.zeros(2, dtype=np.float64)
+        self._kf_b = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        self._kf_a = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        self._last_kf_type = -1
+        self._last_kf_freq = -1.0
+
+    def _update_key_filter(self, ftype: int, freq: float):
+        """Recalculate key filter biquad coefficients if params changed."""
+        if ftype == self._last_kf_type and abs(freq - self._last_kf_freq) < 0.5:
+            return
+        self._last_kf_type = ftype
+        self._last_kf_freq = freq
+        if ftype == 0:  # Off
+            self._kf_b[:] = [1.0, 0.0, 0.0]
+            self._kf_a[:] = [1.0, 0.0, 0.0]
+            return
+        freq = max(25.0, min(freq, self.sr * 0.45))
+        w0 = 2.0 * math.pi * freq / self.sr
+        cos_w0 = math.cos(w0)
+        sin_w0 = math.sin(w0)
+        alpha = sin_w0 / (2.0 * 0.707)
+        if ftype == 1:  # Low-pass
+            b0 = (1.0 - cos_w0) / 2.0
+            b1 = 1.0 - cos_w0
+            b2 = (1.0 - cos_w0) / 2.0
+        else:  # High-pass
+            b0 = (1.0 + cos_w0) / 2.0
+            b1 = -(1.0 + cos_w0)
+            b2 = (1.0 + cos_w0) / 2.0
+        a0 = 1.0 + alpha
+        self._kf_b[:] = [b0 / a0, b1 / a0, b2 / a0]
+        self._kf_a[:] = [1.0, (-2.0 * cos_w0) / a0, (1.0 - alpha) / a0]
+
+    def _apply_key_filter(self, sidechain: np.ndarray) -> np.ndarray:
+        """Apply biquad key filter to sidechain signal via lfilter (C)."""
+        if self._last_kf_type == 0:
+            return sidechain
+        zi = np.stack([self._kf_z1, self._kf_z2])  # shape (2, 2)
+        filtered, zi_new = lfilter(
+            self._kf_b, self._kf_a, sidechain, axis=0, zi=zi)
+        self._kf_z1[:] = zi_new[0]
+        self._kf_z2[:] = zi_new[1]
+        sidechain[:] = filtered
+        return sidechain
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+
+        n = len(data)
+        if n == 0:
+            return data
+
+        # Key filter on sidechain copy (lfilter in C)
+        self._update_key_filter(st.key_filter, st.key_freq)
+        sc = data.copy()
+        sc = self._apply_key_filter(sc)
+
+        # Thresholds (linear)
+        thresh_open = 10.0 ** (st.threshold / 20.0)
+        thresh_close = 10.0 ** ((st.threshold - self._HYSTERESIS_DB) / 20.0)
+        min_gain = 10.0 ** (st.range_db / 20.0)
+
+        det_attack_ms = max(0.1, st.attack * 0.1)
+        det_release_ms = 50.0
+        att_coeff = math.exp(-1.0 / (self.sr * det_attack_ms * 0.001))
+        rel_coeff = math.exp(-1.0 / (self.sr * det_release_ms * 0.001))
+        gate_attack_coeff = math.exp(-1.0 / max(1.0, self.sr * st.attack * 0.001))
+        gate_release_coeff = math.exp(-1.0 / max(1.0, self.sr * st.release * 0.001))
+        hold_samples = int(self.sr * st.hold * 0.001)
+
+        # Pre-compute sidechain peaks (vectorised)
+        sc_peaks = np.maximum(np.abs(sc[:, 0]), np.abs(sc[:, 1]))
+
+        env = self._env
+        gate_gain = self._gate_gain
+        gate_state = self._gate_state
+        hold_counter = self._hold_counter
+
+        # Constants for state machine
+        OPEN = self._GATE_OPEN
+        HOLD = self._GATE_HOLD
+        CLOSING = self._GATE_CLOSING
+        CLOSED = self._GATE_CLOSED
+
+        # Build gain array in tight scalar loop (no numpy indexing per sample)
+        gain_arr = np.empty(n, dtype=np.float32)
+
+        for i in range(n):
+            peak = float(sc_peaks[i])
+            if peak > env:
+                env = att_coeff * env + (1.0 - att_coeff) * peak
+            else:
+                env = rel_coeff * env + (1.0 - rel_coeff) * peak
+
+            if gate_state == CLOSED:
+                if env >= thresh_open:
+                    gate_state = OPEN
+            elif gate_state == OPEN:
+                if env < thresh_close:
+                    gate_state = HOLD
+                    hold_counter = hold_samples
+            elif gate_state == HOLD:
+                if env >= thresh_open:
+                    gate_state = OPEN
+                else:
+                    hold_counter -= 1
+                    if hold_counter <= 0:
+                        gate_state = CLOSING
+            elif gate_state == CLOSING:
+                if env >= thresh_open:
+                    gate_state = OPEN
+
+            target = 1.0 if (gate_state == OPEN or gate_state == HOLD) else min_gain
+            if target > gate_gain:
+                gate_gain = gate_attack_coeff * gate_gain + (1.0 - gate_attack_coeff) * target
+            else:
+                gate_gain = gate_release_coeff * gate_gain + (1.0 - gate_release_coeff) * target
+
+            gain_arr[i] = gate_gain
+
+        self._env = env
+        self._gate_gain = gate_gain
+        self._gate_state = gate_state
+        self._hold_counter = hold_counter
+
+        # Apply gain vectorised
+        out = data.copy()
+        out[:, 0] *= gain_arr
+        out[:, 1] *= gain_arr
+        return out
+
+    def reset(self):
+        self._gate_state = self._GATE_CLOSED
+        self._gate_gain = 0.0
+        self._env = 0.0
+        self._hold_counter = 0
+        self._kf_z1[:] = 0.0
+        self._kf_z2[:] = 0.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tremolo — Demeter TRM-1 Optical Tremolo
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TremoloProcessor:
+    """Demeter TRM-1-style optical tremolo with sine/tri/square LFO.
+
+    Features:
+      - Three LFO shapes: sine (smooth), triangle (linear), square (choppy)
+      - Three stereo modes: mono (both channels same), stereo (90° offset),
+        ping-pong (180° alternate)
+      - Vectorized per-block processing using numpy
+    """
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
+        self.sr = sample_rate
+        self.state = TremoloState()
+        self._phase = 0.0  # LFO phase accumulator [0, 1)
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+
+        n = len(data)
+        if n == 0:
+            return data
+
+        rate = max(0.5, min(15.0, st.rate))
+        depth = max(0.0, min(1.0, st.depth))
+        mix = max(0.0, min(1.0, st.mix))
+
+        if depth < 1e-6 or mix < 1e-6:
+            return data
+
+        # Build phase array for this block
+        phase_inc = rate / self.sr
+        phases_l = np.empty(n, dtype=np.float64)
+        p = self._phase
+        for i in range(n):
+            phases_l[i] = p
+            p += phase_inc
+            if p >= 1.0:
+                p -= 1.0
+        self._phase = p
+
+        # Stereo offset
+        if st.stereo_mode == 1:      # Stereo 90°
+            phases_r = (phases_l + 0.25) % 1.0
+        elif st.stereo_mode == 2:     # Ping-pong 180°
+            phases_r = (phases_l + 0.5) % 1.0
+        else:                         # Mono
+            phases_r = phases_l
+
+        # Generate amplitude modulation based on shape
+        amp_l = self._shape_lfo(phases_l, st.shape, depth)
+        amp_r = self._shape_lfo(phases_r, st.shape, depth)
+
+        # Apply
+        out = data.copy()
+        wet_l = data[:, 0] * amp_l
+        wet_r = data[:, 1] * amp_r
+        out[:, 0] = data[:, 0] * (1.0 - mix) + wet_l * mix
+        out[:, 1] = data[:, 1] * (1.0 - mix) + wet_r * mix
+        return out
+
+    @staticmethod
+    def _shape_lfo(phases: np.ndarray, shape: int, depth: float) -> np.ndarray:
+        """Generate amplitude modulation array from LFO phase array."""
+        if shape == 0:  # Sine
+            return 1.0 - depth * (0.5 + 0.5 * np.sin(2.0 * np.pi * phases))
+        elif shape == 1:  # Triangle
+            return 1.0 - depth * (1.0 - np.abs(2.0 * (phases % 1.0) - 1.0))
+        else:  # Square
+            return np.where(phases < 0.5, 1.0, 1.0 - depth)
+
+    def reset(self):
+        self._phase = 0.0
+
+
+class AutoWahProcessor:
+    """Mutron III-style envelope follower + resonant filter (auto-wah)."""
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE):
+        self.state = AutoWahState()
+        self._sr = sample_rate
+
+        # Envelope follower state (per-channel)
+        self._env = np.zeros(2, dtype=np.float64)
+
+        # Biquad filter state (per-channel: x1, x2, y1, y2)
+        self._x1 = np.zeros(2, dtype=np.float64)
+        self._x2 = np.zeros(2, dtype=np.float64)
+        self._y1 = np.zeros(2, dtype=np.float64)
+        self._y2 = np.zeros(2, dtype=np.float64)
+
+        # Cached biquad coefficients
+        self._b0 = 0.0
+        self._b1 = 0.0
+        self._b2 = 0.0
+        self._a1 = 0.0
+        self._a2 = 0.0
+        self._last_cutoff = -1.0
+        self._last_ftype = -1
+
+        # Frequency range
+        self._min_freq = 80.0
+        self._max_freq = 8000.0
+
+    def _calc_biquad(self, cutoff_hz: float, ftype: int, q: float):
+        """Recalculate biquad coefficients for LP/BP/HP."""
+        cutoff_hz = max(20.0, min(cutoff_hz, self._sr * 0.45))
+        w0 = 2.0 * math.pi * cutoff_hz / self._sr
+        sin_w0 = math.sin(w0)
+        cos_w0 = math.cos(w0)
+        alpha = sin_w0 / (2.0 * max(q, 0.1))
+
+        if ftype == 0:  # LP
+            self._b0 = (1.0 - cos_w0) / 2.0
+            self._b1 = 1.0 - cos_w0
+            self._b2 = (1.0 - cos_w0) / 2.0
+        elif ftype == 1:  # BP
+            self._b0 = alpha
+            self._b1 = 0.0
+            self._b2 = -alpha
+        else:  # HP
+            self._b0 = (1.0 + cos_w0) / 2.0
+            self._b1 = -(1.0 + cos_w0)
+            self._b2 = (1.0 + cos_w0) / 2.0
+
+        a0 = 1.0 + alpha
+        self._a1 = -2.0 * cos_w0 / a0
+        self._a2 = (1.0 - alpha) / a0
+        self._b0 /= a0
+        self._b1 /= a0
+        self._b2 /= a0
+        self._last_cutoff = cutoff_hz
+        self._last_ftype = ftype
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        if not self.state.enabled:
+            return data
+
+        s = self.state
+        n = data.shape[0]
+        mix = s.mix
+        sensitivity = max(0.001, s.sensitivity)
+
+        # Envelope coefficients (fast attack, slower release)
+        att_ms = 1.0
+        rel_ms = 80.0
+        att_coeff = math.exp(-1.0 / (att_ms * 0.001 * self._sr))
+        rel_coeff = math.exp(-1.0 / (rel_ms * 0.001 * self._sr))
+
+        # Resonance Q mapped from peak (0–1 → Q 0.5–15)
+        q = 0.5 + s.peak * 14.5
+
+        out = data.copy()
+        env = self._env.copy()
+
+        for i in range(n):
+            for ch in range(2):
+                # Envelope follower on rectified signal
+                rect = abs(data[i, ch]) * sensitivity * 4.0
+                if rect > env[ch]:
+                    env[ch] = att_coeff * env[ch] + (1.0 - att_coeff) * rect
+                else:
+                    env[ch] = rel_coeff * env[ch] + (1.0 - rel_coeff) * rect
+
+            # Average envelope for filter frequency
+            avg_env = min((env[0] + env[1]) * 0.5, 1.0)
+
+            # Map envelope to cutoff frequency
+            if s.mode == 0:  # Up
+                cutoff = self._min_freq + avg_env * (self._max_freq - self._min_freq)
+            else:  # Down
+                cutoff = self._max_freq - avg_env * (self._max_freq - self._min_freq)
+
+            # Recalculate biquad if cutoff changed significantly
+            if abs(cutoff - self._last_cutoff) > 1.0 or self._last_ftype != s.filter_type:
+                self._calc_biquad(cutoff, s.filter_type, q)
+
+            # Apply biquad filter per channel
+            for ch in range(2):
+                x0 = data[i, ch]
+                y0 = (self._b0 * x0 + self._b1 * self._x1[ch] +
+                       self._b2 * self._x2[ch] -
+                       self._a1 * self._y1[ch] -
+                       self._a2 * self._y2[ch])
+                self._x2[ch] = self._x1[ch]
+                self._x1[ch] = x0
+                self._y2[ch] = self._y1[ch]
+                self._y1[ch] = y0
+                out[i, ch] = data[i, ch] * (1.0 - mix) + y0 * mix
+
+        self._env[:] = env
+        return out
+
+    def reset(self):
+        self._env[:] = 0.0
+        self._x1[:] = 0.0
+        self._x2[:] = 0.0
+        self._y1[:] = 0.0
+        self._y2[:] = 0.0
+        self._last_cutoff = -1.0
+        self._last_ftype = -1
+
+
+class FETLimiterProcessor:
+    """Urei 1176LN-style FET peak limiter / compressor.
+
+    Fixed threshold with input-driven compression.  Ultra-fast attack,
+    program-dependent release, 4 ratios + All-Buttons-In mode.
+    """
+
+    # 7 attack positions — 0 = fastest (20 µs), 6 = slowest (800 µs)
+    _ATTACK_S = (0.00002, 0.00005, 0.0001, 0.0003, 0.001, 0.003, 0.08)
+    # 5 release positions — 0 = fastest (50 ms), 4 = slowest (1.1 s)
+    _RELEASE_S = (0.05, 0.1, 0.3, 0.7, 1.1)
+    # Ratio table — index 4 = ABI (All Buttons In)
+    _RATIOS = (4.0, 8.0, 12.0, 20.0, -1.0)  # -1 sentinel for ABI
+    # Fixed threshold in dBFS — the 1176 has a fixed threshold
+    _THRESHOLD_DB = -20.0
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE):
+        self.state = FETLimiterState()
+        self._sr = sample_rate
+
+        # Envelope state per channel
+        self._env = np.zeros(2, dtype=np.float64)
+        # Public gain reduction readout (dB, negative)
+        self.gr_db: float = 0.0
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        if not self.state.enabled:
+            self.gr_db = 0.0
+            return data
+
+        s = self.state
+        n = data.shape[0]
+
+        # Map controls
+        input_db = s.input_gain * 40.0
+        input_lin = 10.0 ** (input_db / 20.0)
+        output_db = s.output_gain * 40.0 - 20.0
+        output_lin = np.float32(10.0 ** (output_db / 20.0))
+
+        # Pre-compute input levels (vectorised)
+        driven = data * np.float32(input_lin)
+
+        # Silence gate — check the GAINED signal so upstream residue
+        # that the input-gain knob amplifies is caught reliably.
+        # −80 dBFS post-gain is well below audibility.
+        peak = np.max(np.abs(driven))
+        if peak < 1e-4:  # ≈ −80 dBFS post-gain
+            self._env[:] = 0.0
+            self.gr_db = 0.0
+            data[:] = 0
+            return data
+
+        # Timing coefficients
+        att_s = self._ATTACK_S[min(s.attack_idx, 6)]
+        rel_s = self._RELEASE_S[min(s.release_idx, 4)]
+        att_coeff = math.exp(-1.0 / max(att_s * self._sr, 1.0))
+        rel_coeff = math.exp(-1.0 / max(rel_s * self._sr, 1.0))
+
+        ratio_idx = min(s.ratio_idx, 4)
+        is_abi = ratio_idx == 4
+        ratio = 20.0 if is_abi else self._RATIOS[ratio_idx]
+
+        threshold_db = self._THRESHOLD_DB
+        knee_db = 2.0 if is_abi else 6.0
+        half_knee = knee_db / 2.0
+        slope = 1.0 - 1.0 / ratio
+        abi_mult = 1.15 if is_abi else 1.0
+        abs_l = np.abs(driven[:, 0])
+        abs_r = np.abs(driven[:, 1])
+
+        # Envelope follower — sequential (IIR), but tight scalar loop
+        # only computing envelopes, no log/gain computation per sample
+        env_arr = np.empty(n, dtype=np.float64)
+        env0 = float(self._env[0])
+        env1 = float(self._env[1])
+
+        for i in range(n):
+            pl = float(abs_l[i])
+            pr = float(abs_r[i])
+            if pl > env0:
+                env0 = att_coeff * env0 + (1.0 - att_coeff) * pl
+            else:
+                env0 = rel_coeff * env0 + (1.0 - rel_coeff) * pl
+            if pr > env1:
+                env1 = att_coeff * env1 + (1.0 - att_coeff) * pr
+            else:
+                env1 = rel_coeff * env1 + (1.0 - rel_coeff) * pr
+            env_arr[i] = max(env0, env1)
+
+        self._env[0] = env0
+        self._env[1] = env1
+        self._env[np.abs(self._env) < 1e-18] = 0.0
+
+        # Vectorised gain computation (log/pow in numpy)
+        env_arr = np.maximum(env_arr, 1e-30)
+        level_db = 20.0 * np.log10(env_arr)
+        over_db = level_db - threshold_db
+
+        gr_db = np.where(
+            over_db <= -half_knee,
+            0.0,
+            np.where(
+                over_db >= half_knee,
+                over_db * slope,
+                ((over_db + half_knee) ** 2) / (2.0 * knee_db) * slope
+            )
+        ) * abi_mult
+
+        gr_lin = np.float32(10.0 ** (-gr_db / 20.0))
+
+        # Apply gain + output (vectorised)
+        out = driven * gr_lin[:, np.newaxis] * output_lin
+
+        # ABI saturation (vectorised)
+        if is_abi:
+            out = np.tanh(out * 1.2) / np.float32(1.2)
+
+        self.gr_db = -float(np.max(gr_db))
+        return out
+
+    def reset(self):
+        self._env[:] = 0.0
+        self.gr_db = 0.0
+
+
+class RotaryProcessor:
+    """Neo Ventilator II-style rotary speaker emulation.
+
+    Crossover splits into horn (high) and rotor (low) paths.
+    Each path gets independent AM + Doppler pitch modulation with
+    speed-ramping transitions between Stop / Slow / Fast.
+    """
+
+    _CROSSOVER_HZ = 800.0
+    _HORN_SLOW = 0.7     # Hz — Neo Ventilator II spec
+    _HORN_FAST = 6.7
+    _ROTOR_SLOW = 0.7
+    _ROTOR_FAST = 5.9
+    _DOPPLER_DEPTH = 0.003  # 0.3% pitch modulation
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE):
+        self.state = RotaryState()
+        self._sr = sample_rate
+
+        # LFO phases
+        self._horn_phase = 0.0
+        self._rotor_phase = 0.0
+
+        # Current Hz (ramped toward target)
+        self._horn_hz = 0.0
+        self._rotor_hz = 0.0
+
+        # Crossover biquad coefficients (for lfilter)
+        self._lp_b, self._lp_a, self._hp_b, self._hp_a = self._calc_crossover()
+        # lfilter zi: shape (2, 2) — [filter_order, channels]
+        self._xo_lp_zi = np.zeros((2, 2), dtype=np.float64)
+        self._xo_hp_zi = np.zeros((2, 2), dtype=np.float64)
+
+        # Doppler delay line — 1024 to support write-all-then-read
+        self._dmax = 1024
+        self._horn_buf = np.zeros((self._dmax, 2), dtype=np.float64)
+        self._rotor_buf = np.zeros((self._dmax, 2), dtype=np.float64)
+        self._horn_wp = 0
+        self._rotor_wp = 0
+
+    def _calc_crossover(self):
+        """Return (lp_b, lp_a, hp_b, hp_a) for crossover biquad filters."""
+        w0 = 2.0 * math.pi * self._CROSSOVER_HZ / self._sr
+        cos_w0 = math.cos(w0)
+        sin_w0 = math.sin(w0)
+        alpha = sin_w0 / (2.0 * 0.707)
+        a0 = 1.0 + alpha
+        a1 = -2.0 * cos_w0
+        a2 = 1.0 - alpha
+        # LP
+        b0 = (1.0 - cos_w0) / 2.0
+        b1 = 1.0 - cos_w0
+        b2 = b0
+        lp_b = np.array([b0/a0, b1/a0, b2/a0], dtype=np.float64)
+        lp_a = np.array([1.0, a1/a0, a2/a0], dtype=np.float64)
+        # HP
+        b0h = (1.0 + cos_w0) / 2.0
+        b1h = -(1.0 + cos_w0)
+        b2h = b0h
+        hp_b = np.array([b0h/a0, b1h/a0, b2h/a0], dtype=np.float64)
+        hp_a = np.array([1.0, a1/a0, a2/a0], dtype=np.float64)
+        return lp_b, lp_a, hp_b, hp_a
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        if not self.state.enabled:
+            return data
+
+        s = self.state
+        n = data.shape[0]
+        two_pi = 2.0 * math.pi
+
+        # Target speeds
+        if s.speed == 0:
+            target_horn = 0.0
+            target_rotor = 0.0
+        elif s.speed == 1:
+            target_horn = self._HORN_SLOW
+            target_rotor = self._ROTOR_SLOW
+        else:
+            target_horn = self._HORN_FAST
+            target_rotor = self._ROTOR_FAST
+
+        # Ramp coefficient
+        ramp_s = 0.2 + s.acceleration * 2.8
+        rc = math.exp(-1.0 / max(ramp_s * self._sr, 1.0))
+
+        horn_lvl = s.horn_level
+        rotor_lvl = s.rotor_level
+        mix_wet = s.mix
+
+        # --- Speed ramp: closed-form exponential decay ---
+        powers = rc ** np.arange(1, n + 1, dtype=np.float64)
+        horn_hz = target_horn + (self._horn_hz - target_horn) * powers
+        rotor_hz = target_rotor + (self._rotor_hz - target_rotor) * powers
+        self._horn_hz = float(horn_hz[-1])
+        self._rotor_hz = float(rotor_hz[-1])
+
+        # --- LFO phases: cumulative sum of per-sample increments ---
+        horn_inc = two_pi * horn_hz / self._sr
+        rotor_inc = two_pi * rotor_hz / self._sr
+        horn_phases = self._horn_phase + np.cumsum(horn_inc)
+        rotor_phases = self._rotor_phase + np.cumsum(rotor_inc)
+        self._horn_phase = float(horn_phases[-1]) % two_pi
+        self._rotor_phase = float(rotor_phases[-1]) % two_pi
+
+        # Pre-compute sin for AM + Doppler (both channels)
+        horn_sin = np.sin(horn_phases)
+        rotor_sin = np.sin(rotor_phases)
+
+        # --- Crossover: vectorised via lfilter ---
+        data_f64 = data.astype(np.float64)
+        lp_out, self._xo_lp_zi = lfilter(
+            self._lp_b, self._lp_a, data_f64, axis=0, zi=self._xo_lp_zi)
+        hp_out, self._xo_hp_zi = lfilter(
+            self._hp_b, self._hp_a, data_f64, axis=0, zi=self._xo_hp_zi)
+
+        # --- Write crossover outputs into delay buffers (vectorised) ---
+        wp = self._horn_wp
+        _circ_write_f64(self._horn_buf, wp, hp_out, self._dmax)
+        _circ_write_f64(self._rotor_buf, wp, lp_out, self._dmax)
+
+        # Positions in delay buffer for each sample
+        positions = (wp + np.arange(n, dtype=np.int64)) % self._dmax
+        dmax = self._dmax
+        dd100 = self._DOPPLER_DEPTH * 100.0
+
+        # --- Horn: Doppler read + AM (both channels vectorised) ---
+        out = np.empty_like(data_f64)
+        for ch in range(2):
+            ph_off = 0.0 if ch == 0 else math.pi
+            sin_ch = np.sin(horn_phases + ph_off) if ch == 1 else horn_sin
+
+            # AM
+            horn_am = 1.0 + 0.5 * sin_ch
+
+            # Doppler fractional delay
+            horn_delay = 128.0 + 64.0 * sin_ch * dd100
+            rd = positions.astype(np.float64) - horn_delay
+            idx0 = rd.astype(np.int64) % dmax
+            idx1 = (idx0 + 1) % dmax
+            frac = rd - np.floor(rd)
+            horn_sig = (self._horn_buf[idx0, ch] * (1.0 - frac) +
+                        self._horn_buf[idx1, ch] * frac)
+
+            # Rotor: same pattern
+            rsin_ch = np.sin(rotor_phases + ph_off) if ch == 1 else rotor_sin
+            rotor_am = 1.0 + 0.3 * rsin_ch
+            rotor_delay = 128.0 + 64.0 * rsin_ch * dd100
+            rd_r = positions.astype(np.float64) - rotor_delay
+            idx0r = rd_r.astype(np.int64) % dmax
+            idx1r = (idx0r + 1) % dmax
+            frac_r = rd_r - np.floor(rd_r)
+            rotor_sig = (self._rotor_buf[idx0r, ch] * (1.0 - frac_r) +
+                         self._rotor_buf[idx1r, ch] * frac_r)
+
+            wet = horn_sig * horn_am * horn_lvl + rotor_sig * rotor_am * rotor_lvl
+            out[:, ch] = data_f64[:, ch] * (1.0 - mix_wet) + wet * mix_wet
+
+        # Advance write pointer
+        self._horn_wp = (wp + n) % dmax
+        self._rotor_wp = self._horn_wp
+
+        return out.astype(np.float32)
+
+    def reset(self):
+        self._horn_phase = 0.0
+        self._rotor_phase = 0.0
+        self._horn_hz = 0.0
+        self._rotor_hz = 0.0
+        self._xo_lp_zi[:] = 0.0
+        self._xo_hp_zi[:] = 0.0
+        self._horn_buf[:] = 0.0
+        self._rotor_buf[:] = 0.0
+        self._horn_wp = 0
+        self._rotor_wp = 0
+
+
+# ── Aural Exciter (Aphex Type C) ────────────────────────────────────────────
+
+class ExciterProcessor:
+    """Aphex Aural Exciter Type C — harmonic enhancement.
+
+    High path: 2nd-order HPF at `tune` → tanh soft-clip → blend at `mix`.
+    Lo path:   1st-order HPF at `lo_tune` → allpass phase shift → blend at `lo_mix`.
+    Output:    makeup gain in dB.
+    """
+
+    def __init__(self, sample_rate: int = 44100):
+        self.sample_rate = sample_rate
+        self.state = ExciterState()
+        # Hi-path HPF state (2nd-order biquad, per channel)
+        self._hi_b = np.zeros(3)
+        self._hi_a = np.zeros(3)
+        self._hi_zi = None
+        self._last_tune = -1.0
+        # Lo-path HPF state (1st-order, per channel)
+        self._lo_b = np.zeros(2)
+        self._lo_a = np.zeros(2)
+        self._lo_zi = None
+        # Lo-path allpass state (1st-order, per channel)
+        self._ap_b = np.zeros(2)
+        self._ap_a = np.zeros(2)
+        self._ap_zi = None
+        self._last_lo_tune = -1.0
+        self._recalc_hi(self.state.tune)
+        self._recalc_lo(self.state.lo_tune)
+
+    def _recalc_hi(self, freq: float):
+        """Recalculate 2nd-order HPF coefficients for the harmonics path."""
+        sr = self.sample_rate
+        freq = max(20.0, min(sr * 0.45, freq))
+        w0 = 2.0 * np.pi * freq / sr
+        alpha = np.sin(w0) / (2.0 * 0.707)
+        cos_w0 = np.cos(w0)
+        b0 = (1.0 + cos_w0) / 2.0
+        b1 = -(1.0 + cos_w0)
+        b2 = (1.0 + cos_w0) / 2.0
+        a0 = 1.0 + alpha
+        a1 = -2.0 * cos_w0
+        a2 = 1.0 - alpha
+        self._hi_b[:] = [b0 / a0, b1 / a0, b2 / a0]
+        self._hi_a[:] = [1.0, a1 / a0, a2 / a0]
+        self._last_tune = freq
+
+    def _recalc_lo(self, freq: float):
+        """Recalculate lo-path HPF and allpass coefficients."""
+        sr = self.sample_rate
+        freq = max(20.0, min(sr * 0.45, freq))
+        # 1st-order HPF: y = x - x1 + R*y1, R = 1 - 2*pi*f/sr
+        R = 1.0 - (2.0 * np.pi * freq / sr)
+        self._lo_b[:] = [1.0, -1.0]
+        self._lo_a[:] = [1.0, -R]
+        # 1st-order allpass for ~90° phase shift at freq
+        # H(z) = (a + z^-1) / (1 + a*z^-1), a = (tan(pi*f/sr) - 1) / (tan(pi*f/sr) + 1)
+        t = np.tan(np.pi * freq / sr)
+        a_coeff = (t - 1.0) / (t + 1.0)
+        self._ap_b[:] = [a_coeff, 1.0]
+        self._ap_a[:] = [1.0, a_coeff]
+        self._last_lo_tune = freq
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        if not self.state.enabled:
+            return data
+        st = self.state
+
+        # Recalc filters if parameters changed
+        if abs(st.tune - self._last_tune) > 0.5:
+            self._recalc_hi(st.tune)
+        if abs(st.lo_tune - self._last_lo_tune) > 0.5:
+            self._recalc_lo(st.lo_tune)
+
+        # data layout: (samples,) mono or (samples, channels) stereo
+        is_mono = data.ndim == 1
+        if is_mono:
+            work = data[:, np.newaxis]          # (samples, 1)
+        else:
+            work = data                          # (samples, channels)
+        n_ch = work.shape[1]
+
+        # Init filter states if needed (one zi vector per channel)
+        if self._hi_zi is None or self._hi_zi.shape[0] != n_ch:
+            self._hi_zi = np.zeros((n_ch, 2))
+        if self._lo_zi is None or self._lo_zi.shape[0] != n_ch:
+            self._lo_zi = np.zeros((n_ch, 1))
+        if self._ap_zi is None or self._ap_zi.shape[0] != n_ch:
+            self._ap_zi = np.zeros((n_ch, 1))
+
+        out = work.copy()
+        hi_mix = float(st.mix)
+        lo_mix = float(st.lo_mix)
+
+        # ── Hi harmonics path ──
+        if hi_mix > 1e-6:
+            for ch in range(n_ch):
+                filtered, self._hi_zi[ch] = lfilter(
+                    self._hi_b, self._hi_a, work[:, ch], zi=self._hi_zi[ch])
+                # Soft-clip to generate harmonics
+                harmonics = np.tanh(filtered * 2.0) * 0.5
+                out[:, ch] += harmonics * hi_mix
+
+        # ── Lo enhancement path ──
+        if lo_mix > 1e-6:
+            for ch in range(n_ch):
+                # HPF to isolate low-mid content
+                lo_hp, self._lo_zi[ch] = lfilter(
+                    self._lo_b, self._lo_a, work[:, ch], zi=self._lo_zi[ch])
+                # Allpass for phase shift
+                lo_ap, self._ap_zi[ch] = lfilter(
+                    self._ap_b, self._ap_a, lo_hp, zi=self._ap_zi[ch])
+                out[:, ch] += lo_ap * lo_mix
+
+        # Flush denormals from filter state to prevent idle noise
+        _DN = np.float64(1e-18)
+        if self._hi_zi is not None:
+            self._hi_zi[np.abs(self._hi_zi) < _DN] = 0.0
+        if self._lo_zi is not None:
+            self._lo_zi[np.abs(self._lo_zi) < _DN] = 0.0
+        if self._ap_zi is not None:
+            self._ap_zi[np.abs(self._ap_zi) < _DN] = 0.0
+
+        # ── Output makeup gain ──
+        gain_db = max(-6.0, min(6.0, float(st.output)))
+        if abs(gain_db) > 0.01:
+            out *= 10.0 ** (gain_db / 20.0)
+
+        if is_mono:
+            return out[:, 0]
+        return out
+
+    def reset(self):
+        self._hi_zi = None
+        self._lo_zi = None
+        self._ap_zi = None
+
+
+class TransientShaperProcessor:
+    """SPL Transient Designer 4 — attack/sustain envelope shaper.
+
+    Two parallel envelope followers (fast + slow).  Transient = fast - slow.
+    Attack gain = 1 + attack_shape * transient.  Sustain uses the inverse.
+    """
+
+    def __init__(self, sample_rate: int = 44100):
+        self.sample_rate = sample_rate
+        self.state = TransientShaperState()
+        # Fast envelope: 0.5ms attack, 4ms release
+        self._fast_att = np.exp(-1.0 / (sample_rate * 0.0005))
+        self._fast_rel = np.exp(-1.0 / (sample_rate * 0.004))
+        # Slow envelope: 50ms attack, 300ms release
+        self._slow_att = np.exp(-1.0 / (sample_rate * 0.050))
+        self._slow_rel = np.exp(-1.0 / (sample_rate * 0.300))
+        # Per-channel envelope state
+        self._fast_env = np.zeros(2, dtype=np.float64)
+        self._slow_env = np.zeros(2, dtype=np.float64)
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        if not self.state.enabled:
+            return data
+        st = self.state
+        is_mono = data.ndim == 1
+        if is_mono:
+            work = data[:, np.newaxis].astype(np.float64)
+        else:
+            work = data.astype(np.float64)
+
+        n_samples, n_ch = work.shape
+        fast_att = self._fast_att
+        fast_rel = self._fast_rel
+        slow_att = self._slow_att
+        slow_rel = self._slow_rel
+        attack_shape = float(st.attack_shape)
+        sustain_shape = float(st.sustain_shape)
+
+        # Compute per-sample rectified input
+        rect = np.abs(work)
+
+        # Vectorised envelope follower via block processing
+        fast_env = np.empty_like(work)
+        slow_env = np.empty_like(work)
+
+        for ch in range(n_ch):
+            fe = self._fast_env[ch]
+            se = self._slow_env[ch]
+            r = rect[:, ch]
+            fe_out = np.empty(n_samples, dtype=np.float64)
+            se_out = np.empty(n_samples, dtype=np.float64)
+            for i in range(n_samples):
+                s = r[i]
+                if s > fe:
+                    fe = fast_att * fe + (1.0 - fast_att) * s
+                else:
+                    fe = fast_rel * fe + (1.0 - fast_rel) * s
+                if s > se:
+                    se = slow_att * se + (1.0 - slow_att) * s
+                else:
+                    se = slow_rel * se + (1.0 - slow_rel) * s
+                fe_out[i] = fe
+                se_out[i] = se
+            self._fast_env[ch] = fe
+            self._slow_env[ch] = se
+            fast_env[:, ch] = fe_out
+            slow_env[:, ch] = se_out
+
+        # Stereo link: average L/R envelopes
+        if st.stereo_link and n_ch == 2:
+            fast_avg = (fast_env[:, 0] + fast_env[:, 1]) * 0.5
+            slow_avg = (slow_env[:, 0] + slow_env[:, 1]) * 0.5
+            fast_env[:, 0] = fast_env[:, 1] = fast_avg
+            slow_env[:, 0] = slow_env[:, 1] = slow_avg
+
+        # Normalise transient/sustain signals relative to the slow envelope
+        # so they represent *proportional* change — not tiny absolute diffs.
+        # Add small floor to avoid division by zero.
+        env_floor = 1e-6
+        norm = np.maximum(slow_env, env_floor)
+
+        # Transient = (fast - slow) / slow — large during sharp attacks
+        raw_trans = (fast_env - slow_env) / norm
+        transient = np.clip(raw_trans, 0.0, 1.0)
+
+        # Sustain signal: where we are NOT in a transient (inverse).
+        # The SPL Transient Designer shapes the body/tail of the sound —
+        # everything that ISN'T the initial attack.  We use
+        # (1 - transient) so it acts on the sustained body.
+        sustain = 1.0 - transient
+
+        # Gain shaping: ±1 maps to ±12 dB of boost/cut
+        # attack_shape=+1  → up to +12 dB on transients
+        # sustain_shape=+1 → up to +12 dB on body/tail
+        _RANGE_DB = 12.0
+        _LOG10_20 = 0.11512925464970229  # log(10)/20
+        att_db = attack_shape * _RANGE_DB * transient
+        sus_db = sustain_shape * _RANGE_DB * sustain
+        gain = np.exp((att_db + sus_db) * _LOG10_20)
+        gain = np.clip(gain, 0.05, 8.0)
+
+        out = work * gain
+
+        # Output makeup gain
+        gain_db = max(-6.0, min(6.0, float(st.output)))
+        if abs(gain_db) > 0.01:
+            out *= 10.0 ** (gain_db / 20.0)
+
+        result = out.astype(np.float32)
+        if is_mono:
+            return result[:, 0]
+        return result
+
+    def reset(self):
+        self._fast_env[:] = 0.0
+        self._slow_env[:] = 0.0
+
+
+# ---------------------------------------------------------------------------
+#  Harmonizer  (Eventide H3000 style dual pitch-shifter)
+# ---------------------------------------------------------------------------
+
+class HarmonizerProcessor:
+    """Wrong Lane — granular overlap-add dual-voice pitch shifter.
+
+    Two voices, each with two overlapping read heads (50 % overlap,
+    Hann window).  Read pointers advance at ``pitch_ratio`` speed;
+    at each grain boundary the finishing head re-syncs to the write
+    cursor so the stream stays click-free.
+    """
+
+    GRAIN = 2048               # grain length in samples (~46 ms @ 44 100)
+    HOP   = GRAIN // 2         # 50 % overlap
+
+    def __init__(self, sr: int = SAMPLE_RATE, max_channels: int = 2):
+        self.sr = sr
+        self._max_ch = max_channels
+        self.state = HarmonizerState()
+
+        # Pre-computed Hann window (endpoints are exactly 0)
+        self._win = np.hanning(self.GRAIN).astype(np.float32)
+
+        # Ring buffer: max delay (250 ms) + 4 grains headroom
+        self._blen = int(0.25 * sr) + 4 * self.GRAIN
+        self._buf = np.zeros((self._blen, max_channels), dtype=np.float32)
+        self._wr = 0                       # write position (wrapping)
+
+        # 2 voices × 2 read heads  —  [voice][head]
+        # _rd = fractional read position (may be negative; wrapped in interp)
+        # _ph = grain phase counter (0 … GRAIN-1)
+        self._rd = [[0.0, 0.0], [0.0, 0.0]]
+        self._ph = [[0, self.HOP], [0, self.HOP]]
+        self._inited = False
+
+        # Feedback buffer (large enough for any reasonable block size)
+        self._fb = np.zeros((4096, max_channels), dtype=np.float32)
+
+    # ---- helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _pitch_ratio(semitones: int, cents: int) -> float:
+        return 2.0 ** ((semitones + cents / 100.0) / 12.0)
+
+    def _interp_read(self, start: float, ratio: float,
+                     n: int, channels: int):
+        """Vectorised linear-interpolation read from ring buffer.
+
+        Returns ``(audio[n, channels], new_read_pos)``.
+        """
+        blen = self._blen
+        buf = self._buf
+        positions = start + np.arange(n, dtype=np.float64) * ratio
+        fl = np.floor(positions).astype(np.int64)
+        frac = (positions - fl).astype(np.float32)[:, np.newaxis]  # (n,1)
+        i0 = fl % blen
+        i1 = (fl + 1) % blen
+        # Advanced-index both points, sliced to actual channel count
+        s0 = buf[i0, :channels]    # (n, channels)
+        s1 = buf[i1, :channels]
+        out = (s0 + (s1 - s0) * frac).astype(np.float32)
+        return out, float(positions[-1] + ratio)
+
+    # ---- per-voice overlap-add ---------------------------------------------
+
+    def _process_voice(self, vi: int, ratio: float, delay: int,
+                       n_samples: int, channels: int) -> np.ndarray:
+        """Process one voice through its two overlapping Hann-windowed grains."""
+        out = np.zeros((n_samples, channels), dtype=np.float32)
+        wr = self._wr         # write cursor (already advanced past input)
+
+        for h in range(2):
+            phase = self._ph[vi][h]
+            rd    = self._rd[vi][h]
+            end_phase = phase + n_samples
+
+            if end_phase <= self.GRAIN:
+                # No grain boundary inside this block
+                audio, new_rd = self._interp_read(rd, ratio,
+                                                  n_samples, channels)
+                win = self._win[phase:end_phase, np.newaxis]
+                out += audio * win
+                self._rd[vi][h] = new_rd
+                if end_phase == self.GRAIN:
+                    # Exactly at boundary — resync for next call
+                    self._ph[vi][h] = 0
+                    self._rd[vi][h] = float(wr - self.GRAIN - delay)
+                else:
+                    self._ph[vi][h] = end_phase
+            else:
+                # Grain boundary falls within this block
+                first  = self.GRAIN - phase        # samples to finish grain
+                second = n_samples - first         # samples in new grain
+
+                # ── Finish current grain ──
+                a1, _ = self._interp_read(rd, ratio, first, channels)
+                w1 = self._win[phase:self.GRAIN, np.newaxis]
+                out[:first] += a1 * w1
+
+                # ── Re-sync head to write cursor AT THE BOUNDARY POINT ──
+                # The write cursor at sample 'first' was wr - second
+                sync_rd = float(wr - second - self.GRAIN - delay)
+                a2, new_rd = self._interp_read(sync_rd, ratio,
+                                               second, channels)
+                w2 = self._win[:second, np.newaxis]
+                out[first:] += a2 * w2
+
+                self._ph[vi][h] = second
+                self._rd[vi][h] = new_rd
+
+        return out
+
+    # ---- main entry --------------------------------------------------------
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+
+        is_mono = data.ndim == 1
+        work = data[:, np.newaxis].copy() if is_mono else data.copy()
+        n, ch = work.shape
+
+        # ── Write input (+ feedback) into ring buffer ──
+        blen = self._blen
+        fb_amt = max(0.0, min(0.9, float(st.feedback)))
+        idx = np.arange(self._wr, self._wr + n) % blen
+        if fb_amt > 0.001:
+            self._buf[idx] = work + fb_amt * self._fb[:n, :ch]
+        else:
+            self._buf[idx] = work
+        self._wr = (self._wr + n) % blen
+
+        # ── Lazy-init read heads on first call ──
+        if not self._inited:
+            da = int(st.voice_a_delay_ms * 0.001 * self.sr)
+            db = int(st.voice_b_delay_ms * 0.001 * self.sr)
+            for hh in range(2):
+                self._rd[0][hh] = float(self._wr - self.GRAIN - da)
+                self._rd[1][hh] = float(self._wr - self.GRAIN - db)
+            self._inited = True
+
+        # ── Per-voice processing ──
+        ratio_a = self._pitch_ratio(st.voice_a_semitones, st.voice_a_cents)
+        ratio_b = self._pitch_ratio(st.voice_b_semitones, st.voice_b_cents)
+
+        # Algorithm modes modify effective ratios:
+        #   0 = DUAL   — both voices as-is (independent intervals)
+        #   1 = UP     — both voices shift up (abs of semitones)
+        #   2 = DOWN   — both voices shift down (negative abs)
+        #   3 = PTCH   — pitched delay: unity pitch, delay + feedback only
+        algo = int(st.algorithm)
+        if algo == 1:       # UP — force both positive
+            ratio_a = self._pitch_ratio(abs(st.voice_a_semitones),
+                                        abs(st.voice_a_cents))
+            ratio_b = self._pitch_ratio(abs(st.voice_b_semitones),
+                                        abs(st.voice_b_cents))
+        elif algo == 2:     # DOWN — force both negative
+            ratio_a = self._pitch_ratio(-abs(st.voice_a_semitones),
+                                        -abs(st.voice_a_cents))
+            ratio_b = self._pitch_ratio(-abs(st.voice_b_semitones),
+                                        -abs(st.voice_b_cents))
+        elif algo == 3:     # PTCH — unity pitch, delay-only
+            ratio_a = 1.0
+            ratio_b = 1.0
+
+        da = int(st.voice_a_delay_ms * 0.001 * self.sr)
+        db = int(st.voice_b_delay_ms * 0.001 * self.sr)
+
+        va = self._process_voice(0, ratio_a, da, n, ch)
+        vb = self._process_voice(1, ratio_b, db, n, ch)
+
+        wet = (va + vb) * 0.5
+
+        # ── Store wet for feedback next block ──
+        self._fb[:n, :ch] = wet
+
+        mix = max(0.0, min(1.0, float(st.mix)))
+        result = ((1.0 - mix) * work + mix * wet).astype(np.float32)
+        if is_mono:
+            return result[:, 0]
+        return result
+
+    def reset(self):
+        self._buf[:] = 0.0
+        self._wr = 0
+        self._rd = [[0.0, 0.0], [0.0, 0.0]]
+        self._ph = [[0, self.HOP], [0, self.HOP]]
+        self._inited = False
+        self._fb[:] = 0.0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stereo Widener  (Aphex 124A M-S)
+# ──────────────────────────────────────────────────────────────────────────────
+class StereoWidenerProcessor:
+    """M-S stereo width control with low-mono crossover."""
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE):
+        self.sr = sample_rate
+        from mlrvp.config import StereoWidenerState
+        self.state = StereoWidenerState()
+        # LP filter on the side channel — everything below low_mono_freq
+        # gets removed from S to keep bass mono.
+        self._side_lp = BiquadFilter(sample_rate)
+        self._side_lp.set_lowpass(120.0, 0.707)
+        self._last_lm_freq: float = 120.0
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+
+        width = st.width
+        center = st.center
+
+        # Nothing to do when unity width and unity center
+        if abs(width - 1.0) < 0.001 and abs(center - 1.0) < 0.001:
+            return data
+
+        # M-S encode
+        L = data[:, 0]
+        R = data[:, 1] if data.shape[1] > 1 else L
+        M = (L + R) * 0.5
+        S = (L - R) * 0.5
+
+        # Scale mid / side
+        M = M * center
+        S = S * width
+
+        # Low-mono: remove low-frequency content from side channel
+        lm = st.low_mono_freq
+        if lm > 25.0:
+            if abs(lm - self._last_lm_freq) > 0.5:
+                self._side_lp.set_lowpass(lm, 0.707)
+                self._last_lm_freq = lm
+            # Filter the side to get lows, subtract to keep only highs in S
+            s_stereo = np.column_stack([S, S])
+            s_lo = self._side_lp.process(s_stereo)[:, 0]
+            S = S - s_lo
+
+        # M-S decode
+        out = np.empty_like(data)
+        out[:, 0] = M + S
+        if data.shape[1] > 1:
+            out[:, 1] = M - S
+        return out
+
+    def reset(self):
+        self._side_lp.reset()
+        self._last_lm_freq = 120.0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Frequency Shifter  (Eventide H949 / Bode 1630)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _make_hilbert_fir(M: int = 64) -> np.ndarray:
+    """Design a 2M+1 tap FIR Hilbert transform with Hann window.
+
+    Returns the filter kernel.  Group delay = M samples.
+    """
+    h = np.zeros(2 * M + 1, dtype=np.float64)
+    for k in range(-M, M + 1):
+        if k % 2 != 0:
+            h[k + M] = 2.0 / (np.pi * k)
+    h *= np.hanning(2 * M + 1)
+    return h
+
+# Pre-compute the kernel once at module load
+# 257 taps (M=128): ~-45 dB sideband rejection, 2.9 ms latency @ 44.1 kHz
+_HILBERT_M = 128
+_HILBERT_FIR = _make_hilbert_fir(_HILBERT_M)
+
+
+class FreqShifterProcessor:
+    """Single-sideband frequency shifter via FIR Hilbert transform.
+
+    Q-path = FIR Hilbert of input (via lfilter, C-level).
+    I-path = input delayed by M samples to match FIR group delay.
+    SSB: out = I·cos(ωt) − Q·sin(ωt)   →  upper sideband only.
+    """
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE):
+        from scipy.signal import lfilter as _lf, lfilter_zi as _lzi
+        self._lfilter = _lf
+        self.sr = sample_rate
+        from mlrvp.config import FreqShifterState
+        self.state = FreqShifterState()
+        self._M = _HILBERT_M
+        self._fir = _HILBERT_FIR
+        # FIR filter state for Q-path (shape: (ntaps-1, nchan))
+        self._zi_q = _lzi(self._fir, 1.0).reshape(-1, 1) * np.zeros((1, 2))
+        # I-path delay line: ring buffer of M samples × 2 channels
+        self._delay_buf = np.zeros((self._M, 2), dtype=np.float64)
+        self._osc_phase = 0.0
+        self._fb_buf = None
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+        shift = st.shift_hz
+        mix = st.mix
+        if abs(shift) < 0.01 and st.feedback < 0.001:
+            if abs(mix - 1.0) < 0.001:
+                return data
+            if mix < 0.001:
+                return data
+
+        lfilter = self._lfilter
+        n = len(data)
+        nchan = data.shape[1] if data.ndim == 2 else 1
+        dry = data
+
+        x = data.astype(np.float64)
+
+        # Mix full-block feedback from previous iteration
+        fb_gain = min(0.9, max(0.0, st.feedback))
+        if fb_gain > 0.001 and self._fb_buf is not None:
+            fb = self._fb_buf
+            if fb.shape[0] >= n:
+                x += fb[:n, :nchan] * fb_gain
+            else:
+                x[:fb.shape[0]] += fb[:, :nchan] * fb_gain
+
+        # Q-path: FIR Hilbert transform (C-level lfilter)
+        Q_out, self._zi_q = lfilter(
+            self._fir, 1.0, x, axis=0, zi=self._zi_q[:, :nchan]
+        )
+
+        # I-path: delay by M samples (concatenate saved tail + current, trim)
+        I_out = np.concatenate([self._delay_buf[:, :nchan], x], axis=0)[:n]
+        # Save the last M samples for next block
+        if n >= self._M:
+            self._delay_buf[:, :nchan] = x[-self._M:]
+        else:
+            old = self._delay_buf[:, :nchan]
+            self._delay_buf[:, :nchan] = np.concatenate(
+                [old[n:], x], axis=0
+            )[-self._M:]
+
+        # Oscillator
+        phase_inc = 2.0 * np.pi * shift / self.sr
+        phases = self._osc_phase + phase_inc * np.arange(n, dtype=np.float64)
+        self._osc_phase = float(phases[-1] + phase_inc) % (2.0 * np.pi)
+        cos_osc = np.cos(phases)
+        sin_osc = np.sin(phases)
+
+        # SSB: upper sideband = I·cos − Q·sin
+        if nchan >= 2:
+            wet = np.empty((n, 2), dtype=np.float32)
+            wet[:, 0] = (I_out[:, 0] * cos_osc - Q_out[:, 0] * sin_osc).astype(np.float32)
+            wet[:, 1] = (I_out[:, 1] * cos_osc - Q_out[:, 1] * sin_osc).astype(np.float32)
+        else:
+            wet = (I_out[:, 0] * cos_osc - Q_out[:, 0] * sin_osc).astype(np.float32).reshape(-1, 1)
+
+        # Store full wet block for feedback next iteration
+        self._fb_buf = wet.astype(np.float64)
+
+        return dry * (1.0 - mix) + wet * mix
+
+    def reset(self):
+        self._zi_q[:] = 0.0
+        self._delay_buf[:] = 0.0
+        self._osc_phase = 0.0
+        self._fb_buf = None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Ring Modulator  ("Ring Leader")
+# ──────────────────────────────────────────────────────────────────────────────
+
+class RingModProcessor:
+    """Classic ring modulator — multiplies audio by a carrier oscillator.
+
+    Below ~20 Hz the effect is tremolo; above that it generates
+    metallic sum-and-difference sidebands.  Three carrier shapes:
+    sine (smooth), triangle (softer harmonics), square (harsh).
+    """
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE):
+        self.sr = sample_rate
+        from mlrvp.config import RingModState
+        self.state = RingModState()
+        self._phase = 0.0
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+
+        freq = max(0.1, min(5000.0, float(st.freq_hz)))
+        depth = max(0.0, min(1.0, float(st.depth)))
+        mix = max(0.0, min(1.0, float(st.mix)))
+
+        if depth < 0.001 or mix < 0.001:
+            return data
+
+        n = len(data)
+        phase_inc = 2.0 * np.pi * freq / self.sr
+        phases = self._phase + phase_inc * np.arange(n, dtype=np.float64)
+        self._phase = float(phases[-1] + phase_inc) % (2.0 * np.pi)
+
+        shape = int(st.shape)
+        if shape == 1:
+            # Triangle: fold sawtooth
+            carrier = 2.0 * np.abs(2.0 * (phases / (2.0 * np.pi) % 1.0) - 1.0) - 1.0
+        elif shape == 2:
+            # Square: sign of sine
+            carrier = np.sign(np.sin(phases))
+        else:
+            # Sine (default)
+            carrier = np.sin(phases)
+
+        carrier = carrier.astype(np.float32)
+
+        # depth: 0 = unmodulated, 1 = full ring-mod
+        # modulator = (1 - depth) + depth * carrier  → at depth=1 pure multiply
+        mod = ((1.0 - depth) + depth * carrier)
+
+        if data.ndim == 2:
+            mod = mod[:, np.newaxis]
+
+        wet = data * mod
+        return data * (1.0 - mix) + wet * mix
+
+    def reset(self):
+        self._phase = 0.0
+
+
+# ─── Simple EQ ────────────────────────────────────────────────────────────────
+
+class SimpleEQProcessor:
+    """Golden Ears — 3-band Pultec-style parametric EQ.
+
+    Three biquad shelving filters: low shelf, mid bell, high shelf.
+    Each band provides ±12 dB of gain. Minimal CPU: just 3 biquad passes.
+    """
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
+        self.sr = sample_rate
+        from mlrvp.config import SimpleEQState
+        self.state = SimpleEQState()
+        # Biquad coefficients [b0, b1, b2, a1, a2] for low, mid, high
+        self._coeffs = [np.zeros(5, dtype=np.float64) for _ in range(3)]
+        # Per-band state: [x1, x2, y1, y2] × 2 channels
+        self._z = [np.zeros((2, 4), dtype=np.float64) for _ in range(3)]
+        self._dirty = True
+        self._last_params = (0.0, 0.0, 0.0, 200.0, 4000.0)
+        self._update_coeffs()
+
+    def _update_coeffs(self):
+        """Recompute biquad coefficients from current state."""
+        st = self.state
+        params = (st.low, st.mid, st.high, st.low_freq, st.high_freq)
+        if params == self._last_params and not self._dirty:
+            return
+        self._last_params = params
+        self._dirty = False
+
+        sr = self.sr
+        # Low shelf
+        self._coeffs[0] = self._low_shelf(
+            max(60.0, min(500.0, st.low_freq)),
+            max(-12.0, min(12.0, st.low)), sr
+        )
+        # Mid bell (peaking) at geometric mean of low_freq and high_freq
+        mid_freq = math.sqrt(st.low_freq * st.high_freq)
+        self._coeffs[1] = self._peaking(
+            mid_freq, max(-12.0, min(12.0, st.mid)), 0.7, sr
+        )
+        # High shelf
+        self._coeffs[2] = self._high_shelf(
+            max(2000.0, min(12000.0, st.high_freq)),
+            max(-12.0, min(12.0, st.high)), sr
+        )
+
+    @staticmethod
+    def _low_shelf(freq: float, gain_db: float, sr: int) -> np.ndarray:
+        A = 10.0 ** (gain_db / 40.0)
+        w0 = 2.0 * math.pi * freq / sr
+        cs = math.cos(w0)
+        sn = math.sin(w0)
+        alpha = sn / (2.0 * 0.707)
+        b0 = A * ((A + 1) - (A - 1) * cs + 2 * math.sqrt(A) * alpha)
+        b1 = 2 * A * ((A - 1) - (A + 1) * cs)
+        b2 = A * ((A + 1) - (A - 1) * cs - 2 * math.sqrt(A) * alpha)
+        a0 = (A + 1) + (A - 1) * cs + 2 * math.sqrt(A) * alpha
+        a1 = -2 * ((A - 1) + (A + 1) * cs)
+        a2 = (A + 1) + (A - 1) * cs - 2 * math.sqrt(A) * alpha
+        return np.array([b0/a0, b1/a0, b2/a0, a1/a0, a2/a0], dtype=np.float64)
+
+    @staticmethod
+    def _high_shelf(freq: float, gain_db: float, sr: int) -> np.ndarray:
+        A = 10.0 ** (gain_db / 40.0)
+        w0 = 2.0 * math.pi * freq / sr
+        cs = math.cos(w0)
+        sn = math.sin(w0)
+        alpha = sn / (2.0 * 0.707)
+        b0 = A * ((A + 1) + (A - 1) * cs + 2 * math.sqrt(A) * alpha)
+        b1 = -2 * A * ((A - 1) + (A + 1) * cs)
+        b2 = A * ((A + 1) + (A - 1) * cs - 2 * math.sqrt(A) * alpha)
+        a0 = (A + 1) - (A - 1) * cs + 2 * math.sqrt(A) * alpha
+        a1 = 2 * ((A - 1) - (A + 1) * cs)
+        a2 = (A + 1) - (A - 1) * cs - 2 * math.sqrt(A) * alpha
+        return np.array([b0/a0, b1/a0, b2/a0, a1/a0, a2/a0], dtype=np.float64)
+
+    @staticmethod
+    def _peaking(freq: float, gain_db: float, q: float, sr: int) -> np.ndarray:
+        A = 10.0 ** (gain_db / 40.0)
+        w0 = 2.0 * math.pi * freq / sr
+        cs = math.cos(w0)
+        sn = math.sin(w0)
+        alpha = sn / (2.0 * q)
+        b0 = 1 + alpha * A
+        b1 = -2 * cs
+        b2 = 1 - alpha * A
+        a0 = 1 + alpha / A
+        a1 = -2 * cs
+        a2 = 1 - alpha / A
+        return np.array([b0/a0, b1/a0, b2/a0, a1/a0, a2/a0], dtype=np.float64)
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+        mix = max(0.0, min(1.0, st.mix))
+        if mix < 0.001:
+            return data
+        self._update_coeffs()
+
+        out = data.copy()
+        n = len(out)
+        for band in range(3):
+            c = self._coeffs[band]
+            b0, b1, b2, a1, a2 = c[0], c[1], c[2], c[3], c[4]
+            z = self._z[band]
+            for ch in range(min(2, out.shape[1]) if out.ndim == 2 else 1):
+                x1, x2, y1, y2 = z[ch]
+                col = out[:, ch] if out.ndim == 2 else out
+                for i in range(n):
+                    x0 = float(col[i])
+                    y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+                    col[i] = y0
+                    x2, x1 = x1, x0
+                    y2, y1 = y1, y0
+                z[ch] = [x1, x2, y1, y2]
+
+        if mix < 0.999:
+            return data * (1.0 - mix) + out * mix
+        return out
+
+    def reset(self):
+        for z in self._z:
+            z[:] = 0.0
+        self._dirty = True
+
+
+# ─── Ping-Pong Delay ─────────────────────────────────────────────────────────
+
+class PingPongDelayProcessor:
+    """Table Tennis — stereo ping-pong delay with independent L/R tap times.
+
+    True stereo bouncing: L tap → R tap → L tap → …
+    PING controls the left tap time, PONG the right tap time.
+    When linked, both follow the master time knob.
+    Each repeat alternates channels, with feedback damping LP filter.
+    Max delay 2 seconds, up to ~95% feedback for long tails.
+    """
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
+        self.sr = sample_rate
+        from mlrvp.config import PingPongDelayState
+        self.state = PingPongDelayState()
+        max_samples = int(2.0 * sample_rate)  # 2s max
+        self._buf_l = np.zeros(max_samples, dtype=np.float32)
+        self._buf_r = np.zeros(max_samples, dtype=np.float32)
+        self._write_pos = 0
+        self._buf_len = max_samples
+        # LP filter state for damping
+        self._lp_l = 0.0
+        self._lp_r = 0.0
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+        mix = max(0.0, min(1.0, st.mix))
+        if mix < 0.001:
+            return data
+
+        n = len(data)
+        stereo = data.ndim == 2
+
+        if st.ping_pong_link:
+            ping_ms = max(10.0, min(2000.0, st.time_ms))
+            pong_ms = ping_ms
+        else:
+            ping_ms = max(10.0, min(2000.0, st.ping_ms))
+            pong_ms = max(10.0, min(2000.0, st.pong_ms))
+
+        delay_l = min(int(ping_ms * self.sr / 1000.0), self._buf_len - 1)
+        delay_r = min(int(pong_ms * self.sr / 1000.0), self._buf_len - 1)
+        fb = np.float32(max(0.0, min(0.95, st.feedback)))
+        damp = max(0.0, min(1.0, st.damping))
+        spread = max(0.0, min(1.0, st.spread))
+        lp_coeff = 1.0 - damp * 0.7
+
+        wp = self._write_pos
+        bl = self._buf_len
+
+        if delay_l >= n and delay_r >= n:
+            # Fast vectorised path — both delays > blocksize
+            # Read taps (all from previous blocks, no overlap)
+            rd_l_start = (wp - delay_l) % bl
+            rd_r_start = (wp - delay_r) % bl
+            tap_l = self._circ_read_mono(self._buf_l, rd_l_start, n)
+            tap_r = self._circ_read_mono(self._buf_r, rd_r_start, n)
+
+            # LP damping via lfilter (one-pole IIR in C)
+            lp_b = np.array([lp_coeff], dtype=np.float64)
+            lp_a = np.array([1.0, -(1.0 - lp_coeff)], dtype=np.float64)
+            lp_l_out, _ = lfilter(lp_b, lp_a, tap_l.astype(np.float64),
+                                  zi=np.array([(1.0 - lp_coeff) * self._lp_l]))
+            lp_r_out, _ = lfilter(lp_b, lp_a, tap_r.astype(np.float64),
+                                  zi=np.array([(1.0 - lp_coeff) * self._lp_r]))
+            self._lp_l = float(lp_l_out[-1])
+            self._lp_r = float(lp_r_out[-1])
+            lp_l_f32 = lp_l_out.astype(np.float32)
+            lp_r_f32 = lp_r_out.astype(np.float32)
+
+            # Write with ping-pong feedback
+            if stereo:
+                in_l = data[:, 0]
+                in_r = data[:, 1]
+            else:
+                in_l = data
+                in_r = data
+            write_l = in_l + fb * lp_r_f32
+            write_r = in_r + fb * lp_l_f32
+            self._circ_write_mono(self._buf_l, wp, write_l, n)
+            self._circ_write_mono(self._buf_r, wp, write_r, n)
+
+            # Stereo spread + mix (vectorised)
+            sp_hi = np.float32(0.5 + 0.5 * spread)
+            sp_lo = np.float32(0.5 - 0.5 * spread)
+            wet_l = tap_l * sp_hi + tap_r * sp_lo
+            wet_r = tap_r * sp_hi + tap_l * sp_lo
+
+            mix_f32 = np.float32(mix)
+            if stereo:
+                out = data.copy()
+                out[:, 0] = data[:, 0] * (1.0 - mix_f32) + wet_l * mix_f32
+                out[:, 1] = data[:, 1] * (1.0 - mix_f32) + wet_r * mix_f32
+            else:
+                out = data * (1.0 - mix_f32) + (wet_l + wet_r) * np.float32(0.5 * mix)
+
+            self._write_pos = (wp + n) % bl
+            return out
+
+        # Fallback: per-sample for very short delays (rare)
+        out = data.copy()
+        lp_l = self._lp_l
+        lp_r = self._lp_r
+        for i in range(n):
+            rd_l = (wp - delay_l) % bl
+            rd_r = (wp - delay_r) % bl
+            tap_l = self._buf_l[rd_l]
+            tap_r = self._buf_r[rd_r]
+            lp_l = lp_l + lp_coeff * (tap_l - lp_l)
+            lp_r = lp_r + lp_coeff * (tap_r - lp_r)
+            in_l = float(data[i, 0]) if stereo else float(data[i])
+            in_r = float(data[i, 1]) if stereo else float(data[i])
+            self._buf_l[wp] = in_l + fb * lp_r
+            self._buf_r[wp] = in_r + fb * lp_l
+            sp_hi = 0.5 + 0.5 * spread
+            sp_lo = 0.5 - 0.5 * spread
+            wet_l = tap_l * sp_hi + tap_r * sp_lo
+            wet_r = tap_r * sp_hi + tap_l * sp_lo
+            if stereo:
+                out[i, 0] = data[i, 0] * (1.0 - mix) + wet_l * mix
+                out[i, 1] = data[i, 1] * (1.0 - mix) + wet_r * mix
+            else:
+                out[i] = data[i] * (1.0 - mix) + (wet_l + wet_r) * 0.5 * mix
+            wp = (wp + 1) % bl
+        self._write_pos = wp
+        self._lp_l = lp_l
+        self._lp_r = lp_r
+        return out
+
+    @staticmethod
+    def _circ_read_mono(buf, idx, n):
+        sz = len(buf)
+        end = idx + n
+        if end <= sz:
+            return buf[idx:end].copy()
+        split = sz - idx
+        out = np.empty(n, dtype=buf.dtype)
+        out[:split] = buf[idx:sz]
+        out[split:] = buf[:end - sz]
+        return out
+
+    @staticmethod
+    def _circ_write_mono(buf, idx, data, n):
+        sz = len(buf)
+        end = idx + n
+        if end <= sz:
+            buf[idx:end] = data
+        else:
+            split = sz - idx
+            buf[idx:sz] = data[:split]
+            buf[:end - sz] = data[split:]
+
+    def reset(self):
+        self._buf_l[:] = 0.0
+        self._buf_r[:] = 0.0
+        self._write_pos = 0
+        self._lp_l = 0.0
+        self._lp_r = 0.0
+
+
+# ─── Shimmer Reverb ──────────────────────────────────────────────────────────
+
+class ShimmerReverbProcessor:
+    """Stained Glass — shimmer reverb with octave-shifted feedback.
+
+    Architecture:
+      input → pre-delay → 4 parallel combs (LP-damped feedback + shimmer)
+            → 2 series allpasses → soft-clip → output
+
+    Shimmer: the *previous* block's allpass output is pitch-shifted and
+    blended into every comb's feedback path.  Over successive blocks the
+    pitch keeps shifting up, creating the rising ethereal tail.
+    Pitch shifter uses a block-level dual-head crossfaded reader —
+    fully vectorised (numpy), no per-sample OLA or history buffer.
+    """
+
+    _COMB_TIMES = (0.0297, 0.0371, 0.0411, 0.0437)
+    _AP_TIMES   = (0.0050, 0.0017)
+    _AP_G       = 0.5
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
+        self.sr = sample_rate
+        from mlrvp.config import ShimmerReverbState
+        self.state = ShimmerReverbState()
+
+        # Pre-delay ring buffer (max 100 ms)
+        pd_max = int(0.1 * sample_rate)
+        self._pd_buf = np.zeros((pd_max, 2), dtype=np.float32)
+        self._pd_len = pd_max
+        self._pd_wp = 0
+
+        # 4 comb filters (circular buffers, stereo)
+        self._comb_lens = [int(sample_rate * t) for t in self._COMB_TIMES]
+        self._combs = [np.zeros((cl, 2), dtype=np.float32)
+                       for cl in self._comb_lens]
+        self._comb_wp = [0] * 4
+        # LP state as plain Python floats (avoids numpy overhead in loop)
+        self._comb_lp_l = [0.0] * 4
+        self._comb_lp_r = [0.0] * 4
+
+        # 2 all-pass filters (circular buffers, stereo)
+        self._ap_lens = [int(sample_rate * t) for t in self._AP_TIMES]
+        self._aps = [np.zeros((al, 2), dtype=np.float32)
+                     for al in self._ap_lens]
+        self._ap_wp = [0] * 2
+
+        # Pitch-shifter phase (dual-head block reader, no history buffer)
+        self._ps_phase = 0.0
+
+        # Shimmer feedback from previous block
+        self._shimmer_fb = np.zeros((buffer_size, 2), dtype=np.float32)
+
+    # ------------------------------------------------------------------
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+        mix = max(0.0, min(1.0, st.mix))
+        if mix < 0.001:
+            return data
+
+        n = len(data)
+        decay    = max(0.0, min(1.0, st.decay))
+        shimmer  = max(0.0, min(1.0, st.shimmer))
+        damping  = max(0.0, min(1.0, st.damping))
+        pd_ms    = max(0.0, min(100.0, st.pre_delay_ms))
+        pd_samp  = max(1, min(int(pd_ms * self.sr / 1000.0),
+                               self._pd_len - 1))
+        pitch_ratio = 2.0 ** (int(st.pitch) / 12.0)
+
+        fb = 0.70 + decay * 0.25          # 0.70–0.95
+        lp_c = 1.0 - damping * 0.7        # LP coefficient
+        use_shimmer = shimmer > 0.01
+
+        shim_g = shimmer * (1.0 - fb) * 0.7 if use_shimmer else 0.0
+
+        # Resize shimmer feedback if block size changed
+        if len(self._shimmer_fb) != n:
+            self._shimmer_fb = np.zeros((n, 2), dtype=np.float32)
+        if use_shimmer:
+            self._shimmer_fb *= 0.998
+        sfb = self._shimmer_fb
+
+        # Pre-delay — vectorised write-then-read
+        _circ_write(self._pd_buf, self._pd_wp, data, self._pd_len)
+        rd = (self._pd_wp - pd_samp) % self._pd_len
+        pd_out = _circ_read(self._pd_buf, rd, n, self._pd_len)
+        self._pd_wp = (self._pd_wp + n) % self._pd_len
+
+        # ---- Comb bank — vectorised (all delays > blocksize) ----------
+        comb_sum = np.zeros((n, 2), dtype=np.float32)
+        fb_f32 = np.float32(fb)
+        lp_b = np.array([lp_c], dtype=np.float64)
+        lp_a = np.array([1.0, -(1.0 - lp_c)], dtype=np.float64)
+
+        for c in range(4):
+            wp = self._comb_wp[c]
+            cl = self._comb_lens[c]
+
+            # Block-read delayed output (raw tap for summing)
+            delayed = _circ_read(self._combs[c], wp, n, cl)
+            comb_sum += delayed
+
+            # LP filter the delayed signal (one-pole IIR via lfilter in C)
+            lp_zi = np.array([[(1.0 - lp_c) * self._comb_lp_l[c],
+                               (1.0 - lp_c) * self._comb_lp_r[c]]],
+                             dtype=np.float64)
+            lp_out, _ = lfilter(
+                lp_b, lp_a, delayed.astype(np.float64), axis=0, zi=lp_zi)
+            self._comb_lp_l[c] = float(lp_out[-1, 0])
+            self._comb_lp_r[c] = float(lp_out[-1, 1])
+
+            # Write: input + LP'd feedback + shimmer, clamped to [-3, 3]
+            write_data = pd_out + lp_out.astype(np.float32) * fb_f32
+            if use_shimmer:
+                write_data = write_data + sfb * np.float32(shim_g)
+            np.clip(write_data, -3.0, 3.0, out=write_data)
+            _circ_write(self._combs[c], wp, write_data, cl)
+            self._comb_wp[c] = (wp + n) % cl
+
+        comb_sum *= np.float32(0.25)
+
+        # Flush LP denormals
+        for c in range(4):
+            if abs(self._comb_lp_l[c]) < 1e-18:
+                self._comb_lp_l[c] = 0.0
+            if abs(self._comb_lp_r[c]) < 1e-18:
+                self._comb_lp_r[c] = 0.0
+
+        # ---- All-pass chain (series) — chunked vectorised -------------
+        ap_data = comb_sum
+        for a in range(2):
+            ap_data = self._allpass_block(a, ap_data, n)
+
+        # Soft-clip → shimmer feedback → output
+        wet = np.tanh(ap_data)
+        if use_shimmer:
+            self._shimmer_fb = self._pitch_shift_block(
+                wet, pitch_ratio, n)
+        else:
+            self._shimmer_fb[:] = 0.0
+
+        return data * (1.0 - mix) + wet * mix
+
+    # ------------------------------------------------------------------
+    # All-pass block — chunked vectorised
+    # ------------------------------------------------------------------
+    def _allpass_block(self, idx, data, n):
+        al = self._ap_lens[idx]
+        buf = self._aps[idx]
+        wp = self._ap_wp[idx]
+        g = np.float32(self._AP_G)
+        out = np.empty_like(data)
+        pos = 0
+        while pos < n:
+            cn = min(al, n - pos)
+            delayed = _circ_read(buf, wp, cn, al)
+            inp = data[pos:pos + cn]
+            vn = inp + delayed * g
+            _circ_write(buf, wp, vn, al)
+            out[pos:pos + cn] = delayed - vn * g
+            wp = (wp + cn) % al
+            pos += cn
+        self._ap_wp[idx] = wp
+        return out
+
+    # ------------------------------------------------------------------
+    # Block-level dual-head pitch shifter (no history buffer)
+    # ------------------------------------------------------------------
+    def _pitch_shift_block(self, block, ratio, n):
+        """Pitch-shift *block* by reading it at *ratio* speed with two
+        crossfaded read heads.  Reads only from *block* (no history
+        buffer), so energy cannot accumulate across blocks."""
+        if n < 2:
+            return block.copy()
+        half = n // 2
+
+        positions = self._ps_phase + np.arange(n, dtype=np.float64) * ratio
+        pos_a = np.mod(positions, n)
+        pos_b = np.mod(positions + half, n)
+
+        # Linear interpolation for head A
+        ia = pos_a.astype(np.int32) % n
+        fa = (pos_a - np.floor(pos_a)).astype(np.float32)[:, np.newaxis]
+        sa = block[ia] * (1.0 - fa) + block[(ia + 1) % n] * fa
+
+        # Linear interpolation for head B
+        ib = pos_b.astype(np.int32) % n
+        fb_frac = (pos_b - np.floor(pos_b)).astype(np.float32)[:, np.newaxis]
+        sb = block[ib] * (1.0 - fb_frac) + block[(ib + 1) % n] * fb_frac
+
+        # Cosine crossfade between the two heads
+        t = (np.mod(positions, half) / half).astype(np.float32)
+        w = (0.5 + 0.5 * np.cos(np.pi * t))[:, np.newaxis]
+        result = sa * w + sb * (1.0 - w)
+
+        self._ps_phase = float(np.mod(self._ps_phase + n * ratio, n))
+        return result.astype(np.float32)
+
+    # ------------------------------------------------------------------
+    def reset(self):
+        self._pd_buf[:] = 0.0
+        self._pd_wp = 0
+        for c in self._combs:
+            c[:] = 0.0
+        self._comb_wp = [0] * 4
+        self._comb_lp_l = [0.0] * 4
+        self._comb_lp_r = [0.0] * 4
+        for a in self._aps:
+            a[:] = 0.0
+        self._ap_wp = [0] * 2
+        self._ps_phase = 0.0
+        self._shimmer_fb[:] = 0.0
+
+
+# ─── Lo-Fi Radio ─────────────────────────────────────────────────────────────
+
+class LoFiRadioProcessor:
+    """Tin Can — lo-fi radio / telephone bandpass filter with noise and breakup.
+
+    Emulates AM radio, telephone, or transistor speaker using:
+      - HP + LP biquad bandpass to restrict bandwidth
+      - Optional soft-clip speaker distortion with cabinet resonance
+      - Bandpass-filtered noise (noise follows the same HP/LP as the signal)
+      - Input gain reduction to emulate weak signal / bad reception
+
+    Presets have dramatically different character:
+      AM Radio   — 500–3000 Hz, mid-heavy, crackly
+      Telephone  — 700–2800 Hz, narrow, honky, thin
+      Transistor — 150–6000 Hz, wider but still lo-fi, warmer
+      Custom     — user-defined lo/hi cut
+    """
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
+        self.sr = sample_rate
+        from mlrvp.config import LoFiRadioState
+        self.state = LoFiRadioState()
+        # HP and LP biquad states (2 channels × 4 state vars)
+        self._hp_z = np.zeros((2, 4), dtype=np.float64)
+        self._lp_z = np.zeros((2, 4), dtype=np.float64)
+        # Noise filter states (separate so noise goes through same bandpass)
+        self._nhp_z = np.zeros((2, 4), dtype=np.float64)
+        self._nlp_z = np.zeros((2, 4), dtype=np.float64)
+        self._hp_coeffs = np.zeros(5, dtype=np.float64)
+        self._lp_coeffs = np.zeros(5, dtype=np.float64)
+        self._last_lo = 0.0
+        self._last_hi = 0.0
+        self._rng = np.random.default_rng(42)
+        self._update_filters(500.0, 3000.0)
+
+    # Band presets: (lo_cut, hi_cut) — made more dramatically different
+    _PRESETS = {
+        0: (500.0,  3000.0),   # AM Radio — narrow mid-band, classic crackle
+        1: (700.0,  2800.0),   # Telephone — very narrow, honky
+        2: (150.0,  6000.0),   # Transistor — wider, warmer vintage speaker
+    }
+
+    def _update_filters(self, lo: float, hi: float):
+        if lo == self._last_lo and hi == self._last_hi:
+            return
+        self._last_lo = lo
+        self._last_hi = hi
+        # Use slightly higher Q for more dramatic bandpass character
+        self._hp_coeffs = self._biquad_hp(max(20.0, lo), self.sr, q=1.0)
+        self._lp_coeffs = self._biquad_lp(min(16000.0, hi), self.sr, q=1.0)
+
+    @staticmethod
+    def _biquad_hp(freq: float, sr: int, q: float = 0.707) -> np.ndarray:
+        w0 = 2.0 * math.pi * freq / sr
+        cs = math.cos(w0)
+        alpha = math.sin(w0) / (2.0 * q)
+        b0 = (1 + cs) / 2
+        b1 = -(1 + cs)
+        b2 = (1 + cs) / 2
+        a0 = 1 + alpha
+        a1 = -2 * cs
+        a2 = 1 - alpha
+        return np.array([b0/a0, b1/a0, b2/a0, a1/a0, a2/a0], dtype=np.float64)
+
+    @staticmethod
+    def _biquad_lp(freq: float, sr: int, q: float = 0.707) -> np.ndarray:
+        w0 = 2.0 * math.pi * freq / sr
+        cs = math.cos(w0)
+        alpha = math.sin(w0) / (2.0 * q)
+        b0 = (1 - cs) / 2
+        b1 = 1 - cs
+        b2 = (1 - cs) / 2
+        a0 = 1 + alpha
+        a1 = -2 * cs
+        a2 = 1 - alpha
+        return np.array([b0/a0, b1/a0, b2/a0, a1/a0, a2/a0], dtype=np.float64)
+
+    def _apply_biquad(self, data: np.ndarray, coeffs: np.ndarray,
+                      z: np.ndarray) -> np.ndarray:
+        """Apply biquad filter per channel."""
+        b0, b1, b2, a1, a2 = coeffs
+        out = data.copy()
+        n = len(out)
+        for ch in range(min(2, out.shape[1]) if out.ndim == 2 else 1):
+            x1, x2, y1, y2 = z[ch]
+            col = out[:, ch] if out.ndim == 2 else out
+            for i in range(n):
+                x0 = float(col[i])
+                y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+                col[i] = y0
+                x2, x1 = x1, x0
+                y2, y1 = y1, y0
+            z[ch] = [x1, x2, y1, y2]
+            # Flush denormals
+            for k in range(4):
+                if abs(z[ch][k]) < 1e-18:
+                    z[ch][k] = 0.0
+        return out
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+        mix = max(0.0, min(1.0, st.mix))
+        if mix < 0.001:
+            return data
+
+        n = len(data)
+
+        # Determine cutoff frequencies from preset or custom
+        if st.band in self._PRESETS:
+            lo, hi = self._PRESETS[st.band]
+        else:
+            lo = max(20.0, min(2000.0, st.lo_cut))
+            hi = max(500.0, min(16000.0, st.hi_cut))
+        self._update_filters(lo, hi)
+
+        # Apply bandpass (HP then LP) to signal
+        wet = self._apply_biquad(data, self._hp_coeffs, self._hp_z)
+        wet = self._apply_biquad(wet, self._lp_coeffs, self._lp_z)
+
+        # Speaker distortion (soft clip with cabinet resonance)
+        dist = max(0.0, min(1.0, st.distortion))
+        if dist > 0.01:
+            drive = 1.0 + dist * 8.0
+            wet = np.tanh(wet * drive) / np.tanh(np.float32(drive))
+
+        # Bandpass-filtered noise — noise goes through the same HP/LP as
+        # the signal, so it sounds like in-band static rather than full-
+        # spectrum white noise.  Amplitude is very subtle by default.
+        noise_amt = max(0.0, min(1.0, st.noise))
+        if noise_amt > 0.001:
+            raw_noise = self._rng.standard_normal(
+                (n, 2 if data.ndim == 2 else 1)).astype(np.float32)
+            # Filter noise through the same bandpass
+            filt_noise = self._apply_biquad(raw_noise, self._hp_coeffs, self._nhp_z)
+            filt_noise = self._apply_biquad(filt_noise, self._lp_coeffs, self._nlp_z)
+            # Very subtle scaling: noise_amt 0→1 maps to 0→0.008 amplitude
+            wet = wet + filt_noise * (noise_amt * 0.008)
+
+        return data * (1.0 - mix) + wet * mix
+
+    def reset(self):
+        self._hp_z[:] = 0.0
+        self._lp_z[:] = 0.0
+        self._nhp_z[:] = 0.0
+        self._nlp_z[:] = 0.0
+        self._last_lo = 0.0
+        self._last_hi = 0.0
+
+
+# ─── Auto-Pan ────────────────────────────────────────────────────────────────
+
+class AutoPanProcessor:
+    """Pendulum — stereo auto-panner with configurable LFO.
+
+    Modulates the stereo field position using sine/tri/square LFO.
+    The left and right channels are gain-modulated in opposition to create
+    rhythmic stereo movement. Different from tremolo — this moves the image
+    left-to-right rather than just modulating volume.
+    """
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
+        self.sr = sample_rate
+        from mlrvp.config import AutoPanState
+        self.state = AutoPanState()
+        self._phase = 0.0
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+
+        n = len(data)
+        if n == 0:
+            return data
+
+        rate = max(0.1, min(20.0, st.rate))
+        depth = max(0.0, min(1.0, st.depth))
+        mix = max(0.0, min(1.0, st.mix))
+
+        if depth < 1e-6 or mix < 1e-6:
+            return data
+
+        # Generate LFO — pan position from -1 (left) to +1 (right)
+        phase_inc = rate / self.sr
+        phases = np.empty(n, dtype=np.float64)
+        p = self._phase
+        for i in range(n):
+            phases[i] = p
+            p += phase_inc
+            if p >= 1.0:
+                p -= 1.0
+        self._phase = p
+
+        shape = st.shape
+        if shape == 0:       # Sine
+            pan = np.sin(2.0 * np.pi * phases)
+        elif shape == 1:     # Triangle
+            pan = 2.0 * np.abs(2.0 * phases - 1.0) - 1.0
+        else:                # Square
+            pan = np.where(phases < 0.5, -1.0, 1.0)
+
+        # Convert pan position to L/R gains using constant-power panning
+        # pan = -1 → full left, pan = 0 → center, pan = +1 → full right
+        pan_scaled = pan * depth  # -depth to +depth
+        # Constant power: gain_L = cos(theta), gain_R = sin(theta)
+        # theta = (pan+1)/2 * pi/2 → 0 (left) to pi/2 (right)
+        theta = (pan_scaled + 1.0) * 0.5 * (np.pi * 0.5)
+        gain_l = np.cos(theta).astype(np.float32)
+        gain_r = np.sin(theta).astype(np.float32)
+
+        if data.ndim == 2:
+            wet = np.empty_like(data)
+            wet[:, 0] = data[:, 0] * gain_l
+            wet[:, 1] = data[:, 1] * gain_r
+        else:
+            wet = data * (gain_l + gain_r) * 0.5
+
+        return data * (1.0 - mix) + wet * mix
+
+    def reset(self):
+        self._phase = 0.0
+
+
+# ─── Fuzz ─────────────────────────────────────────────────────────────────────
+
+class FuzzProcessor:
+    """Wool Over — Big Muff-style fuzz/distortion.
+
+    Models a classic transistor fuzz circuit:
+      1. Input gain stage (sustain → compression via soft-clip pre-amp)
+      2. Hard-clip fuzz stage with asymmetric diode clipping
+      3. Tone stack (variable LP/HP crossfade)
+      4. Noise gate to tame idle hiss
+    Much more aggressive than tube overdrive — square-wave destruction territory.
+    """
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
+        self.sr = sample_rate
+        from mlrvp.config import FuzzState
+        self.state = FuzzState()
+        # Tone filter state (1-pole LP)
+        self._tone_lp = np.zeros(2, dtype=np.float64)
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+        mix = max(0.0, min(1.0, st.mix))
+        if mix < 0.001:
+            return data
+
+        gain = max(0.0, min(1.0, st.gain))
+        tone = max(0.0, min(1.0, st.tone))
+        sustain = max(0.0, min(1.0, st.sustain))
+        gate_thresh = max(0.0, min(0.1, st.gate))
+
+        # Drive amount: 0–1 → 1–100x gain
+        drive = 1.0 + gain * 99.0
+
+        wet = data.copy()
+
+        # Stage 1: Sustain — soft-clip compression before fuzz
+        if sustain > 0.01:
+            comp_gain = 1.0 + sustain * 4.0  # boost quiet parts
+            wet = np.tanh(wet * comp_gain)
+
+        # Stage 2: Fuzz — hard clip with asymmetric diodes
+        wet = wet * np.float32(drive)
+        # Asymmetric clipping: positive clips at +0.7, negative at -0.5
+        wet = np.where(wet > 0,
+                       np.tanh(wet * 2.0) * 0.7,
+                       np.tanh(wet * 3.0) * 0.5)
+
+        # Stage 3: Tone stack — blend between LP (dark) and HP (bright)
+        # tone=0: full LP (dark), tone=0.5: flat, tone=1: full HP (bright)
+        lp_coeff = 0.05 + (1.0 - tone) * 0.4  # 0.05–0.45
+        n = len(wet)
+        for ch in range(min(2, wet.shape[1]) if wet.ndim == 2 else 1):
+            col = wet[:, ch] if wet.ndim == 2 else wet
+            lp = self._tone_lp[ch]
+            for i in range(n):
+                x = float(col[i])
+                lp = lp + lp_coeff * (x - lp)
+                # Blend LP and HP components
+                hp = x - lp
+                col[i] = lp * (1.0 - tone) + hp * tone
+            self._tone_lp[ch] = lp
+
+        # Stage 4: Noise gate
+        if gate_thresh > 0.001:
+            env = np.abs(wet)
+            if wet.ndim == 2:
+                env = np.max(env, axis=1, keepdims=True)
+            gate_mask = np.where(env > gate_thresh, 1.0, env / max(gate_thresh, 1e-6))
+            wet = wet * gate_mask.astype(np.float32)
+
+        # Normalize output level (fuzz is loud)
+        wet = wet * 0.7
+
+        return data * (1.0 - mix) + wet * mix
+
+    def reset(self):
+        self._tone_lp[:] = 0.0
+
+
+# ─── Granular Freeze ─────────────────────────────────────────────────────────
+
+class GranularFreezeProcessor:
+    """Snow Globe — granular freeze with scatter, pitch spread, and freeze toggle.
+
+    Architecture:
+      input → write to ring buffer (unless frozen) →
+      N grain read heads (Hann-windowed) at scattered positions →
+      optional per-grain pitch randomisation via linear-interp resampling →
+      overlap-add → mix with dry signal.
+    """
+
+    _NUM_GRAINS = 12
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
+        self.sr = sample_rate
+        from mlrvp.config import GranularFreezeState
+        self.state = GranularFreezeState()
+        # Ring buffer: ~4 seconds stereo
+        buf_len = int(4.0 * sample_rate)
+        self._buf = np.zeros((buf_len, 2), dtype=np.float32)
+        self._buf_len = buf_len
+        self._write_pos = 0
+        # Per-grain state: phase (0–1 through grain), start offset, pitch ratio
+        self._grain_phase = np.zeros(self._NUM_GRAINS, dtype=np.float64)
+        self._grain_start = np.zeros(self._NUM_GRAINS, dtype=np.int64)
+        self._grain_pitch = np.ones(self._NUM_GRAINS, dtype=np.float64)
+        # Stagger grains evenly in phase so they overlap from the start
+        for i in range(self._NUM_GRAINS):
+            self._grain_phase[i] = i / self._NUM_GRAINS
+        self._rng = np.random.default_rng(42)
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+        mix = max(0.0, min(1.0, st.mix))
+        if mix < 0.001:
+            return data
+
+        n = len(data)
+        stereo = data.ndim == 2 and data.shape[1] >= 2
+
+        # Write input into ring buffer (unless frozen) — vectorised
+        if not st.freeze:
+            wp = self._write_pos
+            end = wp + n
+            if stereo:
+                src = data[:, :2]
+            else:
+                src = np.column_stack((data, data))
+            if end <= self._buf_len:
+                self._buf[wp:end] = src
+            else:
+                first = self._buf_len - wp
+                self._buf[wp:self._buf_len] = src[:first]
+                self._buf[:end - self._buf_len] = src[first:]
+            self._write_pos = end % self._buf_len
+
+        # Grain parameters
+        grain_ms = 5.0 + st.grain_size * 495.0  # 5–500 ms
+        grain_samples = max(64, int(grain_ms * 0.001 * self.sr))
+        scatter_range = int(st.scatter * self._buf_len * 0.5)
+        spread = st.spread
+        density = 0.2 + st.density * 0.8  # 0.2–1.0 = fewer→more overlap
+
+        # Phase increment per sample: controls how fast each grain advances
+        phase_inc = 1.0 / max(1, grain_samples)
+
+        wet = np.zeros((n, 2), dtype=np.float32)
+        active_grains = max(2, int(self._NUM_GRAINS * density))
+        two_pi = 2.0 * math.pi
+
+        for g in range(active_grains):
+            phase = float(self._grain_phase[g])
+            g_start = int(self._grain_start[g])
+            g_pitch = float(self._grain_pitch[g])
+
+            # Process in vectorised segments between grain re-triggers
+            offset = 0
+            while offset < n:
+                # Check if we need to re-trigger
+                if phase >= 1.0:
+                    phase -= 1.0
+                    scatter_off = int(self._rng.integers(-scatter_range, scatter_range + 1)) if scatter_range > 0 else 0
+                    g_start = (self._write_pos - grain_samples + scatter_off) % self._buf_len
+                    if spread > 0.01:
+                        semi = self._rng.uniform(-spread * 12.0, spread * 12.0)
+                        g_pitch = 2.0 ** (semi / 12.0)
+                    else:
+                        g_pitch = 1.0
+
+                # How many samples until next re-trigger?
+                samples_to_trigger = max(1, int(math.ceil((1.0 - phase) / phase_inc)))
+                seg_len = min(samples_to_trigger, n - offset)
+
+                # Vectorised Hann window + read for this segment
+                phases = phase + np.arange(seg_len, dtype=np.float64) * phase_inc
+                windows = np.float32(0.5) - np.float32(0.5) * np.cos(two_pi * phases).astype(np.float32)
+                read_positions = g_start + phases * (grain_samples * g_pitch)
+                indices = read_positions.astype(np.int64) % self._buf_len
+
+                wet[offset:offset + seg_len, 0] += self._buf[indices, 0] * windows
+                wet[offset:offset + seg_len, 1] += self._buf[indices, 1] * windows
+
+                phase = float(phases[-1]) + phase_inc
+                offset += seg_len
+
+            self._grain_phase[g] = phase
+            self._grain_start[g] = g_start
+            self._grain_pitch[g] = g_pitch
+
+        # Normalise
+        if active_grains > 1:
+            wet *= np.float32(2.0 / active_grains)
+
+        if stereo:
+            return data * np.float32(1.0 - mix) + wet * np.float32(mix)
+        else:
+            mono_wet = (wet[:, 0] + wet[:, 1]) * 0.5
+            return data * (1.0 - mix) + mono_wet * mix
+
+    def reset(self):
+        self._buf[:] = 0.0
+        self._write_pos = 0
+        for i in range(self._NUM_GRAINS):
+            self._grain_phase[i] = i / self._NUM_GRAINS
+        self._grain_start[:] = 0
+        self._grain_pitch[:] = 1.0
+
+
+# ─── Gated Reverb ────────────────────────────────────────────────────────────
+
+# Comb/allpass tunings for gated reverb (slightly detuned from hall to
+# give a punchier, snappier character)
+_GATE_COMBS = [1117, 1201, 1327, 1447, 1553, 1663, 1789, 1907]
+_GATE_APASSES = [241, 307, 397, 509]
+
+
+class GatedReverbProcessor:
+    """Gate Crasher — gated reverb with optional reverse tail.
+
+    GATE mode: hall reverb whose wet tail is cut by a time-triggered
+    gate envelope.  After the input signal crosses the internal threshold,
+    the reverb runs for GATE duration, then a shaped window (SLOPE) closes it.
+
+    REVERSE mode: reverb output is written into a fixed-length buffer and
+    played back in reverse, creating a swell-before-the-beat effect.
+    """
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
+        self.sr = sample_rate
+        from mlrvp.config import GatedReverbState
+        self.state = GatedReverbState()
+        sr_ratio = sample_rate / 44100.0
+
+        # Comb + allpass banks (same Schroeder topology as HallReverbProcessor)
+        self._combs = [_CombFilter(max(4, int(dl * sr_ratio)))
+                       for dl in _GATE_COMBS]
+        self._allpasses = [_AllpassFilter(max(4, int(dl * sr_ratio)), 0.5)
+                           for dl in _GATE_APASSES]
+
+        # Pre-delay circular buffer (max ~100 ms)
+        max_pd = int(0.1 * sample_rate) + 1
+        self._pd_buf = np.zeros((max_pd, 2), dtype=np.float32)
+        self._pd_size = max_pd
+        self._pd_idx = 0
+
+        # Gate envelope state
+        self._gate_open = False
+        self._gate_countdown = 0  # samples remaining in gate-open phase
+        self._gate_env = 1.0      # current envelope value (1=open, 0=closed)
+
+        # Reverse mode buffer (max 3 seconds)
+        rev_len = int(3.0 * sample_rate)
+        self._rev_buf = np.zeros((rev_len, 2), dtype=np.float32)
+        self._rev_len = rev_len
+        self._rev_write = 0
+        self._rev_read = 0
+        self._rev_filled = 0  # how many samples have been written this cycle
+
+        # Threshold for gate trigger
+        self._trigger_thresh = 0.01
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+        mix = max(0.0, min(1.0, st.mix))
+        if mix < 0.001:
+            return data
+
+        n = len(data)
+        stereo = data.ndim == 2 and data.shape[1] >= 2
+
+        # Ensure stereo for internal processing
+        if stereo:
+            work = data
+        else:
+            work = np.column_stack((data, data))
+
+        # Pre-delay
+        pd_ms = st.pre_delay * 100.0  # 0–100 ms
+        pd_samples = max(0, min(self._pd_size - 1, int(pd_ms * 0.001 * self.sr)))
+        _circ_write(self._pd_buf, self._pd_idx, work, self._pd_size)
+        rd = (self._pd_idx - pd_samples) % self._pd_size
+        pre = _circ_read(self._pd_buf, rd, n, self._pd_size)
+        self._pd_idx = (self._pd_idx + n) % self._pd_size
+
+        # Reverb: room controls feedback
+        fb = 0.5 + st.room * 0.45  # 0.5–0.95
+        damp = 0.3  # fixed moderate damping for punchy character
+        for c in self._combs:
+            c.set_feedback(fb)
+            c.set_damp(damp)
+
+        # Parallel combs → series allpasses
+        reverb_out = np.zeros((n, 2), dtype=np.float32)
+        for c in self._combs:
+            reverb_out += c.process(pre)
+        reverb_out *= np.float32(1.0 / len(self._combs))
+        for ap in self._allpasses:
+            reverb_out = ap.process(reverb_out)
+
+        # Gate duration in samples
+        gate_dur_s = 0.05 + st.gate_time * 2.95  # 50 ms – 3 s
+        gate_dur_samples = int(gate_dur_s * self.sr)
+        slope = max(0.01, st.slope)
+
+        if st.mode == 0:
+            # GATE mode — apply time-triggered gate envelope
+            wet = self._apply_gate(work, reverb_out, n, gate_dur_samples, slope, True)
+        else:
+            # REVERSE mode — collect reverb, play back reversed
+            wet = self._apply_reverse(work, reverb_out, n, gate_dur_samples, True)
+
+        if stereo:
+            return data * np.float32(1.0 - mix) + wet * np.float32(mix)
+        else:
+            mono_wet = (wet[:, 0] + wet[:, 1]) * 0.5 if wet.ndim == 2 else wet
+            return data * (1.0 - mix) + mono_wet * mix
+
+    def _apply_gate(self, dry, reverb, n, gate_dur, slope, stereo):
+        """Gate mode: let reverb through for gate_dur samples after trigger."""
+        # Pre-compute input levels vectorised
+        if stereo:
+            levels = np.maximum(np.abs(dry[:n, 0]), np.abs(dry[:n, 1]))
+        else:
+            levels = np.abs(dry[:n].ravel())
+
+        # Build envelope in tight scalar loop (no per-sample numpy indexing)
+        fade_samples = max(1, int(slope * gate_dur * 0.5))
+        fade_dec = 1.0 / fade_samples
+        env = np.empty(n, dtype=np.float32)
+        gate_open = self._gate_open
+        countdown = self._gate_countdown
+        gate_env = self._gate_env
+        thresh = self._trigger_thresh
+
+        for i in range(n):
+            if levels[i] > thresh and not gate_open:
+                gate_open = True
+                countdown = gate_dur
+                gate_env = 1.0
+
+            if gate_open:
+                countdown -= 1
+                if countdown <= 0:
+                    gate_env -= fade_dec
+                    if gate_env <= 0.0:
+                        gate_env = 0.0
+                        gate_open = False
+
+            env[i] = gate_env
+
+        self._gate_open = gate_open
+        self._gate_countdown = countdown
+        self._gate_env = gate_env
+
+        # Vectorised multiply
+        wet = np.empty((n, 2), dtype=np.float32)
+        wet[:, 0] = reverb[:n, 0] * env
+        wet[:, 1] = reverb[:n, 1] * env
+        return wet
+
+    def _apply_reverse(self, dry, reverb, n, gate_dur, stereo):
+        """Reverse mode: accumulate reverb tail, play it backward."""
+        wet = np.zeros((n, 2), dtype=np.float32)
+        tail_len = min(gate_dur, self._rev_len)
+
+        # Pre-compute input levels for trigger detection
+        if stereo:
+            levels = np.maximum(np.abs(dry[:n, 0]), np.abs(dry[:n, 1]))
+        else:
+            levels = np.abs(dry[:n].ravel())
+
+        thresh = self._trigger_thresh
+        i = 0
+        while i < n:
+            if self._rev_filled == 0:
+                # Idle — find next trigger using vectorised search
+                above = np.where(levels[i:n] > thresh)[0]
+                if len(above) == 0:
+                    break  # no trigger in rest of block
+                i += int(above[0])
+                self._rev_write = 0
+                self._rev_read = 0
+                self._rev_filled = 1
+
+            if 0 < self._rev_filled <= tail_len:
+                # Writing phase — bulk copy reverb into reverse buffer
+                to_write = min(tail_len + 1 - self._rev_write, n - i)
+                if to_write > 0:
+                    rw = self._rev_write
+                    self._rev_buf[rw:rw + to_write] = reverb[i:i + to_write]
+                    self._rev_write = rw + to_write
+                    self._rev_filled = self._rev_write
+                    i += to_write
+                continue
+
+            if self._rev_filled > tail_len:
+                # Reading phase — vectorised Hann window and reverse indexing
+                to_read = min(tail_len - self._rev_read, n - i)
+                if to_read > 0:
+                    rr = self._rev_read
+                    read_indices = (self._rev_write - 1 - (rr + np.arange(to_read))) % self._rev_len
+                    t_vals = (rr + np.arange(to_read, dtype=np.float64)) / tail_len
+                    windows = np.float32(0.5) - np.float32(0.5) * np.cos(
+                        2.0 * math.pi * t_vals).astype(np.float32)
+                    wet[i:i + to_read, 0] = self._rev_buf[read_indices, 0] * windows
+                    wet[i:i + to_read, 1] = self._rev_buf[read_indices, 1] * windows
+                    self._rev_read += to_read
+                    i += to_read
+                if self._rev_read >= tail_len:
+                    self._rev_filled = 0
+                    self._rev_read = 0
+                continue
+
+            i += 1  # safety fallback
+
+        return wet
+
+    def reset(self):
+        for c in self._combs:
+            c.reset()
+        for ap in self._allpasses:
+            ap.reset()
+        self._pd_buf[:] = 0.0
+        self._pd_idx = 0
+        self._gate_open = False
+        self._gate_countdown = 0
+        self._gate_env = 1.0
+        self._rev_buf[:] = 0.0
+        self._rev_write = 0
+        self._rev_read = 0
+        self._rev_filled = 0
+
+
+# ─── Stutter / Glitch Buffer Looper ─────────────────────────────────────────
+
+class StutterProcessor:
+    """Broken Record — stutter/glitch buffer looper.
+
+    When triggered, captures a short slice of live audio into a fixed buffer
+    and loops it on repeat.  SIZE controls capture length, RATE controls
+    repeat speed, CHAOS adds random position jumps.  When not triggered,
+    audio passes through untouched.
+    """
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
+        self.sr = sample_rate
+        from mlrvp.config import StutterState
+        self.state = StutterState()
+        # Capture buffer — max ~2 seconds stereo
+        max_samples = int(2.0 * sample_rate)
+        self._buf = np.zeros((max_samples, 2), dtype=np.float32)
+        self._buf_len = max_samples
+        self._captured_len = 0    # actual captured length in samples
+        self._read_pos = 0        # current playback position in captured buffer
+        self._was_triggered = False  # edge detection for trigger
+        self._filling = False         # True while still capturing into buffer
+        self._fill_pos = 0            # next write position during capture
+        self._target_cap = 0          # target capture length in samples
+        self._rng = np.random.default_rng(77)
+        # Crossfade state
+        self._xfade_pos = 0
+        self._xfade_len = 0
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        st = self.state
+        if not st.enabled:
+            return data
+
+        triggered = st.trigger
+        mix = max(0.0, min(1.0, st.mix))
+
+        # If not triggered, pass through
+        if not triggered:
+            self._was_triggered = False
+            self._captured_len = 0
+            self._filling = False
+            self._fill_pos = 0
+            return data
+
+        n = len(data)
+        stereo = data.ndim == 2 and data.shape[1] >= 2
+
+        # Capture length from SIZE: log scale 10–2000 ms
+        size_ms = 10.0 * (200.0 ** st.size)  # 10–2000 ms
+        capture_len = min(int(size_ms * 0.001 * self.sr), self._buf_len)
+
+        # Repeat rate from RATE: log scale 10–2000 ms
+        rate_ms = 10.0 * (200.0 ** st.rate)
+        repeat_len = max(1, int(rate_ms * 0.001 * self.sr))
+
+        # On rising edge of trigger — start capturing audio
+        if not self._was_triggered:
+            self._was_triggered = True
+            self._filling = True
+            self._fill_pos = 0
+            self._target_cap = capture_len
+            self._captured_len = 0
+            self._read_pos = 0
+
+        # Continue filling capture buffer across multiple process() calls
+        if self._filling:
+            remaining = self._target_cap - self._fill_pos
+            to_copy = min(remaining, n)
+            if to_copy > 0:
+                if stereo:
+                    self._buf[self._fill_pos:self._fill_pos + to_copy, :] = data[:to_copy, :2]
+                else:
+                    self._buf[self._fill_pos:self._fill_pos + to_copy, 0] = data[:to_copy]
+                    self._buf[self._fill_pos:self._fill_pos + to_copy, 1] = data[:to_copy]
+                self._fill_pos += to_copy
+            if self._fill_pos >= self._target_cap:
+                self._captured_len = self._target_cap
+                self._filling = False
+
+        # If nothing captured yet, pass through
+        if self._captured_len < 1:
+            return data
+
+        chaos = max(0.0, min(1.0, st.chaos))
+        smear = max(0.001, min(1.0, st.smear))
+        cap_len = self._captured_len
+        xfade_samples = max(1, int(smear * min(repeat_len, cap_len) * 0.25))
+
+        out = data.copy()
+
+        if chaos <= 0.01:
+            # Vectorised path — no random jumps
+            raw_pos = (self._read_pos + np.arange(n, dtype=np.int64)) % repeat_len
+            positions = raw_pos % cap_len
+
+            # Base reads from capture buffer
+            s0 = self._buf[positions, 0].copy()
+            s1 = self._buf[positions, 1].copy()
+
+            # Crossfade at loop boundary
+            dist_to_end = cap_len - positions
+            need_xfade = dist_to_end <= xfade_samples
+            if np.any(need_xfade):
+                xf_idx = np.where(need_xfade)[0]
+                t = dist_to_end[xf_idx].astype(np.float32) / xfade_samples
+                wrap_pos = (xfade_samples - dist_to_end[xf_idx]) % cap_len
+                s0[xf_idx] = self._buf[positions[xf_idx], 0] * t + self._buf[wrap_pos, 0] * (1.0 - t)
+                s1[xf_idx] = self._buf[positions[xf_idx], 1] * t + self._buf[wrap_pos, 1] * (1.0 - t)
+
+            if stereo:
+                out[:, 0] = data[:, 0] * (1.0 - mix) + s0 * mix
+                out[:, 1] = data[:, 1] * (1.0 - mix) + s1 * mix
+            else:
+                out[:] = data[:] * (1.0 - mix) + (s0 + s1) * 0.5 * mix
+
+            self._read_pos = int((self._read_pos + n) % repeat_len)
+        else:
+            # Scalar path with chaos — per-sample RNG jumps required
+            for i in range(n):
+                if self._rng.random() < chaos * 0.01:
+                    self._read_pos = int(self._rng.integers(0, cap_len))
+
+                pos = self._read_pos % cap_len
+                dist_to_end = cap_len - pos
+                if dist_to_end <= xfade_samples:
+                    t = dist_to_end / xfade_samples
+                    wrap_pos = (xfade_samples - dist_to_end) % cap_len
+                    s0 = self._buf[pos, 0] * t + self._buf[wrap_pos, 0] * (1.0 - t)
+                    s1 = self._buf[pos, 1] * t + self._buf[wrap_pos, 1] * (1.0 - t)
+                else:
+                    s0 = self._buf[pos, 0]
+                    s1 = self._buf[pos, 1]
+
+                if stereo:
+                    out[i, 0] = data[i, 0] * (1.0 - mix) + s0 * mix
+                    out[i, 1] = data[i, 1] * (1.0 - mix) + s1 * mix
+                else:
+                    out[i] = data[i] * (1.0 - mix) + (s0 + s1) * 0.5 * mix
+
+                self._read_pos += 1
+                if self._read_pos >= repeat_len:
+                    self._read_pos = 0
+
+        return out
+
+    def reset(self):
+        self._buf[:] = 0.0
+        self._captured_len = 0
+        self._read_pos = 0
+        self._was_triggered = False
+        self._filling = False
+        self._fill_pos = 0
+        self._target_cap = 0

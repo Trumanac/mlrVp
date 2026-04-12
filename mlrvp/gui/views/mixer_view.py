@@ -348,8 +348,8 @@ class MixerView(QWidget):
         )
         aux_layout.addWidget(self._aux_fx_route_btn)
 
-        # AUX mute button
-        self._aux_mute_btn = QPushButton("MUTE")
+        # AUX mute button (default muted; checked = muted, unchecked = monitoring)
+        self._aux_mute_btn = QPushButton("UNMUTE")
         self._aux_mute_btn.setCheckable(True)
         self._aux_mute_btn.setFixedHeight(20)
         self._aux_mute_btn.setStyleSheet(
@@ -360,8 +360,8 @@ class MixerView(QWidget):
             f"QPushButton:checked {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; "
             f"border-color: {ACCENT_GOLD}; }}"
         )
-        self._aux_mute_btn.toggled.connect(self.aux_mute_toggled.emit)
-        self._aux_mute_btn.setToolTip("Mute the AUX return channel")
+        self._aux_mute_btn.toggled.connect(lambda checked: self.aux_mute_toggled.emit(not checked))
+        self._aux_mute_btn.setToolTip("Unmute AUX input (enable input monitoring)")
         aux_layout.addWidget(self._aux_mute_btn)
 
         strip_row.addWidget(aux_frame)
@@ -507,5 +507,5 @@ class MixerView(QWidget):
 
     def set_aux_mute(self, muted: bool):
         self._aux_mute_btn.blockSignals(True)
-        self._aux_mute_btn.setChecked(muted)
+        self._aux_mute_btn.setChecked(not muted)
         self._aux_mute_btn.blockSignals(False)

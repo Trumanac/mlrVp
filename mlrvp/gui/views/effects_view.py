@@ -1136,6 +1136,21 @@ from mlrvp.gui.rack_modules.hall_reverb import HallReverbModule
 from mlrvp.gui.rack_modules.plate_spring_reverb import PlateSpringReverbModule
 from mlrvp.gui.rack_modules.bit_crusher import BitCrusherModule
 from mlrvp.gui.rack_modules.tube_overdrive import TubeOverdriveModule
+from mlrvp.gui.rack_modules.noise_gate import NoiseGateModule
+from mlrvp.gui.rack_modules.tremolo import TremoloModule
+from mlrvp.gui.rack_modules.auto_wah import AutoWahModule
+from mlrvp.gui.rack_modules.fet_limiter import FETLimiterModule
+from mlrvp.gui.rack_modules.exciter import ExciterModule
+from mlrvp.gui.rack_modules.harmonizer import HarmonizerModule
+from mlrvp.gui.rack_modules.stereo_widener import StereoWidenerModule
+from mlrvp.gui.rack_modules.ring_mod import RingModModule
+from mlrvp.gui.rack_modules.simple_eq import SimpleEQModule
+from mlrvp.gui.rack_modules.ping_pong_delay import PingPongDelayModule
+from mlrvp.gui.rack_modules.shimmer_reverb import ShimmerReverbModule
+from mlrvp.gui.rack_modules.lofi_radio import LoFiRadioModule
+from mlrvp.gui.rack_modules.auto_pan import AutoPanModule
+from mlrvp.gui.rack_modules.fuzz import FuzzModule
+from mlrvp.gui.rack_modules.transient_shaper import TransientShaperModule
 # Ensure registry is populated
 import mlrvp.gui.rack_modules  # noqa: F401
 
@@ -1168,7 +1183,7 @@ class _GroupTabButton(QPushButton):
                 "stop:0 #444444, stop:0.4 #333333, stop:1 #222222);"
                 f"color: {ACCENT_GOLD}; font-weight: bold; font-size: 10px;"
                 "border: 1px solid #666666; border-bottom: none;"
-                "border-radius: 3px 3px 0 0; padding: 2px 12px;"
+                "border-top-left-radius: 3px; border-top-right-radius: 3px; padding: 2px 12px;"
                 "letter-spacing: 1px; }"
             )
         else:
@@ -1176,7 +1191,7 @@ class _GroupTabButton(QPushButton):
                 "QPushButton { background: #1a1a1a;"
                 f"color: {TEXT_SECONDARY}; font-weight: bold; font-size: 10px;"
                 "border: 1px solid #444444; border-bottom: none;"
-                "border-radius: 3px 3px 0 0; padding: 2px 12px;"
+                "border-top-left-radius: 3px; border-top-right-radius: 3px; padding: 2px 12px;"
                 "letter-spacing: 1px; }"
                 "QPushButton:hover { background: #2a2a2a; }"
             )
@@ -1202,6 +1217,26 @@ class EffectsView(QWidget):
     bit_crusher_param_changed = Signal(str, object, int)
     tube_overdrive_param_changed = Signal(str, object, int)
     ether_drift_param_changed = Signal(str, object, int)
+    noise_gate_param_changed = Signal(str, object, int)
+    tremolo_param_changed = Signal(str, object, int)
+    auto_wah_param_changed = Signal(str, object, int)
+    fet_limiter_param_changed = Signal(str, object, int)
+    rotary_param_changed = Signal(str, object, int)
+    exciter_param_changed = Signal(str, object, int)
+    transient_shaper_param_changed = Signal(str, object, int)
+    harmonizer_param_changed = Signal(str, object, int)
+    stereo_widener_param_changed = Signal(str, object, int)
+    freq_shifter_param_changed = Signal(str, object, int)
+    ring_mod_param_changed = Signal(str, object, int)
+    simple_eq_param_changed = Signal(str, object, int)
+    ping_pong_delay_param_changed = Signal(str, object, int)
+    shimmer_reverb_param_changed = Signal(str, object, int)
+    lofi_radio_param_changed = Signal(str, object, int)
+    auto_pan_param_changed = Signal(str, object, int)
+    fuzz_param_changed = Signal(str, object, int)
+    granular_freeze_param_changed = Signal(str, object, int)
+    gate_reverb_param_changed = Signal(str, object, int)
+    stutter_param_changed = Signal(str, object, int)
     effect_route_changed = Signal(str, int)
     midi_map_toggled = Signal(bool)  # activates the global MIDI map manager
     rack_contents_changed = Signal(dict)  # rack/effect sync payload for app↔engine
@@ -1241,7 +1276,7 @@ class EffectsView(QWidget):
         self._midi_map_btn.setFixedHeight(26)
         self._midi_map_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_PANEL}; border: 1px solid #444444; border-bottom: none;"
-            f"border-radius: 3px 3px 0 0; color: {TEXT_SECONDARY}; font-size: 9px; font-weight: bold; letter-spacing: 1px; }}"
+            f"border-top-left-radius: 3px; border-top-right-radius: 3px; color: {TEXT_SECONDARY}; font-size: 9px; font-weight: bold; letter-spacing: 1px; }}"
             f"QPushButton:hover {{ background: #2a2a2a; color: {TEXT_PRIMARY}; }}"
             f"QPushButton:checked {{ background: {ACCENT_BLUE}; border-color: {ACCENT_BLUE};"
             f"color: {BG_BLACK}; }}"
@@ -1299,52 +1334,53 @@ class EffectsView(QWidget):
         self._rack_d.rack_changed.connect(self._on_rack_changed)
         self._rack_m.rack_changed.connect(self._on_rack_changed)
 
-        # --- Populate Group A (FX Bus 1) — Clean Studio: dynamics → EQ → delay ---
+        # --- Populate Group A (FX Bus 1) — Clean Channel: dynamics → delay ---
         self._vu_a = DualVUMeterModule()
         self._compressor_a = CompressorModule()
-        self._filter_a_module = MultibandFilterModule()
         self._delay_module = DigitalDelayModule()
 
-        for mod in [self._vu_a, self._compressor_a, self._filter_a_module,
-                    self._delay_module]:
+        for mod in [self._vu_a, self._compressor_a, self._delay_module]:
             self._rack_a.add_module(mod)
 
-        # --- Populate Group B (FX Bus 2) — Tape Warmth: glue → reel → tape delay ---
+        # --- Populate Group B (FX Bus 2) — Breakbeat: glue comp → transient → cassette ---
         self._vu_b = DualVUMeterModule()
         self._glue_compressor_b = GlueCompressorModule()
-        self._reel_module = ReelToReelModule()
-        self._tape_delay_module = TapeDelayModule()
+        self._transient_shaper_b = TransientShaperModule()
+        self._cassette_b = MixtapeModule()
 
-        for mod in [self._vu_b, self._glue_compressor_b, self._reel_module,
-                    self._tape_delay_module]:
+        for mod in [self._vu_b, self._glue_compressor_b, self._transient_shaper_b,
+                    self._cassette_b]:
             self._rack_b.add_module(mod)
 
-        # --- Populate Group C (FX Bus 3) — Space & Modulation: reverbs → chorus ---
+        # Keep reel and tape_delay as hidden instances (legacy shims reference them)
+        self._reel_module = ReelToReelModule(parent=self)
+        self._reel_module.setVisible(False)
+        self._tape_delay_module = TapeDelayModule(parent=self)
+        self._tape_delay_module.setVisible(False)
+
+        # --- Populate Group C (FX Bus 3) — Space: reverb → modulation ---
         self._vu_c = DualVUMeterModule()
         self._hall_reverb_c = HallReverbModule()
-        self._plate_reverb_c = PlateSpringReverbModule()
         self._chorus_module = ChorusModule()
 
-        for mod in [self._vu_c, self._hall_reverb_c, self._plate_reverb_c,
-                    self._chorus_module]:
+        for mod in [self._vu_c, self._hall_reverb_c, self._chorus_module]:
             self._rack_c.add_module(mod)
 
-        # --- Populate Group D (FX Bus 4) — Lo-Fi / Destroy: crush → drive → vinyl ---
+        # --- Populate Group D (FX Bus 4) — Lo-Fi / Destroy: crush → drive ---
         self._vu_d = DualVUMeterModule()
         self._bit_crusher_d = BitCrusherModule()
         self._tube_overdrive_d = TubeOverdriveModule()
-        self._vinyl_d = VinylModule()
 
-        for mod in [self._vu_d, self._bit_crusher_d, self._tube_overdrive_d,
-                    self._vinyl_d]:
+        for mod in [self._vu_d, self._bit_crusher_d, self._tube_overdrive_d]:
             self._rack_d.add_module(mod)
 
-        # --- Populate Group M (Master bus) — Mastering chain: glue → EQ → monitor ---
+        # --- Populate Group M (Master bus) — Mastering: glue → limiter → monitor ---
         self._vu_m = DualVUMeterModule()
         self._compressor_m = GlueCompressorModule()
-        self._filter_a_m = MultibandFilterModule()
+        self._fet_limiter_m = FETLimiterModule()
         self._scope_m = OscilloscopeModule()
-        for mod in [self._vu_m, self._compressor_m, self._filter_a_m, self._scope_m]:
+        for mod in [self._vu_m, self._compressor_m,
+                    self._fet_limiter_m, self._scope_m]:
             self._rack_m.add_module(mod)
 
         # Route ALL module params (including dynamically added modules)
@@ -1364,12 +1400,16 @@ class EffectsView(QWidget):
         # Hidden instances for effects not in any default rack but still
         # needed for state management and the ＋ menu add workflow.
         # Parent them to self so Qt keeps their C++ objects alive.
+        self._filter_a_module = MultibandFilterModule(parent=self)
+        self._filter_a_module.setVisible(False)
         self._filter_b_module = MoogFilterModule(parent=self)
         self._filter_b_module.setVisible(False)
         self._phaser_module = PhaserModule(parent=self)
         self._phaser_module.setVisible(False)
         self._flanger_module = FlangerModule(parent=self)
         self._flanger_module.setVisible(False)
+        self._bit_crusher_b_hidden = BitCrusherModule(parent=self)
+        self._bit_crusher_b_hidden.setVisible(False)
         self._cassette_module = MixtapeModule(parent=self)
         self._cassette_module.setVisible(False)
         self._vhs_module = VHSModule(parent=self)
@@ -1382,6 +1422,14 @@ class EffectsView(QWidget):
         self._scope_b.setVisible(False)
         self._ether_drift_module = EtherDriftModule(parent=self)
         self._ether_drift_module.setVisible(False)
+        self._noise_gate_module = NoiseGateModule(parent=self)
+        self._noise_gate_module.setVisible(False)
+        self._tremolo_module = TremoloModule(parent=self)
+        self._tremolo_module.setVisible(False)
+        self._auto_wah_module = AutoWahModule(parent=self)
+        self._auto_wah_module.setVisible(False)
+        self._fet_limiter_module = FETLimiterModule(parent=self)
+        self._fet_limiter_module.setVisible(False)
         self._delay_panel = _LegacyPanelShim(self._delay_module)
         self._tape_delay_panel = _LegacyPanelShim(self._tape_delay_module)
         self._filter_a_panel = _LegacyPanelShim(self._filter_a_module)
@@ -1462,7 +1510,14 @@ class EffectsView(QWidget):
                   "reel_to_reel", "cassette_tape", "vhs", "vinyl",
                   "compressor", "glue_compressor",
                   "hall_reverb", "plate_reverb",
-                  "bit_crusher", "tube_overdrive", "ether_drift"}
+                  "bit_crusher", "tube_overdrive", "ether_drift",
+                  "noise_gate", "tremolo", "auto_wah",
+                  "fet_limiter", "rotary", "exciter",
+                  "transient_shaper", "harmonizer", "stereo_widener",
+                  "freq_shifter", "ring_mod",
+                  "simple_eq", "ping_pong_delay", "shimmer_reverb",
+                  "lofi_radio", "auto_pan", "fuzz",
+                  "granular_freeze", "gate_reverb", "stutter"}
 
         return {
             "presence_a": {et: (et in a_types) for et in all_fx},
@@ -1493,6 +1548,26 @@ class EffectsView(QWidget):
             "BitCrusherModule": self.bit_crusher_param_changed,
             "TubeOverdriveModule": self.tube_overdrive_param_changed,
             "EtherDriftModule": self.ether_drift_param_changed,
+            "NoiseGateModule": self.noise_gate_param_changed,
+            "TremoloModule": self.tremolo_param_changed,
+            "AutoWahModule": self.auto_wah_param_changed,
+            "FETLimiterModule": self.fet_limiter_param_changed,
+            "RotaryModule": self.rotary_param_changed,
+            "ExciterModule": self.exciter_param_changed,
+            "TransientShaperModule": self.transient_shaper_param_changed,
+            "HarmonizerModule": self.harmonizer_param_changed,
+            "StereoWidenerModule": self.stereo_widener_param_changed,
+            "FreqShifterModule": self.freq_shifter_param_changed,
+            "RingModModule": self.ring_mod_param_changed,
+            "SimpleEQModule": self.simple_eq_param_changed,
+            "PingPongDelayModule": self.ping_pong_delay_param_changed,
+            "ShimmerReverbModule": self.shimmer_reverb_param_changed,
+            "LoFiRadioModule": self.lofi_radio_param_changed,
+            "AutoPanModule": self.auto_pan_param_changed,
+            "FuzzModule": self.fuzz_param_changed,
+            "GranularFreezeModule": self.granular_freeze_param_changed,
+            "GatedReverbModule": self.gate_reverb_param_changed,
+            "StutterModule": self.stutter_param_changed,
         }
         sig = _MAP.get(module_class)
         if sig:
@@ -1568,6 +1643,20 @@ class EffectsView(QWidget):
                             gr_key = "glue_compressor_gr_m"
                         gr = levels.get(gr_key, 0.0)
                         mod.update_meters(bus_l, bus_r, gr)
+                elif isinstance(mod, FETLimiterModule):
+                    if mod.enabled:
+                        if rack is self._rack_a:
+                            gr_key = "fet_limiter_gr_a"
+                        elif rack is self._rack_b:
+                            gr_key = "fet_limiter_gr_b"
+                        elif rack is self._rack_c:
+                            gr_key = "fet_limiter_gr_c"
+                        elif rack is self._rack_d:
+                            gr_key = "fet_limiter_gr_d"
+                        else:
+                            gr_key = "fet_limiter_gr_m"
+                        gr = levels.get(gr_key, 0.0)
+                        mod.set_gr(gr)
                 elif isinstance(mod, OscilloscopeModule):
                     if mod.enabled and wf_l is not None and wf_r is not None:
                         if bus_l > 0.001 or bus_r > 0.001:
@@ -1664,19 +1753,9 @@ class _LegacyModPanelShim:
         self._flanger = flanger
 
     def set_state(self, state):
-        self._phaser.set_state(
-            state.phaser_enabled, state.phaser_rate,
-            state.phaser_depth, state.phaser_feedback
-        )
-        self._chorus.set_state(
-            state.chorus_enabled, state.chorus_rate,
-            state.chorus_depth, state.chorus_mix
-        )
-        self._flanger.set_state(
-            state.flanger_enabled, state.flanger_rate,
-            state.flanger_depth, state.flanger_feedback,
-            state.flanger_mix
-        )
+        self._phaser.set_state(state)
+        self._chorus.set_state(state)
+        self._flanger.set_state(state)
 
     def __getattr__(self, name):
         if name in self._ATTR_MAP:

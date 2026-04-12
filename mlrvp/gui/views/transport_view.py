@@ -479,6 +479,19 @@ class TransportView(QWidget):
             lambda txt: self.setlist_changed.emit(txt) if txt else None
         )
         sl_col.addWidget(self._setlist_combo)
+
+        # Edit button (opens setlist editor) — placed left of setlist dropdown
+        self._edit_btn = QPushButton("+")
+        self._edit_btn.setFixedSize(22, 22)
+        self._edit_btn.setToolTip("Open setlist editor")
+        self._edit_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 14px; border: 1px solid {SEPARATOR}; padding: 0; }}"
+            f"QPushButton:hover {{ color: {TEXT_PRIMARY}; border-color: {ACCENT_GOLD}; }}"
+        )
+        self._edit_btn.clicked.connect(self.setlist_edit_requested.emit)
+        setlist_layout.addWidget(self._edit_btn, alignment=Qt.AlignmentFlag.AlignBottom)
+
         setlist_layout.addLayout(sl_col)
 
         # Prev button
@@ -546,18 +559,6 @@ class TransportView(QWidget):
         )
         self._new_btn.clicked.connect(self.preset_new_requested.emit)
         setlist_layout.addWidget(self._new_btn, alignment=Qt.AlignmentFlag.AlignBottom)
-
-        # Edit button (opens setlist editor)
-        self._edit_btn = QPushButton("\u2699")
-        self._edit_btn.setFixedSize(22, 22)
-        self._edit_btn.setToolTip("Open setlist editor")
-        self._edit_btn.setStyleSheet(
-            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
-            f"font-size: 14px; border: 1px solid {SEPARATOR}; padding: 0; }}"
-            f"QPushButton:hover {{ color: {TEXT_PRIMARY}; border-color: {ACCENT_GOLD}; }}"
-        )
-        self._edit_btn.clicked.connect(self.setlist_edit_requested.emit)
-        setlist_layout.addWidget(self._edit_btn, alignment=Qt.AlignmentFlag.AlignBottom)
 
         layout.addWidget(setlist_frame)
 

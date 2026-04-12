@@ -59,7 +59,7 @@ class _ToggleSwitch(QPushButton):
             self.setStyleSheet(
                 f"QPushButton {{ background: {_RED}; color: {_WHITE};"
                 "font-size: 8px; font-weight: bold; border: 1px solid #ff6666;"
-                "border-radius: 2px; }}"
+                "border-radius: 2px; }"
             )
         else:
             self.setStyleSheet(
@@ -167,10 +167,9 @@ class FlangerModule(RackModuleBase):
         row.addStretch()
         self._faceplate_layout.addLayout(row)
 
-    def set_state(self, enabled: bool, rate: float, depth: float,
-                  feedback: float, mix: float):
-        self.set_power(enabled, emit=False)
-        self._rate.set_value(rate / 5.0)
-        self._depth.set_value(depth)
-        self._fb.set_value(feedback)
-        self._mix.set_value(mix)
+    def set_state(self, state):
+        self.set_power(state.flanger_enabled, emit=False)
+        self._rate.set_value(state.flanger_rate / 5.0)
+        self._depth.set_value(state.flanger_depth)
+        self._fb.set_value(state.flanger_feedback)
+        self._mix.set_value(state.flanger_mix)

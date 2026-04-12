@@ -39,6 +39,26 @@ from mlrvp.audio.effects import (
     HallReverbProcessor, PlateReverbProcessor,
     BitCrusherProcessor, TubeOverdriveProcessor,
     EtherDriftProcessor,
+    NoiseGateProcessor,
+    TremoloProcessor,
+    AutoWahProcessor,
+    FETLimiterProcessor,
+    RotaryProcessor,
+    ExciterProcessor,
+    TransientShaperProcessor,
+    HarmonizerProcessor,
+    StereoWidenerProcessor,
+    FreqShifterProcessor,
+    RingModProcessor,
+    SimpleEQProcessor,
+    PingPongDelayProcessor,
+    ShimmerReverbProcessor,
+    LoFiRadioProcessor,
+    AutoPanProcessor,
+    FuzzProcessor,
+    GranularFreezeProcessor,
+    GatedReverbProcessor,
+    StutterProcessor,
 )
 from mlrvp.audio.recorder import Recorder
 from mlrvp.audio.sample import SampleBuffer
@@ -136,6 +156,61 @@ class AudioEngine:
         self.ether_drift_b = EtherDriftProcessor(self.sample_rate, self.buffer_size)
         self.ether_drift_m = EtherDriftProcessor(self.sample_rate, self.buffer_size)
 
+        # Noise Gate — per-bus instances
+        self.noise_gate = NoiseGateProcessor(self.sample_rate, self.buffer_size)
+        self.noise_gate_b = NoiseGateProcessor(self.sample_rate, self.buffer_size)
+        self.noise_gate_m = NoiseGateProcessor(self.sample_rate, self.buffer_size)
+
+        # Tremolo — per-bus instances
+        self.tremolo = TremoloProcessor(self.sample_rate, self.buffer_size)
+        self.tremolo_b = TremoloProcessor(self.sample_rate, self.buffer_size)
+        self.tremolo_m = TremoloProcessor(self.sample_rate, self.buffer_size)
+
+        # Auto-Wah — per-bus instances
+        self.auto_wah = AutoWahProcessor(self.sample_rate)
+        self.auto_wah_b = AutoWahProcessor(self.sample_rate)
+        self.auto_wah_m = AutoWahProcessor(self.sample_rate)
+
+        # FET Limiter — per-bus instances
+        self.fet_limiter = FETLimiterProcessor(self.sample_rate)
+        self.fet_limiter_b = FETLimiterProcessor(self.sample_rate)
+        self.fet_limiter_m = FETLimiterProcessor(self.sample_rate)
+
+        # Rotary Speaker — per-bus instances
+        self.rotary = RotaryProcessor(self.sample_rate)
+        self.rotary_b = RotaryProcessor(self.sample_rate)
+        self.rotary_m = RotaryProcessor(self.sample_rate)
+
+        # Aural Exciter — per-bus instances
+        self.exciter = ExciterProcessor(self.sample_rate)
+        self.exciter_b = ExciterProcessor(self.sample_rate)
+        self.exciter_m = ExciterProcessor(self.sample_rate)
+
+        # Transient Shaper — per-bus instances
+        self.transient_shaper = TransientShaperProcessor(self.sample_rate)
+        self.transient_shaper_b = TransientShaperProcessor(self.sample_rate)
+        self.transient_shaper_m = TransientShaperProcessor(self.sample_rate)
+
+        # Harmonizer — per-bus instances
+        self.harmonizer = HarmonizerProcessor(self.sample_rate)
+        self.harmonizer_b = HarmonizerProcessor(self.sample_rate)
+        self.harmonizer_m = HarmonizerProcessor(self.sample_rate)
+
+        # Stereo Widener — per-bus instances
+        self.stereo_widener = StereoWidenerProcessor(self.sample_rate)
+        self.stereo_widener_b = StereoWidenerProcessor(self.sample_rate)
+        self.stereo_widener_m = StereoWidenerProcessor(self.sample_rate)
+
+        # Frequency Shifter — per-bus instances
+        self.freq_shifter = FreqShifterProcessor(self.sample_rate)
+        self.freq_shifter_b = FreqShifterProcessor(self.sample_rate)
+        self.freq_shifter_m = FreqShifterProcessor(self.sample_rate)
+
+        # Ring Modulator — per-bus instances
+        self.ring_mod = RingModProcessor(self.sample_rate)
+        self.ring_mod_b = RingModProcessor(self.sample_rate)
+        self.ring_mod_m = RingModProcessor(self.sample_rate)
+
         # Bus C (FX3) instances:
         self.delay_c = StereoDelay(self.sample_rate)
         self.tape_delay_c = TapeDelay(self.sample_rate)
@@ -153,7 +228,17 @@ class AudioEngine:
         self.bit_crusher_c = BitCrusherProcessor(self.sample_rate)
         self.tube_overdrive_c = TubeOverdriveProcessor(self.sample_rate)
         self.ether_drift_c = EtherDriftProcessor(self.sample_rate, self.buffer_size)
-
+        self.noise_gate_c = NoiseGateProcessor(self.sample_rate, self.buffer_size)
+        self.tremolo_c = TremoloProcessor(self.sample_rate, self.buffer_size)
+        self.auto_wah_c = AutoWahProcessor(self.sample_rate)
+        self.fet_limiter_c = FETLimiterProcessor(self.sample_rate)
+        self.rotary_c = RotaryProcessor(self.sample_rate)
+        self.exciter_c = ExciterProcessor(self.sample_rate)
+        self.transient_shaper_c = TransientShaperProcessor(self.sample_rate)
+        self.harmonizer_c = HarmonizerProcessor(self.sample_rate)
+        self.stereo_widener_c = StereoWidenerProcessor(self.sample_rate)
+        self.freq_shifter_c = FreqShifterProcessor(self.sample_rate)
+        self.ring_mod_c = RingModProcessor(self.sample_rate)
         # Bus D (FX4) instances:
         self.delay_d = StereoDelay(self.sample_rate)
         self.tape_delay_d = TapeDelay(self.sample_rate)
@@ -171,19 +256,85 @@ class AudioEngine:
         self.bit_crusher_d = BitCrusherProcessor(self.sample_rate)
         self.tube_overdrive_d = TubeOverdriveProcessor(self.sample_rate)
         self.ether_drift_d = EtherDriftProcessor(self.sample_rate, self.buffer_size)
+        self.noise_gate_d = NoiseGateProcessor(self.sample_rate, self.buffer_size)
+        self.tremolo_d = TremoloProcessor(self.sample_rate, self.buffer_size)
+        self.auto_wah_d = AutoWahProcessor(self.sample_rate)
+        self.fet_limiter_d = FETLimiterProcessor(self.sample_rate)
+        self.rotary_d = RotaryProcessor(self.sample_rate)
+        self.exciter_d = ExciterProcessor(self.sample_rate)
+        self.transient_shaper_d = TransientShaperProcessor(self.sample_rate)
+        self.harmonizer_d = HarmonizerProcessor(self.sample_rate)
+        self.stereo_widener_d = StereoWidenerProcessor(self.sample_rate)
+        self.freq_shifter_d = FreqShifterProcessor(self.sample_rate)
+        self.ring_mod_d = RingModProcessor(self.sample_rate)
+
+        # Simple EQ — per-bus instances
+        self.simple_eq = SimpleEQProcessor(self.sample_rate)
+        self.simple_eq_b = SimpleEQProcessor(self.sample_rate)
+        self.simple_eq_m = SimpleEQProcessor(self.sample_rate)
+        self.simple_eq_c = SimpleEQProcessor(self.sample_rate)
+        self.simple_eq_d = SimpleEQProcessor(self.sample_rate)
+        # Ping-Pong Delay — per-bus instances
+        self.ping_pong_delay = PingPongDelayProcessor(self.sample_rate)
+        self.ping_pong_delay_b = PingPongDelayProcessor(self.sample_rate)
+        self.ping_pong_delay_m = PingPongDelayProcessor(self.sample_rate)
+        self.ping_pong_delay_c = PingPongDelayProcessor(self.sample_rate)
+        self.ping_pong_delay_d = PingPongDelayProcessor(self.sample_rate)
+        # Shimmer Reverb — per-bus instances
+        self.shimmer_reverb = ShimmerReverbProcessor(self.sample_rate)
+        self.shimmer_reverb_b = ShimmerReverbProcessor(self.sample_rate)
+        self.shimmer_reverb_m = ShimmerReverbProcessor(self.sample_rate)
+        self.shimmer_reverb_c = ShimmerReverbProcessor(self.sample_rate)
+        self.shimmer_reverb_d = ShimmerReverbProcessor(self.sample_rate)
+        # Lo-Fi Radio — per-bus instances
+        self.lofi_radio = LoFiRadioProcessor(self.sample_rate)
+        self.lofi_radio_b = LoFiRadioProcessor(self.sample_rate)
+        self.lofi_radio_m = LoFiRadioProcessor(self.sample_rate)
+        self.lofi_radio_c = LoFiRadioProcessor(self.sample_rate)
+        self.lofi_radio_d = LoFiRadioProcessor(self.sample_rate)
+        # Auto-Pan — per-bus instances
+        self.auto_pan = AutoPanProcessor(self.sample_rate)
+        self.auto_pan_b = AutoPanProcessor(self.sample_rate)
+        self.auto_pan_m = AutoPanProcessor(self.sample_rate)
+        self.auto_pan_c = AutoPanProcessor(self.sample_rate)
+        self.auto_pan_d = AutoPanProcessor(self.sample_rate)
+        # Fuzz — per-bus instances
+        self.fuzz = FuzzProcessor(self.sample_rate)
+        self.fuzz_b = FuzzProcessor(self.sample_rate)
+        self.fuzz_m = FuzzProcessor(self.sample_rate)
+        self.fuzz_c = FuzzProcessor(self.sample_rate)
+        self.fuzz_d = FuzzProcessor(self.sample_rate)
+        # Granular Freeze — per-bus instances
+        self.granular_freeze = GranularFreezeProcessor(self.sample_rate)
+        self.granular_freeze_b = GranularFreezeProcessor(self.sample_rate)
+        self.granular_freeze_m = GranularFreezeProcessor(self.sample_rate)
+        self.granular_freeze_c = GranularFreezeProcessor(self.sample_rate)
+        self.granular_freeze_d = GranularFreezeProcessor(self.sample_rate)
+        # Gated Reverb — per-bus instances
+        self.gate_reverb = GatedReverbProcessor(self.sample_rate)
+        self.gate_reverb_b = GatedReverbProcessor(self.sample_rate)
+        self.gate_reverb_m = GatedReverbProcessor(self.sample_rate)
+        self.gate_reverb_c = GatedReverbProcessor(self.sample_rate)
+        self.gate_reverb_d = GatedReverbProcessor(self.sample_rate)
+        # Stutter — per-bus instances
+        self.stutter = StutterProcessor(self.sample_rate)
+        self.stutter_b = StutterProcessor(self.sample_rate)
+        self.stutter_m = StutterProcessor(self.sample_rate)
+        self.stutter_c = StutterProcessor(self.sample_rate)
+        self.stutter_d = StutterProcessor(self.sample_rate)
 
         # Recorder
         self.recorder = Recorder(self.sample_rate)
 
         # Per-bus in-rack flags — True when the module is present in that rack.
-        # Rack A → FX1 (Clean Studio): compressor → multiband filter → delay
-        # Rack B → FX2 (Tape Warmth): glue compressor → reel → tape delay
-        # Rack C → FX3 (Space & Mod): hall reverb → plate reverb → chorus
-        # Rack D → FX4 (Lo-Fi/Destroy): bit crusher → tube overdrive → vinyl
+        # Rack A → FX1 (Clean Studio): gate → compressor → multiband EQ → delay → stereo widener
+        # Rack B → FX2 (Breakbeat): glue compressor → transient shaper → cassette tape
+        # Rack C → FX3 (Space & Pitch): harmonizer → hall reverb → plate reverb → tremolo
+        # Rack D → FX4 (Lo-Fi / Destroy): bit crusher → tube overdrive → ring mod → vinyl → cassette
         self.delay_in_rack_a = True
         self.delay_in_rack_b = False
         self.tape_delay_in_rack_a = False
-        self.tape_delay_in_rack_b = True
+        self.tape_delay_in_rack_b = False
         self.filter_a_in_rack_a = True
         self.filter_a_in_rack_b = False
         self.filter_b_in_rack_a = False
@@ -191,9 +342,9 @@ class AudioEngine:
         self.mod_in_rack_a = False
         self.mod_in_rack_b = False
         self.reel_to_reel_in_rack_a = False
-        self.reel_to_reel_in_rack_b = True
+        self.reel_to_reel_in_rack_b = False
         self.cassette_tape_in_rack_a = False
-        self.cassette_tape_in_rack_b = False
+        self.cassette_tape_in_rack_b = True
         self.bit_crusher_in_rack_a = False
         self.bit_crusher_in_rack_b = False
         self.tube_overdrive_in_rack_a = False
@@ -212,13 +363,35 @@ class AudioEngine:
         self.glue_compressor_in_rack_b = True
         self.ether_drift_in_rack_a = False
         self.ether_drift_in_rack_b = False
+        self.noise_gate_in_rack_a = True
+        self.noise_gate_in_rack_b = False
+        self.tremolo_in_rack_a = False
+        self.tremolo_in_rack_b = False
+        self.auto_wah_in_rack_a = False
+        self.auto_wah_in_rack_b = False
+        self.fet_limiter_in_rack_a = False
+        self.fet_limiter_in_rack_b = False
+        self.rotary_in_rack_a = False
+        self.rotary_in_rack_b = False
+        self.exciter_in_rack_a = False
+        self.exciter_in_rack_b = False
+        self.transient_shaper_in_rack_a = False
+        self.transient_shaper_in_rack_b = True
+        self.harmonizer_in_rack_a = False
+        self.harmonizer_in_rack_b = False
+        self.stereo_widener_in_rack_a = True
+        self.stereo_widener_in_rack_b = False
+        self.freq_shifter_in_rack_a = False
+        self.freq_shifter_in_rack_b = False
+        self.ring_mod_in_rack_a = False
+        self.ring_mod_in_rack_b = False
 
-        # Rack C in-rack flags (FX3 — Space & Mod)
+        # Rack C in-rack flags (FX3 — Space & Pitch)
         self.delay_in_rack_c = False
         self.tape_delay_in_rack_c = False
         self.filter_a_in_rack_c = False
         self.filter_b_in_rack_c = False
-        self.mod_in_rack_c = True   # chorus in default C rack
+        self.mod_in_rack_c = False
         self.reel_to_reel_in_rack_c = False
         self.cassette_tape_in_rack_c = False
         self.vhs_in_rack_c = False
@@ -230,7 +403,17 @@ class AudioEngine:
         self.bit_crusher_in_rack_c = False
         self.tube_overdrive_in_rack_c = False
         self.ether_drift_in_rack_c = False
-
+        self.noise_gate_in_rack_c = False
+        self.tremolo_in_rack_c = True
+        self.auto_wah_in_rack_c = False
+        self.fet_limiter_in_rack_c = False
+        self.rotary_in_rack_c = False
+        self.exciter_in_rack_c = False
+        self.transient_shaper_in_rack_c = False
+        self.harmonizer_in_rack_c = True
+        self.stereo_widener_in_rack_c = False
+        self.freq_shifter_in_rack_c = False
+        self.ring_mod_in_rack_c = False
         # Rack D in-rack flags (FX4 — Lo-Fi / Destroy)
         self.delay_in_rack_d = False
         self.tape_delay_in_rack_d = False
@@ -238,7 +421,7 @@ class AudioEngine:
         self.filter_b_in_rack_d = False
         self.mod_in_rack_d = False
         self.reel_to_reel_in_rack_d = False
-        self.cassette_tape_in_rack_d = False
+        self.cassette_tape_in_rack_d = True
         self.vhs_in_rack_d = False
         self.vinyl_in_rack_d = True
         self.compressor_in_rack_d = False
@@ -248,7 +431,19 @@ class AudioEngine:
         self.bit_crusher_in_rack_d = True
         self.tube_overdrive_in_rack_d = True
         self.ether_drift_in_rack_d = False
-        self.filter_a_in_rack_m = False
+        self.noise_gate_in_rack_d = False
+        self.tremolo_in_rack_d = False
+        self.auto_wah_in_rack_d = False
+        self.fet_limiter_in_rack_d = False
+        self.rotary_in_rack_d = False
+        self.exciter_in_rack_d = False
+        self.transient_shaper_in_rack_d = False
+        self.harmonizer_in_rack_d = False
+        self.stereo_widener_in_rack_d = False
+        self.freq_shifter_in_rack_d = False
+        self.ring_mod_in_rack_d = True
+        # Master rack in-rack flags (Mastering): glue comp → multiband EQ → FET limiter → exciter
+        self.filter_a_in_rack_m = True
         self.filter_b_in_rack_m = False
         self.mod_in_rack_m = False
         self.delay_in_rack_m = False
@@ -264,6 +459,72 @@ class AudioEngine:
         self.tube_overdrive_in_rack_m = False
         self.glue_compressor_in_rack_m = True
         self.ether_drift_in_rack_m = False
+        self.noise_gate_in_rack_m = False
+        self.tremolo_in_rack_m = False
+        self.auto_wah_in_rack_m = False
+        self.fet_limiter_in_rack_m = True
+        self.rotary_in_rack_m = False
+        self.exciter_in_rack_m = True
+        self.transient_shaper_in_rack_m = False
+        self.harmonizer_in_rack_m = False
+        self.stereo_widener_in_rack_m = False
+        self.freq_shifter_in_rack_m = False
+        self.ring_mod_in_rack_m = False
+
+        # Simple EQ in-rack flags (all racks)
+        self.simple_eq_in_rack_a = False
+        self.simple_eq_in_rack_b = False
+        self.simple_eq_in_rack_c = False
+        self.simple_eq_in_rack_d = False
+        self.simple_eq_in_rack_m = False
+        # Ping-Pong Delay in-rack flags
+        self.ping_pong_delay_in_rack_a = False
+        self.ping_pong_delay_in_rack_b = False
+        self.ping_pong_delay_in_rack_c = False
+        self.ping_pong_delay_in_rack_d = False
+        self.ping_pong_delay_in_rack_m = False
+        # Shimmer Reverb in-rack flags
+        self.shimmer_reverb_in_rack_a = False
+        self.shimmer_reverb_in_rack_b = False
+        self.shimmer_reverb_in_rack_c = False
+        self.shimmer_reverb_in_rack_d = False
+        self.shimmer_reverb_in_rack_m = False
+        # Lo-Fi Radio in-rack flags
+        self.lofi_radio_in_rack_a = False
+        self.lofi_radio_in_rack_b = False
+        self.lofi_radio_in_rack_c = False
+        self.lofi_radio_in_rack_d = False
+        self.lofi_radio_in_rack_m = False
+        # Auto-Pan in-rack flags
+        self.auto_pan_in_rack_a = False
+        self.auto_pan_in_rack_b = False
+        self.auto_pan_in_rack_c = False
+        self.auto_pan_in_rack_d = False
+        self.auto_pan_in_rack_m = False
+        # Fuzz in-rack flags
+        self.fuzz_in_rack_a = False
+        self.fuzz_in_rack_b = False
+        self.fuzz_in_rack_c = False
+        self.fuzz_in_rack_d = False
+        self.fuzz_in_rack_m = False
+        # Granular Freeze in-rack flags
+        self.granular_freeze_in_rack_a = False
+        self.granular_freeze_in_rack_b = False
+        self.granular_freeze_in_rack_c = False
+        self.granular_freeze_in_rack_d = False
+        self.granular_freeze_in_rack_m = False
+        # Gated Reverb in-rack flags
+        self.gate_reverb_in_rack_a = False
+        self.gate_reverb_in_rack_b = False
+        self.gate_reverb_in_rack_c = False
+        self.gate_reverb_in_rack_d = False
+        self.gate_reverb_in_rack_m = False
+        # Stutter in-rack flags
+        self.stutter_in_rack_a = False
+        self.stutter_in_rack_b = False
+        self.stutter_in_rack_c = False
+        self.stutter_in_rack_d = False
+        self.stutter_in_rack_m = False
 
         # Master filter (gentle HP/LP trim)
         self._master_hp = BiquadFilter(self.sample_rate)
@@ -396,6 +657,11 @@ class AudioEngine:
             "glue_compressor_gr_c": 0.0,
             "glue_compressor_gr_d": 0.0,
             "glue_compressor_gr_m": 0.0,
+            "fet_limiter_gr_a": 0.0,
+            "fet_limiter_gr_b": 0.0,
+            "fet_limiter_gr_c": 0.0,
+            "fet_limiter_gr_d": 0.0,
+            "fet_limiter_gr_m": 0.0,
         }
 
     def set_meter_callback(self, callback: Callable):
@@ -596,12 +862,15 @@ class AudioEngine:
                 elif cmd == 'set_pos':
                     self.channels[event[1]]._position = event[2]
 
-            # Capture input audio (used for both recording and AUX channel)
-            if self._input_ready:
+            # Capture input audio only when needed (recording or AUX monitoring)
+            _need_input = self.recorder.recording or not self.mixer.aux_mute
+            if _need_input and self._input_ready:
                 input_audio = self._input_copy[:frames]
                 input_audio[:] = self._input_buffer[:frames]
                 self._input_ready = False
             else:
+                if self._input_ready:
+                    self._input_ready = False   # discard unused frame
                 input_audio = None
 
             # Process recording input
@@ -655,6 +924,30 @@ class AudioEngine:
                 _t2 = time.perf_counter()
 
             # --- FX Processing Chain (per-bus: rack A → FX1, rack B → FX2) ---
+            # Noise Gate (first in chain — gates signal before any processing)
+            if self.noise_gate_in_rack_a:
+                fx1_bus = self.noise_gate.process(fx1_bus)
+            if self.noise_gate_in_rack_b:
+                fx2_bus = self.noise_gate_b.process(fx2_bus)
+
+            # Tremolo
+            if self.tremolo_in_rack_a:
+                fx1_bus = self.tremolo.process(fx1_bus)
+            if self.tremolo_in_rack_b:
+                fx2_bus = self.tremolo_b.process(fx2_bus)
+
+            # Auto-Wah
+            if self.auto_wah_in_rack_a:
+                fx1_bus = self.auto_wah.process(fx1_bus)
+            if self.auto_wah_in_rack_b:
+                fx2_bus = self.auto_wah_b.process(fx2_bus)
+
+            # FET Limiter (1176)
+            if self.fet_limiter_in_rack_a:
+                fx1_bus = self.fet_limiter.process(fx1_bus)
+            if self.fet_limiter_in_rack_b:
+                fx2_bus = self.fet_limiter_b.process(fx2_bus)
+
             # Filter A (shapeable LP/HP)
             if self.filter_a_in_rack_a and self.filter_a.state.enabled:
                 fx1_bus = self.filter_a.process(fx1_bus)
@@ -744,13 +1037,114 @@ class AudioEngine:
             if self.tube_overdrive_in_rack_b:
                 fx2_bus = self.tube_overdrive_b.process(fx2_bus)
 
+            # Aural Exciter
+            if self.exciter_in_rack_a:
+                fx1_bus = self.exciter.process(fx1_bus)
+            if self.exciter_in_rack_b:
+                fx2_bus = self.exciter_b.process(fx2_bus)
+
+            # Transient Shaper
+            if self.transient_shaper_in_rack_a:
+                fx1_bus = self.transient_shaper.process(fx1_bus)
+            if self.transient_shaper_in_rack_b:
+                fx2_bus = self.transient_shaper_b.process(fx2_bus)
+
             # Ether Drift (checks own state.enabled via process())
             if self.ether_drift_in_rack_a:
                 fx1_bus = self.ether_drift.process(fx1_bus)
             if self.ether_drift_in_rack_b:
                 fx2_bus = self.ether_drift_b.process(fx2_bus)
 
+            # Harmonizer
+            if self.harmonizer_in_rack_a:
+                fx1_bus = self.harmonizer.process(fx1_bus)
+            if self.harmonizer_in_rack_b:
+                fx2_bus = self.harmonizer_b.process(fx2_bus)
+
+            # Rotary Speaker
+            if self.rotary_in_rack_a:
+                fx1_bus = self.rotary.process(fx1_bus)
+            if self.rotary_in_rack_b:
+                fx2_bus = self.rotary_b.process(fx2_bus)
+
+            # Stereo Widener
+            if self.stereo_widener_in_rack_a:
+                fx1_bus = self.stereo_widener.process(fx1_bus)
+            if self.stereo_widener_in_rack_b:
+                fx2_bus = self.stereo_widener_b.process(fx2_bus)
+
+            # Frequency Shifter
+            if self.freq_shifter_in_rack_a:
+                fx1_bus = self.freq_shifter.process(fx1_bus)
+            if self.freq_shifter_in_rack_b:
+                fx2_bus = self.freq_shifter_b.process(fx2_bus)
+
+            # Ring Modulator
+            if self.ring_mod_in_rack_a:
+                fx1_bus = self.ring_mod.process(fx1_bus)
+            if self.ring_mod_in_rack_b:
+                fx2_bus = self.ring_mod_b.process(fx2_bus)
+
+            # Simple EQ
+            if self.simple_eq_in_rack_a:
+                fx1_bus = self.simple_eq.process(fx1_bus)
+            if self.simple_eq_in_rack_b:
+                fx2_bus = self.simple_eq_b.process(fx2_bus)
+
+            # Ping-Pong Delay
+            if self.ping_pong_delay_in_rack_a:
+                fx1_bus = self.ping_pong_delay.process(fx1_bus)
+            if self.ping_pong_delay_in_rack_b:
+                fx2_bus = self.ping_pong_delay_b.process(fx2_bus)
+
+            # Shimmer Reverb
+            if self.shimmer_reverb_in_rack_a:
+                fx1_bus = self.shimmer_reverb.process(fx1_bus)
+            if self.shimmer_reverb_in_rack_b:
+                fx2_bus = self.shimmer_reverb_b.process(fx2_bus)
+
+            # Lo-Fi Radio
+            if self.lofi_radio_in_rack_a:
+                fx1_bus = self.lofi_radio.process(fx1_bus)
+            if self.lofi_radio_in_rack_b:
+                fx2_bus = self.lofi_radio_b.process(fx2_bus)
+
+            # Auto-Pan
+            if self.auto_pan_in_rack_a:
+                fx1_bus = self.auto_pan.process(fx1_bus)
+            if self.auto_pan_in_rack_b:
+                fx2_bus = self.auto_pan_b.process(fx2_bus)
+
+            # Fuzz
+            if self.fuzz_in_rack_a:
+                fx1_bus = self.fuzz.process(fx1_bus)
+            if self.fuzz_in_rack_b:
+                fx2_bus = self.fuzz_b.process(fx2_bus)
+            # Granular Freeze
+            if self.granular_freeze_in_rack_a:
+                fx1_bus = self.granular_freeze.process(fx1_bus)
+            if self.granular_freeze_in_rack_b:
+                fx2_bus = self.granular_freeze_b.process(fx2_bus)
+            # Gated Reverb
+            if self.gate_reverb_in_rack_a:
+                fx1_bus = self.gate_reverb.process(fx1_bus)
+            if self.gate_reverb_in_rack_b:
+                fx2_bus = self.gate_reverb_b.process(fx2_bus)
+            # Stutter
+            if self.stutter_in_rack_a:
+                fx1_bus = self.stutter.process(fx1_bus)
+            if self.stutter_in_rack_b:
+                fx2_bus = self.stutter_b.process(fx2_bus)
+
             # --- FX Processing Chain C (rack C → FX3) ---
+            if self.noise_gate_in_rack_c:
+                fx3_bus = self.noise_gate_c.process(fx3_bus)
+            if self.tremolo_in_rack_c:
+                fx3_bus = self.tremolo_c.process(fx3_bus)
+            if self.auto_wah_in_rack_c:
+                fx3_bus = self.auto_wah_c.process(fx3_bus)
+            if self.fet_limiter_in_rack_c:
+                fx3_bus = self.fet_limiter_c.process(fx3_bus)
             if self.filter_a_in_rack_c and self.filter_a_c.state.enabled:
                 fx3_bus = self.filter_a_c.process(fx3_bus)
             if self.filter_b_in_rack_c and self.filter_b_c.state.enabled:
@@ -782,10 +1176,50 @@ class AudioEngine:
                 fx3_bus = self.bit_crusher_c.process(fx3_bus)
             if self.tube_overdrive_in_rack_c:
                 fx3_bus = self.tube_overdrive_c.process(fx3_bus)
+            if self.exciter_in_rack_c:
+                fx3_bus = self.exciter_c.process(fx3_bus)
+            if self.transient_shaper_in_rack_c:
+                fx3_bus = self.transient_shaper_c.process(fx3_bus)
             if self.ether_drift_in_rack_c:
                 fx3_bus = self.ether_drift_c.process(fx3_bus)
+            if self.harmonizer_in_rack_c:
+                fx3_bus = self.harmonizer_c.process(fx3_bus)
+            if self.rotary_in_rack_c:
+                fx3_bus = self.rotary_c.process(fx3_bus)
+            if self.stereo_widener_in_rack_c:
+                fx3_bus = self.stereo_widener_c.process(fx3_bus)
+            if self.freq_shifter_in_rack_c:
+                fx3_bus = self.freq_shifter_c.process(fx3_bus)
+            if self.ring_mod_in_rack_c:
+                fx3_bus = self.ring_mod_c.process(fx3_bus)
+            if self.simple_eq_in_rack_c:
+                fx3_bus = self.simple_eq_c.process(fx3_bus)
+            if self.ping_pong_delay_in_rack_c:
+                fx3_bus = self.ping_pong_delay_c.process(fx3_bus)
+            if self.shimmer_reverb_in_rack_c:
+                fx3_bus = self.shimmer_reverb_c.process(fx3_bus)
+            if self.lofi_radio_in_rack_c:
+                fx3_bus = self.lofi_radio_c.process(fx3_bus)
+            if self.auto_pan_in_rack_c:
+                fx3_bus = self.auto_pan_c.process(fx3_bus)
+            if self.fuzz_in_rack_c:
+                fx3_bus = self.fuzz_c.process(fx3_bus)
+            if self.granular_freeze_in_rack_c:
+                fx3_bus = self.granular_freeze_c.process(fx3_bus)
+            if self.gate_reverb_in_rack_c:
+                fx3_bus = self.gate_reverb_c.process(fx3_bus)
+            if self.stutter_in_rack_c:
+                fx3_bus = self.stutter_c.process(fx3_bus)
 
             # --- FX Processing Chain D (rack D → FX4) ---
+            if self.noise_gate_in_rack_d:
+                fx4_bus = self.noise_gate_d.process(fx4_bus)
+            if self.tremolo_in_rack_d:
+                fx4_bus = self.tremolo_d.process(fx4_bus)
+            if self.auto_wah_in_rack_d:
+                fx4_bus = self.auto_wah_d.process(fx4_bus)
+            if self.fet_limiter_in_rack_d:
+                fx4_bus = self.fet_limiter_d.process(fx4_bus)
             if self.filter_a_in_rack_d and self.filter_a_d.state.enabled:
                 fx4_bus = self.filter_a_d.process(fx4_bus)
             if self.filter_b_in_rack_d and self.filter_b_d.state.enabled:
@@ -817,8 +1251,40 @@ class AudioEngine:
                 fx4_bus = self.bit_crusher_d.process(fx4_bus)
             if self.tube_overdrive_in_rack_d:
                 fx4_bus = self.tube_overdrive_d.process(fx4_bus)
+            if self.exciter_in_rack_d:
+                fx4_bus = self.exciter_d.process(fx4_bus)
+            if self.transient_shaper_in_rack_d:
+                fx4_bus = self.transient_shaper_d.process(fx4_bus)
             if self.ether_drift_in_rack_d:
                 fx4_bus = self.ether_drift_d.process(fx4_bus)
+            if self.harmonizer_in_rack_d:
+                fx4_bus = self.harmonizer_d.process(fx4_bus)
+            if self.rotary_in_rack_d:
+                fx4_bus = self.rotary_d.process(fx4_bus)
+            if self.stereo_widener_in_rack_d:
+                fx4_bus = self.stereo_widener_d.process(fx4_bus)
+            if self.freq_shifter_in_rack_d:
+                fx4_bus = self.freq_shifter_d.process(fx4_bus)
+            if self.ring_mod_in_rack_d:
+                fx4_bus = self.ring_mod_d.process(fx4_bus)
+            if self.simple_eq_in_rack_d:
+                fx4_bus = self.simple_eq_d.process(fx4_bus)
+            if self.ping_pong_delay_in_rack_d:
+                fx4_bus = self.ping_pong_delay_d.process(fx4_bus)
+            if self.shimmer_reverb_in_rack_d:
+                fx4_bus = self.shimmer_reverb_d.process(fx4_bus)
+            if self.lofi_radio_in_rack_d:
+                fx4_bus = self.lofi_radio_d.process(fx4_bus)
+            if self.auto_pan_in_rack_d:
+                fx4_bus = self.auto_pan_d.process(fx4_bus)
+            if self.fuzz_in_rack_d:
+                fx4_bus = self.fuzz_d.process(fx4_bus)
+            if self.granular_freeze_in_rack_d:
+                fx4_bus = self.granular_freeze_d.process(fx4_bus)
+            if self.gate_reverb_in_rack_d:
+                fx4_bus = self.gate_reverb_d.process(fx4_bus)
+            if self.stutter_in_rack_d:
+                fx4_bus = self.stutter_d.process(fx4_bus)
 
             # Track FX bus peaks before summing (for per-rack metering)
             tmp = self._peak_tmp[:frames]
@@ -877,6 +1343,14 @@ class AudioEngine:
                 dsp_output = self._master_lp.process(dsp_output)
 
             # --- FX Group M (Master rack) — post-master-trim chain ---
+            if self.noise_gate_in_rack_m:
+                dsp_output = self.noise_gate_m.process(dsp_output)
+            if self.tremolo_in_rack_m:
+                dsp_output = self.tremolo_m.process(dsp_output)
+            if self.auto_wah_in_rack_m:
+                dsp_output = self.auto_wah_m.process(dsp_output)
+            if self.fet_limiter_in_rack_m:
+                dsp_output = self.fet_limiter_m.process(dsp_output)
             if self.filter_a_in_rack_m and self.filter_a_m.state.enabled:
                 dsp_output = self.filter_a_m.process(dsp_output)
             if self.filter_b_in_rack_m and self.filter_b_m.state.enabled:
@@ -907,8 +1381,40 @@ class AudioEngine:
                 dsp_output = self.bit_crusher_m.process(dsp_output)
             if self.tube_overdrive_in_rack_m:
                 dsp_output = self.tube_overdrive_m.process(dsp_output)
+            if self.exciter_in_rack_m:
+                dsp_output = self.exciter_m.process(dsp_output)
+            if self.transient_shaper_in_rack_m:
+                dsp_output = self.transient_shaper_m.process(dsp_output)
             if self.ether_drift_in_rack_m:
                 dsp_output = self.ether_drift_m.process(dsp_output)
+            if self.harmonizer_in_rack_m:
+                dsp_output = self.harmonizer_m.process(dsp_output)
+            if self.rotary_in_rack_m:
+                dsp_output = self.rotary_m.process(dsp_output)
+            if self.stereo_widener_in_rack_m:
+                dsp_output = self.stereo_widener_m.process(dsp_output)
+            if self.freq_shifter_in_rack_m:
+                dsp_output = self.freq_shifter_m.process(dsp_output)
+            if self.ring_mod_in_rack_m:
+                dsp_output = self.ring_mod_m.process(dsp_output)
+            if self.simple_eq_in_rack_m:
+                dsp_output = self.simple_eq_m.process(dsp_output)
+            if self.ping_pong_delay_in_rack_m:
+                dsp_output = self.ping_pong_delay_m.process(dsp_output)
+            if self.shimmer_reverb_in_rack_m:
+                dsp_output = self.shimmer_reverb_m.process(dsp_output)
+            if self.lofi_radio_in_rack_m:
+                dsp_output = self.lofi_radio_m.process(dsp_output)
+            if self.auto_pan_in_rack_m:
+                dsp_output = self.auto_pan_m.process(dsp_output)
+            if self.fuzz_in_rack_m:
+                dsp_output = self.fuzz_m.process(dsp_output)
+            if self.granular_freeze_in_rack_m:
+                dsp_output = self.granular_freeze_m.process(dsp_output)
+            if self.gate_reverb_in_rack_m:
+                dsp_output = self.gate_reverb_m.process(dsp_output)
+            if self.stutter_in_rack_m:
+                dsp_output = self.stutter_m.process(dsp_output)
 
             if _prof:
                 _t4 = time.perf_counter()
@@ -963,6 +1469,11 @@ class AudioEngine:
                 md["glue_compressor_gr_c"] = self.glue_compressor_c.gr_db
                 md["glue_compressor_gr_d"] = self.glue_compressor_d.gr_db
                 md["glue_compressor_gr_m"] = self.glue_compressor_m.gr_db
+                md["fet_limiter_gr_a"] = self.fet_limiter.gr_db
+                md["fet_limiter_gr_b"] = self.fet_limiter_b.gr_db
+                md["fet_limiter_gr_c"] = self.fet_limiter_c.gr_db
+                md["fet_limiter_gr_d"] = self.fet_limiter_d.gr_db
+                md["fet_limiter_gr_m"] = self.fet_limiter_m.gr_db
                 self._meter_callback(md)
 
             # ── Profiling accumulation ──
@@ -1213,14 +1724,34 @@ class AudioEngine:
         self.mixer.aux_volume = volume
 
     @staticmethod
+    def get_host_apis() -> list[dict]:
+        """Return available host APIs (driver types).
+
+        Each entry: {"index": int, "name": str, "default_output": int, "default_input": int}
+        """
+        apis = sd.query_hostapis()
+        return [
+            {
+                "index": i,
+                "name": a["name"],
+                "default_output": a.get("default_output_device", -1),
+                "default_input": a.get("default_input_device", -1),
+            }
+            for i, a in enumerate(apis)
+        ]
+
+    @staticmethod
     def get_devices() -> dict:
         """Get available audio devices."""
         devices = sd.query_devices()
         result = {"input": [], "output": []}
+        apis = sd.query_hostapis()
         for i, d in enumerate(devices):
+            api_name = apis[d["hostapi"]]["name"] if d["hostapi"] < len(apis) else ""
             info = {"index": i, "name": d["name"],
                     "channels": d["max_output_channels"] or d["max_input_channels"],
-                    "sample_rate": d["default_samplerate"]}
+                    "sample_rate": d["default_samplerate"],
+                    "host_api": api_name, "host_api_index": d["hostapi"]}
             if d["max_output_channels"] > 0:
                 result["output"].append(info)
             if d["max_input_channels"] > 0:

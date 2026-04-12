@@ -97,12 +97,12 @@ Changing the root, scale, transpose, or loading a new sample automatically rebui
 
 <h2>Effects — FX Rack (Right Panel → Effects Tab)</h2>
 <p>The Effects tab contains a modular <b>FX Rack</b> with five independent effect groups: <b>FX 1</b>, <b>FX 2</b>, <b>FX 3</b>, <b>FX 4</b>, and <b>MASTER</b>.
-Click the tab buttons to switch between them. Each group can hold up to 8 modules (28 total across all five groups).</p>
+Click the tab buttons to switch between them. Each group can hold up to 8 modules (40 total across all five groups).</p>
 <p>Default loadouts: <b>FX 1</b> — Clean Studio (Compressor → Filter → Delay); <b>FX 2</b> — Tape Warmth (Glue Compressor → Reel-to-Reel → Tape Delay); <b>FX 3</b> — Space &amp; Mod (Hall Reverb → Plate Reverb → Chorus); <b>FX 4</b> — Lo-Fi / Destroy (Bit Crusher → Tube Overdrive → Vinyl); <b>Master</b> — Mastering (Glue Compressor → Multiband Filter → Oscilloscope).</p>
 
 <h3>Adding / Removing Modules</h3>
 <ul>
-<li>Click <b>＋ ADD EFFECT</b> at the bottom of a rack. The menu shows all 20 modules with their effect type in parentheses — e.g. <i>Byte Me (Bit Crusher)</i>.</li>
+<li>Click <b>＋ ADD EFFECT</b> at the bottom of a rack. The menu shows all 40 modules with their effect type in parentheses — e.g. <i>Byte Me (Bit Crusher)</i>.</li>
 <li>Each module's <b>right rack ear</b> has two icons:<br>
   &nbsp;&nbsp;• <b>Power button</b> (circle icon, top) — green = active, grey = bypassed. Click to toggle.<br>
   &nbsp;&nbsp;• <b>Remove ✕</b> (below power) — permanently removes the module.</li>
@@ -129,6 +129,26 @@ Click the tab buttons to switch between them. Each group can hold up to 8 module
 <li><b>Twin Peaks</b> — dual VU meter (VU / PEAK / RMS mode selector); reads per-FX-bus signal</li>
 <li><b>CRT:// Scope</b> — oscilloscope; reads per-FX-bus waveform</li>
 <li><b>Ether Drift</b> — bipolar infinite phaser. RATE sets sweep speed, DEPTH sets sweep range, FDBK adds resonance, SPREAD widens the stereo image, MIX blends dry/wet. SYNC locks both sweep directions to the same rate; ROUTE selects BOTH chains, RISE ↑ only, or FALL ↓ only.</li>
+<li><b>The Velvet Rope</b> — noise gate with THRESH sets threshold, ATK attack time, HOLD hold time, REL release time, RANGE sets depth of gating, KEY sets sidechain filter frequency</li>
+<li><b>Heartquake</b> — tremolo with RATE speed, DEPTH intensity, SPREAD stereo width, and MIX</li>
+<li><b>Auto Wah</b> — envelope auto-wah filter with SENS sensitivity, FREQ center frequency, DEPTH sweep range, SPEED envelope speed, and MIX</li>
+<li><b>All Buttons In</b> — FET limiter with INPUT drive, OUTPUT level, ATK attack, REL release, and MIX</li>
+<li><b>Vitamin E</b> — aural exciter with TUNE high-frequency harmonics, LO TUNE low-frequency enhancement, OUTPUT level, and MIX</li>
+<li><b>Punch Card</b> — transient shaper with ATK attack boost/cut, SUS sustain boost/cut, OUTPUT level, and MIX</li>
+<li><b>Freq Shifter</b> — frequency shifter with SHIFT amount in Hz, FDBK feedback, and MIX</li>
+<li><b>Ring Leader</b> — ring modulator with FREQ carrier frequency, SHAPE waveform morph, and MIX</li>
+<li><b>Spin Cycle</b> — rotary speaker simulator with SPEED motor rate, DRIVE saturation, BAL horn/drum balance, and MIX</li>
+<li><b>Personal Space</b> — stereo widener with WIDTH stereo spread, CENTER mid-side balance, LO MONO low-frequency mono crossover, and MIX</li>
+<li><b>Wrong Lane</b> — dual harmonizer with SEMI A/B semitone shift, FINE A/B detune, DLY A/B delay, FDBK feedback, and MIX</li>
+<li><b>Golden Ears</b> — 3-band parametric EQ with LOW, MID, and HIGH gain controls and MIX</li>
+<li><b>Table Tennis</b> — ping-pong stereo delay with PING left time, PONG right time, FDBK feedback, and MIX</li>
+<li><b>Stained Glass</b> — shimmer reverb with DECAY tail length, SHIMMER pitch-shift intensity, DAMP high-frequency damping, and MIX</li>
+<li><b>Tin Can</b> — lo-fi radio emulation with NOISE static, WOBBLE tuning drift, LO CUT / HI CUT bandwidth filters, and MIX</li>
+<li><b>Pendulum</b> — auto-panner with RATE speed, DEPTH intensity, SHAPE waveform, and MIX</li>
+<li><b>Wool Over</b> — fuzz with DRIVE gain, TONE brightness, GATE noise gate threshold, and MIX</li>
+<li><b>Snow Globe</b> — granular freeze processor with GRAIN size, SCATTER randomisation, SPREAD pitch variation, DENSITY grain count, FREEZE toggle, and MIX</li>
+<li><b>Gate Crasher</b> — gated/reverse reverb with ROOM size, GATE duration, SLOPE fade shape, PRE pre-delay, MODE toggle (GATE/REVERSE), and MIX</li>
+<li><b>Broken Record</b> — stutter/glitch buffer looper with SIZE loop length, RATE retrigger speed, CHAOS random jumps, SMEAR crossfade, TRIGGER toggle, and MIX</li>
 </ul>
 
 <h3>FX Routing</h3>

@@ -27,25 +27,32 @@ class AudioSetupPanel(QFrame):
         grid = QGridLayout()
         grid.setSpacing(6)
 
+        # Driver type (host API)
+        self._driver_combo = QComboBox()
+        self._driver_combo.addItem("All Drivers")
+        self._driver_combo.currentIndexChanged.connect(self._on_driver_changed)
+        self._driver_combo.setToolTip(
+            "Select a driver type to filter the device lists\n"
+            "(e.g. ASIO, WASAPI, CoreAudio, ALSA)"
+        )
+        grid.addWidget(QLabel("Driver Type:"), 0, 0)
+        grid.addWidget(self._driver_combo, 0, 1)
+
         # Output device
         self._output_combo = QComboBox()
         self._output_combo.addItem("Default Output")
-        self._output_combo.currentIndexChanged.connect(
-            lambda v: self.setting_changed.emit("output_device", v - 1)
-        )
+        self._output_combo.currentIndexChanged.connect(self._on_output_changed)
         self._output_combo.setToolTip("Audio output device used for playback")
-        grid.addWidget(QLabel("Output Device:"), 0, 0)
-        grid.addWidget(self._output_combo, 0, 1)
+        grid.addWidget(QLabel("Output Device:"), 1, 0)
+        grid.addWidget(self._output_combo, 1, 1)
 
         # Input device
         self._input_combo = QComboBox()
         self._input_combo.addItem("Default Input")
-        self._input_combo.currentIndexChanged.connect(
-            lambda v: self.setting_changed.emit("input_device", v - 1)
-        )
+        self._input_combo.currentIndexChanged.connect(self._on_input_changed)
         self._input_combo.setToolTip("Audio input device used for recording and monitoring")
-        grid.addWidget(QLabel("Input Device:"), 1, 0)
-        grid.addWidget(self._input_combo, 1, 1)
+        grid.addWidget(QLabel("Input Device:"), 2, 0)
+        grid.addWidget(self._input_combo, 2, 1)
 
         # Sample rate
         self._sr_combo = QComboBox()
@@ -57,8 +64,8 @@ class AudioSetupPanel(QFrame):
             "Sample rate in Hz — affects audio quality and CPU load\n"
             "(requires app restart to take effect)"
         )
-        grid.addWidget(QLabel("Sample Rate:"), 2, 0)
-        grid.addWidget(self._sr_combo, 2, 1)
+        grid.addWidget(QLabel("Sample Rate:"), 3, 0)
+        grid.addWidget(self._sr_combo, 3, 1)
 
         # Buffer size
         self._buf_combo = QComboBox()
@@ -71,8 +78,8 @@ class AudioSetupPanel(QFrame):
             "Audio buffer size — lower = less latency, higher = more stable\n"
             "(requires app restart to take effect)"
         )
-        grid.addWidget(QLabel("Buffer Size:"), 3, 0)
-        grid.addWidget(self._buf_combo, 3, 1)
+        grid.addWidget(QLabel("Buffer Size:"), 4, 0)
+        grid.addWidget(self._buf_combo, 4, 1)
 
         layout.addLayout(grid)
 
@@ -84,22 +91,153 @@ class AudioSetupPanel(QFrame):
 
         layout.addStretch()
 
-    def set_devices(self, output_names: list[str], input_names: list[str]):
+        # Internal device data — populated by set_devices()
+        self._all_outputs: list[dict] = []   # [{"index":int,"name":str,"host_api":str}, ...]
+        self._all_inputs: list[dict] = []
+        self._host_apis: list[str] = []      # unique ordered API names
+
+    # ── public API ──────────────────────────────────────────────────── #
+
+    def set_devices(self, output_devs: list[dict], input_devs: list[dict],
+                    host_apis: list[str] | None = None):
+        """Populate driver type, output and input combos.
+
+        *output_devs* / *input_devs*: list of dicts with at least
+        ``{"index": int, "name": str, "host_api": str}``.
+        *host_apis*: ordered list of host API names; if *None* they are
+        derived from the device lists.
+        """
+        self._all_outputs = list(output_devs)
+        self._all_inputs = list(input_devs)
+
+        # Derive host API list if not provided
+        if host_apis is None:
+            seen: set[str] = set()
+            apis: list[str] = []
+            for d in output_devs + input_devs:
+                api = d.get("host_api", "")
+                if api and api not in seen:
+                    seen.add(api)
+                    apis.append(api)
+            host_apis = apis
+        self._host_apis = list(host_apis)
+
+        # Populate driver combo
+        self._driver_combo.blockSignals(True)
+        prev_driver = self._driver_combo.currentText()
+        self._driver_combo.clear()
+        self._driver_combo.addItem("All Drivers")
+        for api in self._host_apis:
+            self._driver_combo.addItem(api)
+        # Restore previous selection if it still exists
+        idx = self._driver_combo.findText(prev_driver)
+        self._driver_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._driver_combo.blockSignals(False)
+
+        self._refresh_device_combos()
+
+    def set_driver(self, api_name: str):
+        """Programmatically select a driver type by name."""
+        idx = self._driver_combo.findText(api_name)
+        if idx < 0:
+            idx = 0
+        self._driver_combo.blockSignals(True)
+        self._driver_combo.setCurrentIndex(idx)
+        self._driver_combo.blockSignals(False)
+        self._refresh_device_combos()
+
+    def select_output_device(self, device_index: int):
+        """Select an output device by its sounddevice index."""
+        for i, d in enumerate(self._filtered_outputs()):
+            if d["index"] == device_index:
+                self._output_combo.blockSignals(True)
+                self._output_combo.setCurrentIndex(i + 1)  # +1 for "Default"
+                self._output_combo.blockSignals(False)
+                return
+        # Not found — reset to default
         self._output_combo.blockSignals(True)
-        self._output_combo.clear()
-        self._output_combo.addItem("Default Output")
-        self._output_combo.addItems(output_names)
+        self._output_combo.setCurrentIndex(0)
         self._output_combo.blockSignals(False)
 
+    def select_input_device(self, device_index: int):
+        """Select an input device by its sounddevice index."""
+        for i, d in enumerate(self._filtered_inputs()):
+            if d["index"] == device_index:
+                self._input_combo.blockSignals(True)
+                self._input_combo.setCurrentIndex(i + 1)
+                self._input_combo.blockSignals(False)
+                return
         self._input_combo.blockSignals(True)
-        self._input_combo.clear()
-        self._input_combo.addItem("Default Input")
-        self._input_combo.addItems(input_names)
+        self._input_combo.setCurrentIndex(0)
         self._input_combo.blockSignals(False)
 
     @property
     def rescan_button(self) -> QPushButton:
         return self._rescan_btn
+
+    # ── private helpers ─────────────────────────────────────────────── #
+
+    def _selected_driver(self) -> str:
+        """Return the currently selected driver name, or '' for all."""
+        idx = self._driver_combo.currentIndex()
+        if idx <= 0:
+            return ""
+        return self._driver_combo.currentText()
+
+    def _filtered_outputs(self) -> list[dict]:
+        driver = self._selected_driver()
+        if not driver:
+            return self._all_outputs
+        return [d for d in self._all_outputs if d.get("host_api") == driver]
+
+    def _filtered_inputs(self) -> list[dict]:
+        driver = self._selected_driver()
+        if not driver:
+            return self._all_inputs
+        return [d for d in self._all_inputs if d.get("host_api") == driver]
+
+    def _refresh_device_combos(self):
+        """Rebuild output/input combos for the selected driver type."""
+        out_devs = self._filtered_outputs()
+        in_devs = self._filtered_inputs()
+
+        self._output_combo.blockSignals(True)
+        self._output_combo.clear()
+        self._output_combo.addItem("Default Output")
+        for d in out_devs:
+            self._output_combo.addItem(d["name"])
+        self._output_combo.blockSignals(False)
+
+        self._input_combo.blockSignals(True)
+        self._input_combo.clear()
+        self._input_combo.addItem("Default Input")
+        for d in in_devs:
+            self._input_combo.addItem(d["name"])
+        self._input_combo.blockSignals(False)
+
+    def _on_driver_changed(self, _idx: int):
+        driver = self._selected_driver()
+        self.setting_changed.emit("host_api", driver)
+        self._refresh_device_combos()
+        # Reset device selection to default when driver changes
+        self.setting_changed.emit("output_device", -1)
+        self.setting_changed.emit("input_device", -1)
+
+    def _on_output_changed(self, combo_idx: int):
+        if combo_idx <= 0:
+            self.setting_changed.emit("output_device", -1)
+        else:
+            devs = self._filtered_outputs()
+            if combo_idx - 1 < len(devs):
+                self.setting_changed.emit("output_device", devs[combo_idx - 1]["index"])
+
+    def _on_input_changed(self, combo_idx: int):
+        if combo_idx <= 0:
+            self.setting_changed.emit("input_device", -1)
+        else:
+            devs = self._filtered_inputs()
+            if combo_idx - 1 < len(devs):
+                self.setting_changed.emit("input_device", devs[combo_idx - 1]["index"])
 
 
 class GridSetupPanel(QFrame):

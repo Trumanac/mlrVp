@@ -128,8 +128,8 @@ class ChorusModule(RackModuleBase):
         row.addStretch()
         self._faceplate_layout.addLayout(row)
 
-    def set_state(self, enabled: bool, rate: float, depth: float, mix: float):
-        self.set_power(enabled, emit=False)
-        self._rate.set_value(rate / 5.0)
-        self._depth.set_value(depth)
-        self._mix.set_value(mix)
+    def set_state(self, state):
+        self.set_power(state.chorus_enabled, emit=False)
+        self._rate.set_value(state.chorus_rate / 5.0)
+        self._depth.set_value(state.chorus_depth)
+        self._mix.set_value(state.chorus_mix)

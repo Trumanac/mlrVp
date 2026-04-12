@@ -365,6 +365,7 @@ class SlicePanel(QFrame):
         self._play_timer.timeout.connect(self._update_playhead)
         self._play_pos = 0
         self._loop_segment_len = 0
+        self._output_device: int = -1  # -1 = default; set from app config
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -647,6 +648,10 @@ class SlicePanel(QFrame):
         dur = loop_samples / sr
         self._status.setText(f"{bar_count} bar(s) @ {bpm:.1f} BPM = {dur:.3f}s (locked)")
 
+    def set_output_device(self, device: int):
+        """Set the sounddevice output device index used for preview playback."""
+        self._output_device = device
+
     def _toggle_play(self):
         if self._playing:
             self._stop_play()
@@ -674,7 +679,8 @@ class SlicePanel(QFrame):
                 segment = np.tile(segment, (reps, 1)) if segment.ndim == 2 else np.tile(segment, reps)
             else:
                 self._loop_segment_len = 0
-            sd.play(segment, self._sample_rate)
+            _device = self._output_device if self._output_device >= 0 else None
+            sd.play(segment, self._sample_rate, device=_device)
             self._playing = True
             self._play_start_frac = start_frac
             self._play_end_frac = end_frac

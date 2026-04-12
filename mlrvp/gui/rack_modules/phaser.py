@@ -129,8 +129,8 @@ class PhaserModule(RackModuleBase):
         row.addStretch()
         self._faceplate_layout.addLayout(row)
 
-    def set_state(self, enabled: bool, rate: float, depth: float, feedback: float):
-        self.set_power(enabled, emit=False)
-        self._rate.set_value(rate / 5.0)
-        self._depth.set_value(depth)
-        self._fb.set_value(feedback)
+    def set_state(self, state):
+        self.set_power(state.phaser_enabled, emit=False)
+        self._rate.set_value(state.phaser_rate / 5.0)
+        self._depth.set_value(state.phaser_depth)
+        self._fb.set_value(state.phaser_feedback)

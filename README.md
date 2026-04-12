@@ -45,7 +45,7 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 
 ### Effects & Processing
 - **Modular FX Rack UI**: Skeuomorphic rack with five independent effect groups (**FX 1 / FX 2 / FX 3 / FX 4 / Master**) accessible via tab buttons — add, remove, and reorder effect modules freely; each module has a **power toggle** (green/gray icon) on its right rack ear to enable or bypass the effect without removing it
-- **20 rack effect modules** with unique vintage-inspired faceplates:
+- **40 rack effect modules** with unique vintage-inspired faceplates:
   - **Déjà Vu Delay** — stereo digital delay with tempo-synced beat divisions or free ms mode, feedback envelope, LP/HP feedback filters, gain
   - **Rewind** — vintage tape delay with wow/flutter, saturation, tone shaping, and sync
   - **Band Practice** — 5-band multiband EQ with sweepable frequency bands
@@ -66,7 +66,27 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
   - **Twin Peaks** — dual analog VU meter with selectable **VU** (ballistic), **PEAK** (fast attack/slow decay), and **RMS** (power average) modes; reads per-FX-bus signal levels
   - **CRT:// Scope** — oscilloscope for waveform visualization; reads per-FX-bus waveform data
   - **Ether Drift** — bipolar infinite phaser for vaporwave/slushwave textures; two allpass chains (RISE ↑ sawtooth / FALL ↓ inverted) with stereo spread, SYNC lock, ROUTE selector (BOTH / UP / DOWN), rate, depth, feedback, and dry/wet mix
-- **Max 8 modules per rack, 28 total** across all five groups
+  - **The Velvet Rope** — noise gate with threshold, attack, hold, release, range, and key frequency sidechain filter
+  - **Heartquake** — tremolo with rate, depth, stereo spread, and mix
+  - **Auto Wah** — envelope-controlled auto-wah filter with sensitivity, frequency, depth, speed, and mix
+  - **All Buttons In** — FET limiter with input drive, output, attack, release, and mix
+  - **Vitamin E** — aural exciter with high-frequency tune, low-frequency tune, output level, and mix
+  - **Punch Card** — transient shaper with attack boost/cut, sustain boost/cut, output, and mix
+  - **Freq Shifter** — frequency shifter with shift amount (Hz), feedback, and mix
+  - **Ring Leader** — ring modulator with carrier frequency, shape, and mix
+  - **Spin Cycle** — rotary speaker simulator with speed, drive, horn/drum balance, and mix
+  - **Personal Space** — stereo widener with width, center, low-frequency mono crossover, and mix
+  - **Wrong Lane** — dual-voice harmonizer with semitone shift, fine detune, delay, and feedback per voice, plus mix
+  - **Golden Ears** — 3-band parametric EQ with low, mid, and high gain controls
+  - **Table Tennis** — ping-pong stereo delay with independent left/right times, feedback, and mix
+  - **Stained Glass** — shimmer reverb with decay, shimmer pitch-shift amount, damping, and mix
+  - **Tin Can** — lo-fi radio emulation with noise, wobble, lo-cut/hi-cut filters, and mix
+  - **Pendulum** — auto-panner with rate, depth, shape, and mix
+  - **Wool Over** — fuzz with drive, tone, gate, and mix
+  - **Snow Globe** — granular freeze processor with grain size, scatter, pitch spread, density, freeze toggle, and mix
+  - **Gate Crasher** — gated/reverse reverb with room size, gate time, slope, pre-delay, gate/reverse mode toggle, and mix
+  - **Broken Record** — stutter/glitch buffer looper with loop size, retrigger rate, chaos, smear, trigger toggle, and mix
+- **Max 8 modules per rack, 40 total** across all five groups
 - **4 independent FX send buses** (FX1–FX4) plus a post-mix **Master** bus; each mixer group routes independently to any bus or OFF
 - **Master HP/LP filter** with resonance control and response curve display
 - **Per-channel sweepable filter** (lowpass ↔ highpass)
@@ -336,6 +356,26 @@ MLRVp/
 │           ├── compressor.py       # Thrust Issues — Sidechain Compressor (2U)
 │           ├── glue_compressor.py  # Group Hug — Glue Bus Compressor (1U)
 │           ├── ether_drift.py      # Ether Drift — Bipolar Infinite Phaser (1U)
+│           ├── noise_gate.py       # The Velvet Rope — Noise Gate (1U)
+│           ├── tremolo.py          # Heartquake — Tremolo (1U)
+│           ├── auto_wah.py         # Auto Wah (1U)
+│           ├── fet_limiter.py      # All Buttons In — FET Limiter (1U)
+│           ├── exciter.py          # Vitamin E — Aural Exciter (1U)
+│           ├── transient_shaper.py # Punch Card — Transient Shaper (1U)
+│           ├── freq_shifter.py     # Freq Shifter (1U)
+│           ├── ring_mod.py         # Ring Leader — Ring Modulator (1U)
+│           ├── rotary.py           # Spin Cycle — Rotary Speaker (1U)
+│           ├── stereo_widener.py   # Personal Space — Stereo Widener (1U)
+│           ├── harmonizer.py       # Wrong Lane — Dual Harmonizer (1U)
+│           ├── simple_eq.py        # Golden Ears — 3-Band EQ (1U)
+│           ├── ping_pong_delay.py  # Table Tennis — Ping-Pong Delay (1U)
+│           ├── shimmer_reverb.py   # Stained Glass — Shimmer Reverb (1U)
+│           ├── lofi_radio.py       # Tin Can — Lo-Fi Radio (1U)
+│           ├── auto_pan.py         # Pendulum — Auto Pan (1U)
+│           ├── fuzz.py             # Wool Over — Fuzz (1U)
+│           ├── granular_freeze.py  # Snow Globe — Granular Freeze (1U)
+│           ├── gated_reverb.py     # Gate Crasher — Gated Reverb (1U)
+│           ├── stutter.py          # Broken Record — Stutter (1U)
 │           ├── dual_vu_meter.py    # Twin Peaks (1U)
 │           └── oscilloscope.py     # CRT:// Scope (1U)
 ├── data/                   # Runtime data
@@ -696,6 +736,26 @@ All of the following are available for MIDI mapping:
 | **Echo Chamber** (Reverb) | Enable, Room Size, Decay, Diffusion, Mix |
 | **Thrust Issues** (Compressor) | Enable, Threshold, Ratio, Attack, Release, Makeup, Sidechain HPF |
 | **Group Hug** (Glue Compressor) | Enable, Threshold, Ratio, Attack, Release, Makeup, HPF Selector |
+| **The Velvet Rope** (Noise Gate) | Enable, Threshold, Attack, Hold, Release, Range, Key Frequency |
+| **Heartquake** (Tremolo) | Enable, Rate, Depth, Spread, Mix |
+| **Auto Wah** (Auto Wah) | Enable, Sensitivity, Frequency, Depth, Speed, Mix |
+| **All Buttons In** (FET Limiter) | Enable, Input, Output, Attack, Release, Mix |
+| **Vitamin E** (Exciter) | Enable, Tune, Lo Tune, Output, Mix |
+| **Punch Card** (Transient Shaper) | Enable, Attack, Sustain, Output, Mix |
+| **Freq Shifter** (Freq Shifter) | Enable, Shift, Feedback, Mix |
+| **Ring Leader** (Ring Mod) | Enable, Frequency, Shape, Mix |
+| **Spin Cycle** (Rotary) | Enable, Speed, Drive, Balance, Mix |
+| **Personal Space** (Stereo Widener) | Enable, Width, Center, Lo Mono, Mix |
+| **Wrong Lane** (Harmonizer) | Enable, Semi A, Fine A, Delay A, Semi B, Fine B, Delay B, Feedback, Mix |
+| **Golden Ears** (Simple EQ) | Enable, Low, Mid, High, Mix |
+| **Table Tennis** (Ping-Pong Delay) | Enable, Ping, Pong, Feedback, Mix |
+| **Stained Glass** (Shimmer Reverb) | Enable, Decay, Shimmer, Damping, Mix |
+| **Tin Can** (Lo-Fi Radio) | Enable, Noise, Wobble, Lo Cut, Hi Cut, Mix |
+| **Pendulum** (Auto Pan) | Enable, Rate, Depth, Shape, Mix |
+| **Wool Over** (Fuzz) | Enable, Drive, Tone, Gate, Mix |
+| **Snow Globe** (Granular Freeze) | Enable, Grain Size, Scatter, Spread, Density, Freeze, Mix |
+| **Gate Crasher** (Gated Reverb) | Enable, Room, Gate Time, Slope, Pre-Delay, Mode, Mix |
+| **Broken Record** (Stutter) | Enable, Size, Rate, Chaos, Smear, Trigger, Mix |
 | **Effect Routing** | Delay FX Route, Mod FX Route |
 | **Master Filter** | HP, LP |
 | **Mixer** | Aux Volume, Aux Mute, Aux FX Route, Master Volume |
@@ -754,12 +814,12 @@ Each FX group has a curated default loadout:
 
 ##### Adding and Removing Effects
 
-- Click the **＋ ADD EFFECT** button at the bottom of a rack to open a menu of all 20 available effect modules. Each entry shows the effect type in parentheses — e.g. *Byte Me (Bit Crusher)*, *Echo Chamber (Hall Reverb)*.
+- Click the **＋ ADD EFFECT** button at the bottom of a rack to open a menu of all 37 available effect modules. Each entry shows the effect type in parentheses — e.g. *Byte Me (Bit Crusher)*, *Echo Chamber (Hall Reverb)*.
 - Select a module to insert it into the rack.
 - Each module's **right rack ear** has two controls:
   - **Power button** (green/gray circle icon) — toggles the effect on or bypass. Bypassed modules pass audio through unprocessed; their state is still saved with the preset. Power can also be MIDI-mapped.
   - **Remove button** (red ✕) — permanently removes the module from the rack.
-- **Limit**: Maximum 8 modules per rack, 28 total across all five groups.
+- **Limit**: Maximum 8 modules per rack, 40 total across all five groups.
 
 ##### Available Modules
 
@@ -785,6 +845,23 @@ Each FX group has a curated default loadout:
 | **Twin Peaks** | Metering | Dual VU meter — selectable VU (ballistic), PEAK (fast/slow decay), or RMS (power average) mode; reads per-FX-bus signal |
 | **CRT:// Scope** | Metering | Oscilloscope for waveform visualization; reads per-FX-bus waveform data |
 | **Ether Drift** | Modulation | Bipolar infinite phaser — two allpass chains (RISE/FALL sawtooth LFOs) with stereo spread, SYNC lock, route selector, rate, depth, feedback, and mix |
+| **The Velvet Rope** | Dynamics | Noise gate — threshold, attack, hold, release, range, key frequency sidechain filter |
+| **Heartquake** | Modulation | Tremolo — rate, depth, stereo spread, mix |
+| **Auto Wah** | Filter | Envelope auto-wah filter — sensitivity, frequency, depth, speed, mix |
+| **All Buttons In** | Dynamics | FET limiter — input drive, output, attack, release, mix |
+| **Vitamin E** | Enhancement | Aural exciter — high-frequency tune, low-frequency tune, output, mix |
+| **Punch Card** | Enhancement | Transient shaper — attack boost/cut, sustain boost/cut, output, mix |
+| **Freq Shifter** | Modulation | Frequency shifter — shift (Hz), feedback, mix |
+| **Ring Leader** | Modulation | Ring modulator — carrier frequency, shape, mix |
+| **Spin Cycle** | Modulation | Rotary speaker — speed, drive, horn/drum balance, mix |
+| **Personal Space** | Enhancement | Stereo widener — width, center, low-frequency mono crossover, mix |
+| **Wrong Lane** | Pitch | Dual harmonizer — semitone shift, fine detune, delay, and feedback per voice, mix |
+| **Golden Ears** | EQ | 3-band parametric EQ — low, mid, and high gain controls |
+| **Table Tennis** | Delay | Ping-pong stereo delay — independent left/right times, feedback, mix |
+| **Stained Glass** | Reverb | Shimmer reverb — decay, shimmer pitch-shift amount, damping, mix |
+| **Tin Can** | Lo-Fi | Lo-fi radio — noise, wobble, lo-cut/hi-cut filters, mix |
+| **Pendulum** | Modulation | Auto-panner — rate, depth, shape, mix |
+| **Wool Over** | Distortion | Fuzz — drive, tone, gate, mix |
 
 ##### MIDI MAP Mode
 

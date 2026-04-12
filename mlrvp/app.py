@@ -92,8 +92,9 @@ class AppController:
         # Track per-row playing state for LED cleanup
         self._row_was_playing: list[bool] = [False] * MAX_ROWS
 
-        # Control-row pattern buttons: press timestamp for hold-to-clear.
-        self._pattern_hold_started: dict[int, float] = {}
+        # Control-row pattern buttons: hold-to-clear with immediate LED feedback.
+        self._pattern_hold_timers: dict[int, QTimer] = {}
+        self._pattern_hold_cleared: set[int] = set()
         self._pattern_clear_hold_seconds = 3.0
 
     # ------------------------------------------------------------------ #
@@ -604,20 +605,34 @@ class AppController:
         elif 4 <= x <= 7:
             idx = x - 4
             if state == 1:
-                self._pattern_hold_started[idx] = time.monotonic()
+                # Start a hold timer — fires after 3 s and clears immediately.
+                timer = QTimer()
+                timer.setSingleShot(True)
+                timer.setInterval(int(self._pattern_clear_hold_seconds * 1000))
+                timer.timeout.connect(lambda _idx=idx: self._pattern_hold_fire(_idx))
+                self._pattern_hold_timers[idx] = timer
+                self._pattern_hold_cleared.discard(idx)
+                timer.start()
                 return
 
-            # Release: short press toggles, long hold clears.
-            started = self._pattern_hold_started.pop(idx, None)
-            if started is None:
-                return
-            held_for = time.monotonic() - started
-            if held_for >= self._pattern_clear_hold_seconds:
-                self._gui_pattern_state(idx, "clear")
-                if self.window:
-                    self.window.transport.set_pattern_state(idx, "idle")
-            else:
-                self._on_control_pattern_toggle(idx)
+            # Release: if already cleared by the timer, absorb. Otherwise toggle.
+            timer = self._pattern_hold_timers.pop(idx, None)
+            if timer is not None:
+                timer.stop()
+            if idx in self._pattern_hold_cleared:
+                self._pattern_hold_cleared.discard(idx)
+                return  # already cleared while held
+            self._on_control_pattern_toggle(idx)
+
+    def _pattern_hold_fire(self, idx: int):
+        """Timer fired — clear the pattern and update LED immediately."""
+        self._pattern_hold_cleared.add(idx)
+        self._pattern_hold_timers.pop(idx, None)
+        self._gui_pattern_state(idx, "clear")
+        if self.window:
+            self.window.transport.set_pattern_state(idx, "idle")
+        # Immediately turn off the LED so the user sees feedback
+        self.grid.set_control_led(4 + idx, LED_OFF, 0)
 
     def _on_control_pattern_toggle(self, idx: int):
         """Toggle pattern recorder from control button.
@@ -915,6 +930,26 @@ class AppController:
         w.effects_view.bit_crusher_param_changed.connect(self._gui_bit_crusher_param)
         w.effects_view.tube_overdrive_param_changed.connect(self._gui_tube_overdrive_param)
         w.effects_view.ether_drift_param_changed.connect(self._gui_ether_drift_param)
+        w.effects_view.noise_gate_param_changed.connect(self._gui_noise_gate_param)
+        w.effects_view.tremolo_param_changed.connect(self._gui_tremolo_param)
+        w.effects_view.auto_wah_param_changed.connect(self._gui_auto_wah_param)
+        w.effects_view.fet_limiter_param_changed.connect(self._gui_fet_limiter_param)
+        w.effects_view.rotary_param_changed.connect(self._gui_rotary_param)
+        w.effects_view.exciter_param_changed.connect(self._gui_exciter_param)
+        w.effects_view.transient_shaper_param_changed.connect(self._gui_transient_shaper_param)
+        w.effects_view.harmonizer_param_changed.connect(self._gui_harmonizer_param)
+        w.effects_view.stereo_widener_param_changed.connect(self._gui_stereo_widener_param)
+        w.effects_view.freq_shifter_param_changed.connect(self._gui_freq_shifter_param)
+        w.effects_view.ring_mod_param_changed.connect(self._gui_ring_mod_param)
+        w.effects_view.simple_eq_param_changed.connect(self._gui_simple_eq_param)
+        w.effects_view.ping_pong_delay_param_changed.connect(self._gui_ping_pong_delay_param)
+        w.effects_view.shimmer_reverb_param_changed.connect(self._gui_shimmer_reverb_param)
+        w.effects_view.lofi_radio_param_changed.connect(self._gui_lofi_radio_param)
+        w.effects_view.auto_pan_param_changed.connect(self._gui_auto_pan_param)
+        w.effects_view.fuzz_param_changed.connect(self._gui_fuzz_param)
+        w.effects_view.granular_freeze_param_changed.connect(self._gui_granular_freeze_param)
+        w.effects_view.gate_reverb_param_changed.connect(self._gui_gate_reverb_param)
+        w.effects_view.stutter_param_changed.connect(self._gui_stutter_param)
         w.effects_view.effect_route_changed.connect(self._gui_effect_route)
         w.effects_view.midi_map_toggled.connect(self._gui_toggle_midi_map_mode)
         w.effects_view.rack_contents_changed.connect(self._on_rack_contents_changed)
@@ -927,6 +962,7 @@ class AppController:
 
         # --- Setup ---
         w.setup_view.audio_setting_changed.connect(self._gui_audio_setting)
+        w.setup_view.audio_panel.rescan_button.clicked.connect(self._populate_gui_devices)
         w.setup_view.grid_setting_changed.connect(self._gui_grid_setting)
         w.setup_view.grid_scan_requested.connect(self._gui_scan_grids)
         w.setup_view.midi_grid_connect_requested.connect(self._gui_midi_grid_connect)
@@ -1107,11 +1143,41 @@ class AppController:
         for i in range(self.config.row_count):
             self.grid.clear_row_leds(i, self.config.grid_columns)
 
-        # Reset channel config to defaults
+        # Preserve system-level settings that should survive a "New"
+        saved = {
+            "sample_rate": self.config.sample_rate,
+            "buffer_size": self.config.buffer_size,
+            "output_device": self.config.output_device,
+            "input_device": self.config.input_device,
+            "host_api": self.config.host_api,
+            "row_count": self.config.row_count,
+            "grid_columns": self.config.grid_columns,
+            "tempo": self.config.tempo,
+            "quantize": self.config.quantize,
+            "snap_speed_to_rate": getattr(self.config, "snap_speed_to_rate", False),
+            "osc_enabled": getattr(self.config, "osc_enabled", False),
+            "osc_port": getattr(self.config, "osc_port", 8000),
+            "master_volume": getattr(self.config, "master_volume", 1.0),
+        }
+
+        # Reset entire config to factory defaults
         from mlrvp.config import ChannelState
-        for i in range(self.config.row_count):
-            self.config.channels[i] = ChannelState(group=i % NUM_GROUPS)
-            if self.engine:
+        fresh = AppConfig()
+        self.config = fresh
+
+        # Restore preserved system settings
+        for key, val in saved.items():
+            setattr(self.config, key, val)
+
+        # Reset channel assignments
+        for i in range(MAX_ROWS):
+            if i < len(self.config.channels):
+                self.config.channels[i] = ChannelState(group=i % NUM_GROUPS)
+
+        # Reset engine channel state
+        if self.engine:
+            self.engine.config = self.config
+            for i in range(self.config.row_count):
                 ech = self.engine.channels[i]
                 ech.sample = None
                 ech._position = 0.0
@@ -1124,6 +1190,7 @@ class AppController:
                 ech.state.sel_end = 1.0
                 ech.state.reverse = False
                 ech._pending_sample_path = None
+            self._apply_config_to_engine()
 
         # Clear waveform displays BEFORE applying config to GUI, so
         # even if _apply_config_to_gui() fails partway the displays are clean.
@@ -1441,6 +1508,8 @@ class AppController:
                 self.window.virtual_grid.set_row_color(row, value)
         elif param == "gain":
             ch.gain = value
+            if self.engine:
+                self.engine.channels[row].state.gain = value
         elif param == "speed":
             ch.speed = value
             if ch.mode != PlaybackMode.SEQ:
@@ -1761,6 +1830,126 @@ class AppController:
         if inst:
             setattr(inst.state, param, value)
 
+    def _gui_noise_gate_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("noise_gate", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_tremolo_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("tremolo", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_auto_wah_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("auto_wah", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_fet_limiter_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("fet_limiter", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_rotary_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("rotary", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_exciter_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("exciter", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_transient_shaper_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("transient_shaper", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_harmonizer_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("harmonizer", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_stereo_widener_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("stereo_widener", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_freq_shifter_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("freq_shifter", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_ring_mod_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("ring_mod", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_simple_eq_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("simple_eq", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_ping_pong_delay_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("ping_pong_delay", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_shimmer_reverb_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("shimmer_reverb", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_lofi_radio_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("lofi_radio", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_auto_pan_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("auto_pan", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_fuzz_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("fuzz", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_granular_freeze_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("granular_freeze", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_gate_reverb_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("gate_reverb", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
+    def _gui_stutter_param(self, param: str, value, bus: int = 1):
+        cfg, inst = self._resolve_bus("stutter", bus)
+        setattr(cfg, param, value)
+        if inst:
+            setattr(inst.state, param, value)
+
     def _gui_plate_reverb_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("plate_reverb", bus)
         setattr(cfg, param, value)
@@ -1870,6 +2059,8 @@ class AppController:
         setattr(self.config, key, value)
         if self.window:
             self.window.set_status(f"Audio: {key} = {value} (restart to apply)")
+            if key == "output_device":
+                self.window.tools_view.slice_panel.set_output_device(int(value))
 
     def _gui_grid_setting(self, key: str, value):
         if key == "row_count":
@@ -1950,12 +2141,33 @@ class AppController:
         # Audio devices
         try:
             devices = AudioEngine.get_devices()
-            out_names = [d["name"] for d in devices["output"]]
-            in_names = [d["name"] for d in devices["input"]]
-            self.window.setup_view.audio_panel.set_devices(out_names, in_names)
+            host_apis = [a["name"] for a in AudioEngine.get_host_apis()]
+            out_devs = devices["output"]
+            in_devs = devices["input"]
+            self.window.setup_view.audio_panel.set_devices(
+                out_devs, in_devs, host_apis
+            )
+
+            # Restore saved driver type selection
+            if self.config.host_api:
+                self.window.setup_view.audio_panel.set_driver(self.config.host_api)
+
+            # Restore saved device selections
+            if self.config.output_device >= 0:
+                self.window.setup_view.audio_panel.select_output_device(
+                    self.config.output_device
+                )
+            if self.config.input_device >= 0:
+                self.window.setup_view.audio_panel.select_input_device(
+                    self.config.input_device
+                )
 
             # Also populate recorder input list
+            in_names = [d["name"] for d in in_devs]
             self.window.tools_view.recorder_panel.set_input_devices(in_names)
+
+            # Sync slicer preview to the configured output device
+            self.window.tools_view.slice_panel.set_output_device(self.config.output_device)
         except Exception as e:
             log.warning("Could not enumerate audio devices: %s", e)
 
@@ -2238,6 +2450,154 @@ class AppController:
                 "_spread": "ether_drift.spread",
                 "_mix": "ether_drift.mix",
                 "_sync_btn": "ether_drift.sync",
+            },
+            "noise_gate": {
+                "_enabled": "noise_gate.enabled",
+                "_thresh": "noise_gate.threshold",
+                "_attack": "noise_gate.attack",
+                "_hold": "noise_gate.hold",
+                "_release": "noise_gate.release",
+                "_range": "noise_gate.range_db",
+                "_key_freq": "noise_gate.key_freq",
+            },
+            "tremolo": {
+                "_enabled": "tremolo.enabled",
+                "_rate": "tremolo.rate",
+                "_depth": "tremolo.depth",
+                "_mix": "tremolo.mix",
+            },
+            "auto_wah": {
+                "_enabled": "auto_wah.enabled",
+                "_sensitivity": "auto_wah.sensitivity",
+                "_peak": "auto_wah.peak",
+                "_mix": "auto_wah.mix",
+            },
+            "fet_limiter": {
+                "_enabled": "fet_limiter.enabled",
+                "_input": "fet_limiter.input_gain",
+                "_output": "fet_limiter.output_gain",
+            },
+            "simple_eq": {
+                "_enabled": "simple_eq.enabled",
+                "_low": "simple_eq.low",
+                "_mid": "simple_eq.mid",
+                "_high": "simple_eq.high",
+                "_mix": "simple_eq.mix",
+            },
+            "ping_pong_delay": {
+                "_enabled": "ping_pong_delay.enabled",
+                "_ping": "ping_pong_delay.ping_ms",
+                "_pong": "ping_pong_delay.pong_ms",
+                "_feedback": "ping_pong_delay.feedback",
+                "_spread": "ping_pong_delay.spread",
+                "_damp": "ping_pong_delay.damping",
+                "_mix": "ping_pong_delay.mix",
+            },
+            "shimmer_reverb": {
+                "_enabled": "shimmer_reverb.enabled",
+                "_decay": "shimmer_reverb.decay",
+                "_shimmer": "shimmer_reverb.shimmer",
+                "_damp": "shimmer_reverb.damping",
+                "_mix": "shimmer_reverb.mix",
+            },
+            "lofi_radio": {
+                "_enabled": "lofi_radio.enabled",
+                "_lo_cut": "lofi_radio.lo_cut",
+                "_hi_cut": "lofi_radio.hi_cut",
+                "_noise": "lofi_radio.noise",
+                "_dist": "lofi_radio.distortion",
+                "_mix": "lofi_radio.mix",
+            },
+            "auto_pan": {
+                "_enabled": "auto_pan.enabled",
+                "_rate": "auto_pan.rate",
+                "_depth": "auto_pan.depth",
+                "_mix": "auto_pan.mix",
+            },
+            "fuzz": {
+                "_enabled": "fuzz.enabled",
+                "_gain": "fuzz.gain",
+                "_sustain": "fuzz.sustain",
+                "_tone": "fuzz.tone",
+                "_mix": "fuzz.mix",
+            },
+            "granular_freeze": {
+                "_enabled": "granular_freeze.enabled",
+                "_grain_size": "granular_freeze.grain_size",
+                "_scatter": "granular_freeze.scatter",
+                "_spread": "granular_freeze.spread",
+                "_density": "granular_freeze.density",
+                "_freeze": "granular_freeze.freeze",
+                "_mix": "granular_freeze.mix",
+            },
+            "gate_reverb": {
+                "_enabled": "gate_reverb.enabled",
+                "_room": "gate_reverb.room",
+                "_gate_time": "gate_reverb.gate_time",
+                "_slope": "gate_reverb.slope",
+                "_pre_delay": "gate_reverb.pre_delay",
+                "_mode": "gate_reverb.mode",
+                "_mix": "gate_reverb.mix",
+            },
+            "stutter": {
+                "_enabled": "stutter.enabled",
+                "_size": "stutter.size",
+                "_rate": "stutter.rate",
+                "_chaos": "stutter.chaos",
+                "_smear": "stutter.smear",
+                "_trigger": "stutter.trigger",
+                "_mix": "stutter.mix",
+            },
+            "harmonizer": {
+                "_enabled": "harmonizer.enabled",
+                "_semi_a": "harmonizer.voice_a_semitones",
+                "_fine_a": "harmonizer.voice_a_cents",
+                "_delay_a": "harmonizer.voice_a_delay_ms",
+                "_semi_b": "harmonizer.voice_b_semitones",
+                "_fine_b": "harmonizer.voice_b_cents",
+                "_delay_b": "harmonizer.voice_b_delay_ms",
+                "_fdbk": "harmonizer.feedback",
+                "_mix": "harmonizer.mix",
+            },
+            "ring_mod": {
+                "_enabled": "ring_mod.enabled",
+                "_freq": "ring_mod.freq_hz",
+                "_depth": "ring_mod.depth",
+                "_mix": "ring_mod.mix",
+            },
+            "rotary": {
+                "_enabled": "rotary.enabled",
+                "_acceleration_knob": "rotary.acceleration",
+                "_horn_level_knob": "rotary.horn_level",
+                "_rotor_level_knob": "rotary.rotor_level",
+                "_mix_knob": "rotary.mix",
+            },
+            "stereo_widener": {
+                "_enabled": "stereo_widener.enabled",
+                "_width_knob": "stereo_widener.width",
+                "_center_knob": "stereo_widener.center",
+                "_lo_mono_knob": "stereo_widener.low_mono_freq",
+            },
+            "freq_shifter": {
+                "_enabled": "freq_shifter.enabled",
+                "_shift_knob": "freq_shifter.shift_hz",
+                "_fdbk_knob": "freq_shifter.feedback",
+                "_mix_knob": "freq_shifter.mix",
+            },
+            "exciter": {
+                "_enabled": "exciter.enabled",
+                "_tune_knob": "exciter.tune",
+                "_mix_knob": "exciter.mix",
+                "_lo_tune_knob": "exciter.lo_tune",
+                "_lo_mix_knob": "exciter.lo_mix",
+                "_output_knob": "exciter.output",
+            },
+            "transient_shaper": {
+                "_enabled": "transient_shaper.enabled",
+                "_attack_knob": "transient_shaper.attack_shape",
+                "_sustain_knob": "transient_shaper.sustain_shape",
+                "_output_knob": "transient_shaper.output",
+                "_link_btn": "transient_shaper.stereo_link",
             },
         }
 
@@ -2588,7 +2948,8 @@ class AppController:
         elif parts[0] in ("reel_to_reel", "cassette_tape", "vhs", "vinyl",
                            "compressor", "hall_reverb", "plate_reverb",
                            "glue_compressor", "bit_crusher", "tube_overdrive",
-                           "ether_drift") and len(parts) == 2:
+                           "ether_drift", "noise_gate", "tremolo", "auto_wah",
+                           "fet_limiter") and len(parts) == 2:
             fx_n = parts[0]
             param = parts[1]
             handler_fn = getattr(self, f"_gui_{fx_n}_param")
@@ -2735,7 +3096,14 @@ class AppController:
         # Sync remaining effect states across all buses
         for fx_name in ("reel_to_reel", "cassette_tape", "vhs", "vinyl", "compressor",
                         "hall_reverb", "plate_reverb", "glue_compressor",
-                        "bit_crusher", "tube_overdrive", "ether_drift"):
+                        "bit_crusher", "tube_overdrive", "ether_drift",
+                        "noise_gate", "tremolo", "auto_wah",
+                        "fet_limiter", "rotary", "exciter",
+                        "transient_shaper", "harmonizer", "stereo_widener",
+                        "freq_shifter", "ring_mod",
+                        "simple_eq", "ping_pong_delay", "shimmer_reverb",
+                        "lofi_radio", "auto_pan", "fuzz",
+                        "granular_freeze", "gate_reverb", "stutter"):
             for sfx in _suffixes:
                 cfg_key = f"{fx_name}{sfx}"
                 cfg = getattr(self.config, cfg_key)
@@ -2810,7 +3178,14 @@ class AppController:
         # Sync remaining effect states across all buses
         for fx_name in ("reel_to_reel", "cassette_tape", "vhs", "vinyl", "compressor",
                         "hall_reverb", "plate_reverb", "glue_compressor",
-                        "bit_crusher", "tube_overdrive", "ether_drift"):
+                        "bit_crusher", "tube_overdrive", "ether_drift",
+                        "noise_gate", "tremolo", "auto_wah",
+                        "fet_limiter", "rotary", "exciter",
+                        "transient_shaper", "harmonizer", "stereo_widener",
+                        "freq_shifter", "ring_mod",
+                        "simple_eq", "ping_pong_delay", "shimmer_reverb",
+                        "lofi_radio", "auto_pan", "fuzz",
+                        "granular_freeze", "gate_reverb", "stutter"):
             for sfx in _suffixes:
                 cfg_key = f"{fx_name}{sfx}"
                 cfg = getattr(self.config, cfg_key)

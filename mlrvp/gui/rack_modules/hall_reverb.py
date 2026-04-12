@@ -221,7 +221,7 @@ class HallReverbModule(RackModuleBase):
         self._room_combo.setFixedHeight(18)
         self._room_combo.setStyleSheet(
             f"QComboBox {{ background: {_LCD_BG}; color: {_LCD_FG}; font-size: 9px;"
-            "border: 1px solid #334433; }}"
+            "border: 1px solid #334433; }"
             f"QComboBox QAbstractItemView {{ background: {_LCD_BG}; color: {_LCD_FG}; }}"
         )
         self._room_combo.currentIndexChanged.connect(self._on_room_type)
