@@ -16,6 +16,13 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("BLIS_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
+# ── Pin Numba threading layer ─────────────────────────────────────────────────
+# Our @njit kernels use nogil=True but NOT parallel=True / prange, so the
+# parallel threading layer (TBB/OMP) is never needed.  Pinning to "workqueue"
+# prevents Numba from attempting to load tbb12.dll (which isn't bundled) and
+# avoids a noisy ImportError fallback chain on frozen builds.
+os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
+
 # ── Elevate process priority on Windows ───────────────────────────────────────
 # Raises the whole process to HIGH_PRIORITY_CLASS so the DSP worker thread
 # (separately elevated to TIME_CRITICAL inside the engine) competes more

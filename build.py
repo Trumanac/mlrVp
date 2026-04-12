@@ -53,6 +53,9 @@ def build_onefile():
         "--hidden-import", "sounddevice",
         "--hidden-import", "soundfile",
         "--hidden-import", "numpy",
+        "--hidden-import", "numba",
+        "--hidden-import", "llvmlite",
+        "--hidden-import", "llvmlite.binding",
         "--hidden-import", "resampy",
         "--hidden-import", "librosa",
         "--hidden-import", "librosa.effects",
@@ -74,7 +77,7 @@ def build_onefile():
         "--exclude-module", "pytest",
         "--exclude-module", "sklearn",
         "--exclude-module", "pandas",
-        "--exclude-module", "numba",
+        "--exclude-module", "numba.np.ufunc.tbbpool",
     ]
     if ICON_ICO.exists():
         args.extend(["--icon", str(ICON_ICO)])
