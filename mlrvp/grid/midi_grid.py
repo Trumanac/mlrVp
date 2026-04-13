@@ -172,13 +172,15 @@ class MidiGridAdapter:
                 cc_range = range(91, 99)
         else:
             # Generic: straight mapping, note = row*columns + col
-            self._note_to_xy = {}
-            self._xy_to_note = {}
+            note_to_xy = {}
+            xy_to_note = {}
             for r in range(self.rows):
                 for c in range(self.columns):
                     note = r * self.columns + c
-                    self._note_to_xy[note] = (c, r)
-                    self._xy_to_note[(c, r)] = note
+                    note_to_xy[note] = (c, r)
+                    xy_to_note[(c, r)] = note
+            self._note_to_xy = note_to_xy
+            self._xy_to_note = xy_to_note
             self._group_color_maps = [m.copy() for m in _LP_MK2_GROUP_COLORS]
             cc_range = range(0)  # no control buttons
 
@@ -198,6 +200,7 @@ class MidiGridAdapter:
             ports = self._midi_in.get_ports()
             if in_port < 0 or in_port >= len(ports):
                 log.error("MIDI grid input port %d out of range", in_port)
+                self._midi_in = None
                 return False
 
             device_name = ports[in_port]
@@ -221,6 +224,8 @@ class MidiGridAdapter:
 
                     # Enter programmer mode for MK2/MK3/X/Pro
                     self._enter_programmer_mode()
+                else:
+                    self._midi_out = None
 
             self._connected = True
             return True
@@ -234,12 +239,20 @@ class MidiGridAdapter:
         """Close MIDI ports."""
         self._closed = True
         if self._midi_in is not None:
-            self._midi_in.close_port()
+            try:
+                self._midi_in.close_port()
+            except Exception:
+                pass
             self._midi_in = None
         if self._midi_out is not None:
-            # Clear LEDs before disconnecting
-            self._clear_all_leds()
-            self._midi_out.close_port()
+            try:
+                self._clear_all_leds()
+            except Exception:
+                pass
+            try:
+                self._midi_out.close_port()
+            except Exception:
+                pass
             self._midi_out = None
         self._connected = False
         self._in_port = -1
@@ -272,8 +285,8 @@ class MidiGridAdapter:
             elif status == 0xB0:  # CC — some Launchpads send CC for top row
                 cc = message[1]
                 value = message[2]
-                if cc in self._control_cc_map:
-                    btn_idx = self._control_cc_map[cc]
+                btn_idx = self._control_cc_map.get(cc)
+                if btn_idx is not None:
                     state = 1 if value > 0 else 0
                     if self._control_callback:
                         self._control_callback(btn_idx, state)
@@ -282,8 +295,9 @@ class MidiGridAdapter:
                 return
 
             # Map note to grid coordinate
-            if note in self._note_to_xy:
-                x, y = self._note_to_xy[note]
+            xy = self._note_to_xy.get(note)
+            if xy is not None:
+                x, y = xy
                 if self._button_callback:
                     self._button_callback(x, y, state)
         except Exception as e:
@@ -299,10 +313,9 @@ class MidiGridAdapter:
         if self._midi_out is None or not self._connected:
             return
         key = (x, y)
-        if key not in self._xy_to_note:
+        note = self._xy_to_note.get(key)
+        if note is None:
             return
-
-        note = self._xy_to_note[key]
         cmap = self._group_color_maps[color % len(self._group_color_maps)]
         velocity = cmap.get(brightness, 0)
 
@@ -318,9 +331,9 @@ class MidiGridAdapter:
         """Set LED on a control button (top row / CC buttons)."""
         if self._midi_out is None or not self._connected:
             return
-        if btn_idx not in self._control_cc_out:
+        cc = self._control_cc_out.get(btn_idx)
+        if cc is None:
             return
-        cc = self._control_cc_out[btn_idx]
         cmap = self._group_color_maps[color % len(self._group_color_maps)]
         velocity = cmap.get(brightness, 0)
         try:
@@ -342,12 +355,12 @@ class MidiGridAdapter:
         """Send note-off for all grid positions and clear control buttons."""
         if self._midi_out is None:
             return
-        for note in self._xy_to_note.values():
+        for note in list(self._xy_to_note.values()):
             try:
                 self._midi_out.send_message([0x80, note, 0])
             except Exception:
                 pass
-        for cc in self._control_cc_out.values():
+        for cc in list(self._control_cc_out.values()):
             try:
                 self._midi_out.send_message([0xB0, cc, 0])
             except Exception:

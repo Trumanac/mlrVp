@@ -38,6 +38,10 @@ def load_sample(filepath: str, target_sr: int = SAMPLE_RATE) -> Optional[SampleB
     except Exception:
         return None
 
+    # Validate sample rate
+    if sr <= 0 or target_sr <= 0:
+        return None
+
     # Resample if needed
     if sr != target_sr:
         try:

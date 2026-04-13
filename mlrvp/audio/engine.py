@@ -187,9 +187,9 @@ class AudioEngine:
         self.exciter_m = ExciterProcessor(self.sample_rate)
 
         # Transient Shaper — per-bus instances
-        self.transient_shaper = TransientShaperProcessor(self.sample_rate)
-        self.transient_shaper_b = TransientShaperProcessor(self.sample_rate)
-        self.transient_shaper_m = TransientShaperProcessor(self.sample_rate)
+        self.transient_shaper = TransientShaperProcessor(self.sample_rate, self.buffer_size)
+        self.transient_shaper_b = TransientShaperProcessor(self.sample_rate, self.buffer_size)
+        self.transient_shaper_m = TransientShaperProcessor(self.sample_rate, self.buffer_size)
 
         # Harmonizer — per-bus instances
         self.harmonizer = HarmonizerProcessor(self.sample_rate)
@@ -234,7 +234,7 @@ class AudioEngine:
         self.fet_limiter_c = FETLimiterProcessor(self.sample_rate)
         self.rotary_c = RotaryProcessor(self.sample_rate)
         self.exciter_c = ExciterProcessor(self.sample_rate)
-        self.transient_shaper_c = TransientShaperProcessor(self.sample_rate)
+        self.transient_shaper_c = TransientShaperProcessor(self.sample_rate, self.buffer_size)
         self.harmonizer_c = HarmonizerProcessor(self.sample_rate)
         self.stereo_widener_c = StereoWidenerProcessor(self.sample_rate)
         self.freq_shifter_c = FreqShifterProcessor(self.sample_rate)
@@ -262,7 +262,7 @@ class AudioEngine:
         self.fet_limiter_d = FETLimiterProcessor(self.sample_rate)
         self.rotary_d = RotaryProcessor(self.sample_rate)
         self.exciter_d = ExciterProcessor(self.sample_rate)
-        self.transient_shaper_d = TransientShaperProcessor(self.sample_rate)
+        self.transient_shaper_d = TransientShaperProcessor(self.sample_rate, self.buffer_size)
         self.harmonizer_d = HarmonizerProcessor(self.sample_rate)
         self.stereo_widener_d = StereoWidenerProcessor(self.sample_rate)
         self.freq_shifter_d = FreqShifterProcessor(self.sample_rate)
@@ -533,6 +533,9 @@ class AudioEngine:
         self._master_lp_freq: float = 20000.0  # default: no cut
         self._master_hp.set_highpass(20.0, 0.707)
         self._master_lp.set_lowpass(20000.0, 0.707)
+        # Pending filter params — set from GUI thread, applied on DSP thread
+        self._pending_master_hp: Optional[float] = None
+        self._pending_master_lp: Optional[float] = None
 
         # Stream
         self._stream: Optional[sd.OutputStream] = None
@@ -543,28 +546,33 @@ class AudioEngine:
         # Thread-safe event queue — all channel trigger/stop mutations are
         # deferred to the audio thread to avoid races with process().
         # deque.append / popleft are atomic in CPython.
-        self._event_queue: deque = deque()
+        self._event_queue: deque = deque(maxlen=512)
 
         # Callback for UI updates (called from audio thread, should be fast)
         self._meter_callback: Optional[Callable] = None
+        # Thread-safe meter queue — DSP worker pushes, GUI thread polls
+        self._meter_queue: deque = deque(maxlen=2)
 
-        # Pre-allocated meter data to avoid allocations in audio callback
-        self._meter_data = {
-            "master": [0.0, 0.0],
-            "groups": [0.0] * NUM_GROUPS,
-            "fx1": [0.0, 0.0],
-            "fx2": [0.0, 0.0],
-            "waveform_l": [],
-            "waveform_r": [],
-        }
+        # DSP error tracking — count consecutive exceptions so the GUI
+        # can surface a warning instead of silently dropping audio.
+        self._dsp_error_count: int = 0
+        self._dsp_last_error: Optional[str] = None
 
-        # Input buffer for recording
-        self._input_buffer = np.zeros((self.buffer_size, 2), dtype=np.float32)
-        self._input_copy = np.empty((self.buffer_size, 2), dtype=np.float32)
-        self._input_ready = False
+        # Double-buffered input for recording — input callback writes to one
+        # buffer while the DSP worker reads from the other, avoiding torn reads.
+        self._input_bufs = [
+            np.zeros((self.buffer_size, 2), dtype=np.float32),
+            np.zeros((self.buffer_size, 2), dtype=np.float32),
+        ]
+        self._input_write_idx = 0  # callback writes here
+        self._input_read_idx = -1  # -1 = nothing ready
+        self._input_copy = np.zeros((self.buffer_size, 2), dtype=np.float32)
 
         # Pre-allocated zero buffer for delay routing bypass
         self._zero_buf = np.zeros((self.buffer_size, 2), dtype=np.float32)
+
+        # Pre-allocated AUX scaling buffer (avoids per-block allocation)
+        self._aux_buf = np.zeros((self.buffer_size, 2), dtype=np.float32)
 
         # Peak meters
         self.output_peak = np.zeros(2, dtype=np.float32)
@@ -592,6 +600,18 @@ class AudioEngine:
         self._wf_fx3_r = np.zeros(self._wf_len, dtype=np.float32)
         self._wf_fx4_l = np.zeros(self._wf_len, dtype=np.float32)
         self._wf_fx4_r = np.zeros(self._wf_len, dtype=np.float32)
+
+        # Pre-allocated waveform snapshot buffers (avoid .copy() on DSP thread)
+        self._wf_snap_master_l = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_snap_master_r = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_snap_fx1_l = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_snap_fx1_r = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_snap_fx2_l = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_snap_fx2_r = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_snap_fx3_l = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_snap_fx3_r = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_snap_fx4_l = np.zeros(self._wf_len, dtype=np.float32)
+        self._wf_snap_fx4_r = np.zeros(self._wf_len, dtype=np.float32)
 
         # Pre-allocated channel output list to avoid per-callback allocation
         self._channel_outputs: list[tuple[int, np.ndarray]] = []
@@ -669,6 +689,34 @@ class AudioEngine:
     def set_meter_callback(self, callback: Callable):
         self._meter_callback = callback
 
+    def poll_meters(self) -> Optional[dict]:
+        """Return the latest meter snapshot, or None if nothing new.
+
+        Call this from the GUI refresh timer (main thread) instead of
+        having the DSP worker invoke a Python callback — avoids GIL
+        contention that could cause audio dropouts.
+        """
+        md = None
+        try:
+            while self._meter_queue:
+                md = self._meter_queue.popleft()
+        except IndexError:
+            pass
+        return md
+
+    def poll_dsp_errors(self) -> Optional[tuple]:
+        """Return (count, message) if DSP errors have accumulated, else None.
+
+        Call from GUI refresh timer.  Resets the counter once read.
+        """
+        count = self._dsp_error_count
+        if count == 0:
+            return None
+        msg = self._dsp_last_error
+        self._dsp_error_count = 0
+        self._dsp_last_error = None
+        return (count, msg)
+
     def set_profiling(self, enabled: bool):
         """Toggle DSP profiling at runtime."""
         self._prof_enabled = enabled
@@ -700,12 +748,14 @@ class AudioEngine:
               f"profiling={'ON' if self._prof_enabled else 'OFF (set MLRVP_DEBUG=1 to enable)'}")
 
         # Disable Python's cyclic GC to prevent unpredictable collection
-        # pauses on the audio thread.  A periodic timer runs gen-0
-        # collections from the main thread between callbacks.
+        # pauses on the audio thread.  A dedicated background thread runs
+        # gen-0 collections once per second.
         gc.disable()
-        self._gc_timer = threading.Timer(1.0, self._periodic_gc)
-        self._gc_timer.daemon = True
-        self._gc_timer.start()
+        self._gc_running = True
+        self._gc_thread = threading.Thread(
+            target=self._gc_loop, name="gc-worker", daemon=True
+        )
+        self._gc_thread.start()
 
         try:
             output_device = self.config.output_device if self.config.output_device >= 0 else None
@@ -734,11 +784,20 @@ class AudioEngine:
         self._ring_read = 0
         self._ring_write = 0
         self._ring_buf_full = False
-        for i in range(self._ring_blocks - 1):
-            slot = self._ring_buf[i]
-            slot[:] = 0
-            self._process_block(self.buffer_size, slot)
-            self._ring_write = (self._ring_write + 1) % self._ring_blocks
+        try:
+            for i in range(self._ring_blocks - 1):
+                slot = self._ring_buf[i]
+                slot[:] = 0
+                self._process_block(self.buffer_size, slot)
+                self._ring_write = (self._ring_write + 1) % self._ring_blocks
+        except Exception:
+            self._running = False
+            if self._stream is not None:
+                self._stream.stop()
+                self._stream.close()
+                self._stream = None
+            gc.enable()
+            raise
         self._ring_event.clear()
 
         # Launch the DSP worker thread
@@ -785,29 +844,33 @@ class AudioEngine:
             self._input_stream.stop()
             self._input_stream.close()
             self._input_stream = None
-        # Re-enable automatic GC and cancel the periodic timer
-        if hasattr(self, '_gc_timer') and self._gc_timer is not None:
-            self._gc_timer.cancel()
-            self._gc_timer = None
+        # Re-enable automatic GC and stop the GC worker thread
+        self._gc_running = False
+        if hasattr(self, '_gc_thread') and self._gc_thread is not None:
+            self._gc_thread.join(timeout=2.0)
+            self._gc_thread = None
         gc.enable()
         gc.collect()
 
-    def _periodic_gc(self):
-        """Run a gen-0 GC collection from a background timer thread.
+    def _gc_loop(self):
+        """Background thread that runs gen-0 GC collection once per second.
 
-        This keeps memory tidy while the cyclic GC is disabled during
-        audio processing.  Only gen-0 is collected to keep pauses short.
+        Uses a simple loop instead of threading.Timer to avoid creating
+        a new Thread object every second — those objects can't be collected
+        while the cyclic GC is disabled, causing a slow memory leak.
         """
-        if self._running:
-            gc.collect(0)
-            self._gc_timer = threading.Timer(1.0, self._periodic_gc)
-            self._gc_timer.daemon = True
-            self._gc_timer.start()
+        while self._gc_running:
+            time.sleep(1.0)
+            if self._gc_running:
+                gc.collect(0)
 
     def _input_callback(self, indata, frames, time_info, status):
-        """Capture input audio for recording."""
-        self._input_buffer[:frames] = indata
-        self._input_ready = True
+        """Capture input audio for recording (double-buffered)."""
+        wi = self._input_write_idx
+        self._input_bufs[wi][:frames] = indata
+        # Publish the filled buffer and swap to the other one
+        self._input_read_idx = wi
+        self._input_write_idx = 1 - wi
 
     def _audio_callback(self, outdata, frames, time_info, status):
         """Sounddevice callback — copies pre-computed audio from ring buffer.
@@ -841,696 +904,735 @@ class AudioEngine:
         """Run the full DSP pipeline for one block, writing into *outbuf*.
 
         Called by the DSP worker thread — never from the audio callback.
+        Exceptions propagate to _dsp_worker() for error counting/surfacing.
         """
-        try:
-            _prof = self._prof_enabled
-            if _prof:
-                _t0 = time.perf_counter()
+        _prof = self._prof_enabled
+        if _prof:
+            _t0 = time.perf_counter()
 
-            # ── Process pending trigger/stop events (thread-safe) ──
-            eq = self._event_queue
-            while eq:
-                try:
-                    event = eq.popleft()
-                except IndexError:
-                    break
-                cmd = event[0]
-                if cmd == 'trigger':
-                    self.channels[event[1]].trigger(event[2], event[3])
-                elif cmd == 'stop':
-                    self.channels[event[1]].stop()
-                elif cmd == 'force_stop':
-                    self.channels[event[1]].force_stop()
-                elif cmd == 'set_pos':
-                    self.channels[event[1]]._position = event[2]
+        # ── Process pending trigger/stop events (thread-safe) ──
+        eq = self._event_queue
+        while eq:
+            try:
+                event = eq.popleft()
+            except IndexError:
+                break
+            cmd = event[0]
+            if cmd == 'trigger':
+                self.channels[event[1]].trigger(event[2], event[3])
+            elif cmd == 'stop':
+                self.channels[event[1]].stop()
+            elif cmd == 'force_stop':
+                self.channels[event[1]].force_stop()
+            elif cmd == 'set_pos':
+                self.channels[event[1]]._position = event[2]
 
-            # Capture input audio only when needed (recording or AUX monitoring)
-            _need_input = self.recorder.recording or not self.mixer.aux_mute
-            if _need_input and self._input_ready:
-                input_audio = self._input_copy[:frames]
-                input_audio[:] = self._input_buffer[:frames]
-                self._input_ready = False
+        # Capture input audio only when needed (recording or AUX monitoring)
+        _need_input = self.recorder.recording or not self.mixer.aux_mute
+        ri = self._input_read_idx
+        if _need_input and ri >= 0:
+            input_audio = self._input_copy[:frames]
+            input_audio[:] = self._input_bufs[ri][:frames]
+            # Only clear if callback hasn't published a new frame since we read
+            if self._input_read_idx == ri:
+                self._input_read_idx = -1
+        else:
+            if ri >= 0 and self._input_read_idx == ri:
+                self._input_read_idx = -1  # discard unused frame
+            input_audio = None
+
+        # Process recording input
+        if input_audio is not None and self.recorder.recording:
+            thru = self.recorder.process(input_audio)
+        else:
+            thru = None
+
+        # Process all active channels
+        channel_outputs = self._channel_outputs
+        channel_outputs.clear()
+        active_count = min(self.config.row_count, MAX_ROWS)
+
+        for i in range(active_count):
+            ch = self.channels[i]
+            if ch.playing or ch.state.playing:
+                audio = ch.process(frames)
+                # Apply per-channel filter
+                if abs(ch.state.filter_val) > 0.01:
+                    self.channel_filters[i].set_filter(ch.state.filter_val)
+                    audio = self.channel_filters[i].process(audio)
+                channel_outputs.append((ch.state.group, audio))
+
+        if _prof:
+            _t1 = time.perf_counter()
+
+        # Mix through groups (now returns FX bus outputs too)
+        main_bus, aux_send, fx1_bus, fx2_bus, fx3_bus, fx4_bus = self.mixer.process_groups(channel_outputs, frames)
+
+        # Add recorder thru to main bus if active
+        if thru is not None:
+            main_bus += thru
+
+        # --- AUX input channel (external audio source) ---
+        if not self.mixer.aux_mute and input_audio is not None:
+            self._aux_buf[:frames] = input_audio[:frames]
+            self._aux_buf[:frames] *= self.mixer.aux_volume
+            aux_scaled = self._aux_buf[:frames]
+            # Route AUX to FX bus or main
+            aux_route = self.mixer.aux_fx_route
+            if aux_route == 1:
+                fx1_bus += aux_scaled
+            elif aux_route == 2:
+                fx2_bus += aux_scaled
+            elif aux_route == 3:
+                fx3_bus += aux_scaled
+            elif aux_route == 4:
+                fx4_bus += aux_scaled
             else:
-                if self._input_ready:
-                    self._input_ready = False   # discard unused frame
-                input_audio = None
+                main_bus += aux_scaled
 
-            # Process recording input
-            if input_audio is not None and self.recorder.recording:
-                thru = self.recorder.process(input_audio)
-            else:
-                thru = None
+        if _prof:
+            _t2 = time.perf_counter()
 
-            # Process all active channels
-            channel_outputs = self._channel_outputs
-            channel_outputs.clear()
-            active_count = min(self.config.row_count, MAX_ROWS)
+        # --- FX Processing Chain (per-bus: rack A → FX1, rack B → FX2) ---
+        # Noise Gate (first in chain — gates signal before any processing)
+        if self.noise_gate_in_rack_a:
+            fx1_bus = self.noise_gate.process(fx1_bus)
+        if self.noise_gate_in_rack_b:
+            fx2_bus = self.noise_gate_b.process(fx2_bus)
 
-            for i in range(active_count):
-                ch = self.channels[i]
-                if ch.playing or ch.state.playing:
-                    audio = ch.process(frames)
-                    # Apply per-channel filter
-                    if abs(ch.state.filter_val) > 0.01:
-                        self.channel_filters[i].set_filter(ch.state.filter_val)
-                        audio = self.channel_filters[i].process(audio)
-                    channel_outputs.append((ch.state.group, audio))
+        # Tremolo
+        if self.tremolo_in_rack_a:
+            fx1_bus = self.tremolo.process(fx1_bus)
+        if self.tremolo_in_rack_b:
+            fx2_bus = self.tremolo_b.process(fx2_bus)
 
-            if _prof:
-                _t1 = time.perf_counter()
+        # Auto-Wah
+        if self.auto_wah_in_rack_a:
+            fx1_bus = self.auto_wah.process(fx1_bus)
+        if self.auto_wah_in_rack_b:
+            fx2_bus = self.auto_wah_b.process(fx2_bus)
 
-            # Mix through groups (now returns FX bus outputs too)
-            main_bus, aux_send, fx1_bus, fx2_bus, fx3_bus, fx4_bus = self.mixer.process_groups(channel_outputs, frames)
+        # FET Limiter (1176)
+        if self.fet_limiter_in_rack_a:
+            fx1_bus = self.fet_limiter.process(fx1_bus)
+        if self.fet_limiter_in_rack_b:
+            fx2_bus = self.fet_limiter_b.process(fx2_bus)
 
-            # Add recorder thru to main bus if active
-            if thru is not None:
-                main_bus += thru
+        # Filter A (shapeable LP/HP)
+        if self.filter_a_in_rack_a and self.filter_a.state.enabled:
+            fx1_bus = self.filter_a.process(fx1_bus)
+        if self.filter_a_in_rack_b and self.filter_a_b.state.enabled:
+            fx2_bus = self.filter_a_b.process(fx2_bus)
 
-            # --- AUX input channel (external audio source) ---
-            if not self.mixer.aux_mute and input_audio is not None:
-                aux_scaled = input_audio * self.mixer.aux_volume
-                # Route AUX to FX bus or main
-                aux_route = self.mixer.aux_fx_route
-                if aux_route == 1:
-                    fx1_bus += aux_scaled
-                elif aux_route == 2:
-                    fx2_bus += aux_scaled
-                elif aux_route == 3:
-                    fx3_bus += aux_scaled
-                elif aux_route == 4:
-                    fx4_bus += aux_scaled
-                else:
-                    main_bus += aux_scaled
+        # Filter B (Moog ladder)
+        if self.filter_b_in_rack_a and self.filter_b.state.enabled:
+            fx1_bus = self.filter_b.process(fx1_bus)
+        if self.filter_b_in_rack_b and self.filter_b_b.state.enabled:
+            fx2_bus = self.filter_b_b.process(fx2_bus)
 
-            if _prof:
-                _t2 = time.perf_counter()
+        # Mod effects (phaser, chorus, flanger) — per-bus FXBus handles own enabled
+        if self.mod_in_rack_a:
+            fx1_bus = self.fx_bus_1.process_mod_only(fx1_bus)
+        if self.mod_in_rack_b:
+            fx2_bus = self.fx_bus_2.process_mod_only(fx2_bus)
 
-            # --- FX Processing Chain (per-bus: rack A → FX1, rack B → FX2) ---
-            # Noise Gate (first in chain — gates signal before any processing)
-            if self.noise_gate_in_rack_a:
-                fx1_bus = self.noise_gate.process(fx1_bus)
-            if self.noise_gate_in_rack_b:
-                fx2_bus = self.noise_gate_b.process(fx2_bus)
+        # Digital delay
+        if self.delay_in_rack_a and self.delay.state.enabled:
+            fx1_bus = self.delay.process(fx1_bus)
+        if self.delay_in_rack_b and self.delay_b.state.enabled:
+            fx2_bus = self.delay_b.process(fx2_bus)
 
-            # Tremolo
-            if self.tremolo_in_rack_a:
-                fx1_bus = self.tremolo.process(fx1_bus)
-            if self.tremolo_in_rack_b:
-                fx2_bus = self.tremolo_b.process(fx2_bus)
+        # Tape delay
+        if self.tape_delay_in_rack_a and self.tape_delay.state.enabled:
+            fx1_bus = self.tape_delay.process(fx1_bus)
+        if self.tape_delay_in_rack_b and self.tape_delay_b.state.enabled:
+            fx2_bus = self.tape_delay_b.process(fx2_bus)
 
-            # Auto-Wah
-            if self.auto_wah_in_rack_a:
-                fx1_bus = self.auto_wah.process(fx1_bus)
-            if self.auto_wah_in_rack_b:
-                fx2_bus = self.auto_wah_b.process(fx2_bus)
+        # Lo-fi media effects (each checks own state.enabled in process())
+        if self.reel_to_reel_in_rack_a:
+            fx1_bus = self.reel_to_reel.process(fx1_bus)
+        if self.reel_to_reel_in_rack_b:
+            fx2_bus = self.reel_to_reel_b.process(fx2_bus)
 
-            # FET Limiter (1176)
-            if self.fet_limiter_in_rack_a:
-                fx1_bus = self.fet_limiter.process(fx1_bus)
-            if self.fet_limiter_in_rack_b:
-                fx2_bus = self.fet_limiter_b.process(fx2_bus)
+        if self.cassette_tape_in_rack_a:
+            fx1_bus = self.cassette_tape.process(fx1_bus)
+        if self.cassette_tape_in_rack_b:
+            fx2_bus = self.cassette_tape_b.process(fx2_bus)
 
-            # Filter A (shapeable LP/HP)
-            if self.filter_a_in_rack_a and self.filter_a.state.enabled:
-                fx1_bus = self.filter_a.process(fx1_bus)
-            if self.filter_a_in_rack_b and self.filter_a_b.state.enabled:
-                fx2_bus = self.filter_a_b.process(fx2_bus)
+        if self.vhs_in_rack_a:
+            fx1_bus = self.vhs.process(fx1_bus)
+        if self.vhs_in_rack_b:
+            fx2_bus = self.vhs_b.process(fx2_bus)
 
-            # Filter B (Moog ladder)
-            if self.filter_b_in_rack_a and self.filter_b.state.enabled:
-                fx1_bus = self.filter_b.process(fx1_bus)
-            if self.filter_b_in_rack_b and self.filter_b_b.state.enabled:
-                fx2_bus = self.filter_b_b.process(fx2_bus)
+        if self.vinyl_in_rack_a:
+            fx1_bus = self.vinyl.process(fx1_bus)
+        if self.vinyl_in_rack_b:
+            fx2_bus = self.vinyl_b.process(fx2_bus)
 
-            # Mod effects (phaser, chorus, flanger) — per-bus FXBus handles own enabled
-            if self.mod_in_rack_a:
-                fx1_bus = self.fx_bus_1.process_mod_only(fx1_bus)
-            if self.mod_in_rack_b:
-                fx2_bus = self.fx_bus_2.process_mod_only(fx2_bus)
+        # Hall reverb
+        if self.hall_reverb_in_rack_a:
+            fx1_bus = self.hall_reverb.process(fx1_bus)
+        if self.hall_reverb_in_rack_b:
+            fx2_bus = self.hall_reverb_b.process(fx2_bus)
 
-            # Digital delay
-            if self.delay_in_rack_a and self.delay.state.enabled:
-                fx1_bus = self.delay.process(fx1_bus)
-            if self.delay_in_rack_b and self.delay_b.state.enabled:
-                fx2_bus = self.delay_b.process(fx2_bus)
+        # Plate reverb
+        if self.plate_reverb_in_rack_a:
+            fx1_bus = self.plate_reverb.process(fx1_bus)
+        if self.plate_reverb_in_rack_b:
+            fx2_bus = self.plate_reverb_b.process(fx2_bus)
 
-            # Tape delay
-            if self.tape_delay_in_rack_a and self.tape_delay.state.enabled:
-                fx1_bus = self.tape_delay.process(fx1_bus)
-            if self.tape_delay_in_rack_b and self.tape_delay_b.state.enabled:
-                fx2_bus = self.tape_delay_b.process(fx2_bus)
+        # Compressor (with sidechain routing, checks own state.enabled)
+        if self.compressor_in_rack_a:
+            sc_a = self._get_compressor_sidechain(self.compressor, fx1_bus, frames)
+            fx1_bus = self.compressor.process(fx1_bus, sc_a)
+        if self.compressor_in_rack_b:
+            sc_b = self._get_compressor_sidechain(self.compressor_b, fx2_bus, frames)
+            fx2_bus = self.compressor_b.process(fx2_bus, sc_b)
 
-            # Lo-fi media effects (each checks own state.enabled in process())
-            if self.reel_to_reel_in_rack_a:
-                fx1_bus = self.reel_to_reel.process(fx1_bus)
-            if self.reel_to_reel_in_rack_b:
-                fx2_bus = self.reel_to_reel_b.process(fx2_bus)
+        # Glue compressor (no sidechain routing; self-keyed bus glue)
+        if self.glue_compressor_in_rack_a:
+            fx1_bus = self.glue_compressor.process(fx1_bus)
+        if self.glue_compressor_in_rack_b:
+            fx2_bus = self.glue_compressor_b.process(fx2_bus)
 
-            if self.cassette_tape_in_rack_a:
-                fx1_bus = self.cassette_tape.process(fx1_bus)
-            if self.cassette_tape_in_rack_b:
-                fx2_bus = self.cassette_tape_b.process(fx2_bus)
+        # Bit crusher (checks own state.enabled via process())
+        if self.bit_crusher_in_rack_a:
+            fx1_bus = self.bit_crusher.process(fx1_bus)
+        if self.bit_crusher_in_rack_b:
+            fx2_bus = self.bit_crusher_b.process(fx2_bus)
 
-            if self.vhs_in_rack_a:
-                fx1_bus = self.vhs.process(fx1_bus)
-            if self.vhs_in_rack_b:
-                fx2_bus = self.vhs_b.process(fx2_bus)
+        # Tube overdrive (checks own state.enabled via process())
+        if self.tube_overdrive_in_rack_a:
+            fx1_bus = self.tube_overdrive.process(fx1_bus)
+        if self.tube_overdrive_in_rack_b:
+            fx2_bus = self.tube_overdrive_b.process(fx2_bus)
 
-            if self.vinyl_in_rack_a:
-                fx1_bus = self.vinyl.process(fx1_bus)
-            if self.vinyl_in_rack_b:
-                fx2_bus = self.vinyl_b.process(fx2_bus)
+        # Aural Exciter
+        if self.exciter_in_rack_a:
+            fx1_bus = self.exciter.process(fx1_bus)
+        if self.exciter_in_rack_b:
+            fx2_bus = self.exciter_b.process(fx2_bus)
 
-            # Hall reverb
-            if self.hall_reverb_in_rack_a:
-                fx1_bus = self.hall_reverb.process(fx1_bus)
-            if self.hall_reverb_in_rack_b:
-                fx2_bus = self.hall_reverb_b.process(fx2_bus)
+        # Transient Shaper
+        if self.transient_shaper_in_rack_a:
+            fx1_bus = self.transient_shaper.process(fx1_bus)
+        if self.transient_shaper_in_rack_b:
+            fx2_bus = self.transient_shaper_b.process(fx2_bus)
 
-            # Plate reverb
-            if self.plate_reverb_in_rack_a:
-                fx1_bus = self.plate_reverb.process(fx1_bus)
-            if self.plate_reverb_in_rack_b:
-                fx2_bus = self.plate_reverb_b.process(fx2_bus)
+        # Ether Drift (checks own state.enabled via process())
+        if self.ether_drift_in_rack_a:
+            fx1_bus = self.ether_drift.process(fx1_bus)
+        if self.ether_drift_in_rack_b:
+            fx2_bus = self.ether_drift_b.process(fx2_bus)
 
-            # Compressor (with sidechain routing, checks own state.enabled)
-            if self.compressor_in_rack_a:
-                sc_a = self._get_compressor_sidechain(self.compressor, fx1_bus, frames)
-                fx1_bus = self.compressor.process(fx1_bus, sc_a)
-            if self.compressor_in_rack_b:
-                sc_b = self._get_compressor_sidechain(self.compressor_b, fx2_bus, frames)
-                fx2_bus = self.compressor_b.process(fx2_bus, sc_b)
+        # Harmonizer
+        if self.harmonizer_in_rack_a:
+            fx1_bus = self.harmonizer.process(fx1_bus)
+        if self.harmonizer_in_rack_b:
+            fx2_bus = self.harmonizer_b.process(fx2_bus)
 
-            # Glue compressor (no sidechain routing; self-keyed bus glue)
-            if self.glue_compressor_in_rack_a:
-                fx1_bus = self.glue_compressor.process(fx1_bus)
-            if self.glue_compressor_in_rack_b:
-                fx2_bus = self.glue_compressor_b.process(fx2_bus)
+        # Rotary Speaker
+        if self.rotary_in_rack_a:
+            fx1_bus = self.rotary.process(fx1_bus)
+        if self.rotary_in_rack_b:
+            fx2_bus = self.rotary_b.process(fx2_bus)
 
-            # Bit crusher (checks own state.enabled via process())
-            if self.bit_crusher_in_rack_a:
-                fx1_bus = self.bit_crusher.process(fx1_bus)
-            if self.bit_crusher_in_rack_b:
-                fx2_bus = self.bit_crusher_b.process(fx2_bus)
+        # Stereo Widener
+        if self.stereo_widener_in_rack_a:
+            fx1_bus = self.stereo_widener.process(fx1_bus)
+        if self.stereo_widener_in_rack_b:
+            fx2_bus = self.stereo_widener_b.process(fx2_bus)
 
-            # Tube overdrive (checks own state.enabled via process())
-            if self.tube_overdrive_in_rack_a:
-                fx1_bus = self.tube_overdrive.process(fx1_bus)
-            if self.tube_overdrive_in_rack_b:
-                fx2_bus = self.tube_overdrive_b.process(fx2_bus)
+        # Frequency Shifter
+        if self.freq_shifter_in_rack_a:
+            fx1_bus = self.freq_shifter.process(fx1_bus)
+        if self.freq_shifter_in_rack_b:
+            fx2_bus = self.freq_shifter_b.process(fx2_bus)
 
-            # Aural Exciter
-            if self.exciter_in_rack_a:
-                fx1_bus = self.exciter.process(fx1_bus)
-            if self.exciter_in_rack_b:
-                fx2_bus = self.exciter_b.process(fx2_bus)
+        # Ring Modulator
+        if self.ring_mod_in_rack_a:
+            fx1_bus = self.ring_mod.process(fx1_bus)
+        if self.ring_mod_in_rack_b:
+            fx2_bus = self.ring_mod_b.process(fx2_bus)
 
-            # Transient Shaper
-            if self.transient_shaper_in_rack_a:
-                fx1_bus = self.transient_shaper.process(fx1_bus)
-            if self.transient_shaper_in_rack_b:
-                fx2_bus = self.transient_shaper_b.process(fx2_bus)
+        # Simple EQ
+        if self.simple_eq_in_rack_a:
+            fx1_bus = self.simple_eq.process(fx1_bus)
+        if self.simple_eq_in_rack_b:
+            fx2_bus = self.simple_eq_b.process(fx2_bus)
 
-            # Ether Drift (checks own state.enabled via process())
-            if self.ether_drift_in_rack_a:
-                fx1_bus = self.ether_drift.process(fx1_bus)
-            if self.ether_drift_in_rack_b:
-                fx2_bus = self.ether_drift_b.process(fx2_bus)
+        # Ping-Pong Delay
+        if self.ping_pong_delay_in_rack_a:
+            fx1_bus = self.ping_pong_delay.process(fx1_bus)
+        if self.ping_pong_delay_in_rack_b:
+            fx2_bus = self.ping_pong_delay_b.process(fx2_bus)
 
-            # Harmonizer
-            if self.harmonizer_in_rack_a:
-                fx1_bus = self.harmonizer.process(fx1_bus)
-            if self.harmonizer_in_rack_b:
-                fx2_bus = self.harmonizer_b.process(fx2_bus)
+        # Shimmer Reverb
+        if self.shimmer_reverb_in_rack_a:
+            fx1_bus = self.shimmer_reverb.process(fx1_bus)
+        if self.shimmer_reverb_in_rack_b:
+            fx2_bus = self.shimmer_reverb_b.process(fx2_bus)
 
-            # Rotary Speaker
-            if self.rotary_in_rack_a:
-                fx1_bus = self.rotary.process(fx1_bus)
-            if self.rotary_in_rack_b:
-                fx2_bus = self.rotary_b.process(fx2_bus)
+        # Lo-Fi Radio
+        if self.lofi_radio_in_rack_a:
+            fx1_bus = self.lofi_radio.process(fx1_bus)
+        if self.lofi_radio_in_rack_b:
+            fx2_bus = self.lofi_radio_b.process(fx2_bus)
 
-            # Stereo Widener
-            if self.stereo_widener_in_rack_a:
-                fx1_bus = self.stereo_widener.process(fx1_bus)
-            if self.stereo_widener_in_rack_b:
-                fx2_bus = self.stereo_widener_b.process(fx2_bus)
+        # Auto-Pan
+        if self.auto_pan_in_rack_a:
+            fx1_bus = self.auto_pan.process(fx1_bus)
+        if self.auto_pan_in_rack_b:
+            fx2_bus = self.auto_pan_b.process(fx2_bus)
 
-            # Frequency Shifter
-            if self.freq_shifter_in_rack_a:
-                fx1_bus = self.freq_shifter.process(fx1_bus)
-            if self.freq_shifter_in_rack_b:
-                fx2_bus = self.freq_shifter_b.process(fx2_bus)
+        # Fuzz
+        if self.fuzz_in_rack_a:
+            fx1_bus = self.fuzz.process(fx1_bus)
+        if self.fuzz_in_rack_b:
+            fx2_bus = self.fuzz_b.process(fx2_bus)
+        # Granular Freeze
+        if self.granular_freeze_in_rack_a:
+            fx1_bus = self.granular_freeze.process(fx1_bus)
+        if self.granular_freeze_in_rack_b:
+            fx2_bus = self.granular_freeze_b.process(fx2_bus)
+        # Gated Reverb
+        if self.gate_reverb_in_rack_a:
+            fx1_bus = self.gate_reverb.process(fx1_bus)
+        if self.gate_reverb_in_rack_b:
+            fx2_bus = self.gate_reverb_b.process(fx2_bus)
+        # Stutter
+        if self.stutter_in_rack_a:
+            fx1_bus = self.stutter.process(fx1_bus)
+        if self.stutter_in_rack_b:
+            fx2_bus = self.stutter_b.process(fx2_bus)
 
-            # Ring Modulator
-            if self.ring_mod_in_rack_a:
-                fx1_bus = self.ring_mod.process(fx1_bus)
-            if self.ring_mod_in_rack_b:
-                fx2_bus = self.ring_mod_b.process(fx2_bus)
+        # --- FX Processing Chain C (rack C → FX3) ---
+        if self.noise_gate_in_rack_c:
+            fx3_bus = self.noise_gate_c.process(fx3_bus)
+        if self.tremolo_in_rack_c:
+            fx3_bus = self.tremolo_c.process(fx3_bus)
+        if self.auto_wah_in_rack_c:
+            fx3_bus = self.auto_wah_c.process(fx3_bus)
+        if self.fet_limiter_in_rack_c:
+            fx3_bus = self.fet_limiter_c.process(fx3_bus)
+        if self.filter_a_in_rack_c and self.filter_a_c.state.enabled:
+            fx3_bus = self.filter_a_c.process(fx3_bus)
+        if self.filter_b_in_rack_c and self.filter_b_c.state.enabled:
+            fx3_bus = self.filter_b_c.process(fx3_bus)
+        if self.mod_in_rack_c:
+            fx3_bus = self.fx_bus_c.process_mod_only(fx3_bus)
+        if self.delay_in_rack_c and self.delay_c.state.enabled:
+            fx3_bus = self.delay_c.process(fx3_bus)
+        if self.tape_delay_in_rack_c and self.tape_delay_c.state.enabled:
+            fx3_bus = self.tape_delay_c.process(fx3_bus)
+        if self.reel_to_reel_in_rack_c:
+            fx3_bus = self.reel_to_reel_c.process(fx3_bus)
+        if self.cassette_tape_in_rack_c:
+            fx3_bus = self.cassette_tape_c.process(fx3_bus)
+        if self.vhs_in_rack_c:
+            fx3_bus = self.vhs_c.process(fx3_bus)
+        if self.vinyl_in_rack_c:
+            fx3_bus = self.vinyl_c.process(fx3_bus)
+        if self.hall_reverb_in_rack_c:
+            fx3_bus = self.hall_reverb_c.process(fx3_bus)
+        if self.plate_reverb_in_rack_c:
+            fx3_bus = self.plate_reverb_c.process(fx3_bus)
+        if self.compressor_in_rack_c:
+            sc_c = self._get_compressor_sidechain(self.compressor_c, fx3_bus, frames)
+            fx3_bus = self.compressor_c.process(fx3_bus, sc_c)
+        if self.glue_compressor_in_rack_c:
+            fx3_bus = self.glue_compressor_c.process(fx3_bus)
+        if self.bit_crusher_in_rack_c:
+            fx3_bus = self.bit_crusher_c.process(fx3_bus)
+        if self.tube_overdrive_in_rack_c:
+            fx3_bus = self.tube_overdrive_c.process(fx3_bus)
+        if self.exciter_in_rack_c:
+            fx3_bus = self.exciter_c.process(fx3_bus)
+        if self.transient_shaper_in_rack_c:
+            fx3_bus = self.transient_shaper_c.process(fx3_bus)
+        if self.ether_drift_in_rack_c:
+            fx3_bus = self.ether_drift_c.process(fx3_bus)
+        if self.harmonizer_in_rack_c:
+            fx3_bus = self.harmonizer_c.process(fx3_bus)
+        if self.rotary_in_rack_c:
+            fx3_bus = self.rotary_c.process(fx3_bus)
+        if self.stereo_widener_in_rack_c:
+            fx3_bus = self.stereo_widener_c.process(fx3_bus)
+        if self.freq_shifter_in_rack_c:
+            fx3_bus = self.freq_shifter_c.process(fx3_bus)
+        if self.ring_mod_in_rack_c:
+            fx3_bus = self.ring_mod_c.process(fx3_bus)
+        if self.simple_eq_in_rack_c:
+            fx3_bus = self.simple_eq_c.process(fx3_bus)
+        if self.ping_pong_delay_in_rack_c:
+            fx3_bus = self.ping_pong_delay_c.process(fx3_bus)
+        if self.shimmer_reverb_in_rack_c:
+            fx3_bus = self.shimmer_reverb_c.process(fx3_bus)
+        if self.lofi_radio_in_rack_c:
+            fx3_bus = self.lofi_radio_c.process(fx3_bus)
+        if self.auto_pan_in_rack_c:
+            fx3_bus = self.auto_pan_c.process(fx3_bus)
+        if self.fuzz_in_rack_c:
+            fx3_bus = self.fuzz_c.process(fx3_bus)
+        if self.granular_freeze_in_rack_c:
+            fx3_bus = self.granular_freeze_c.process(fx3_bus)
+        if self.gate_reverb_in_rack_c:
+            fx3_bus = self.gate_reverb_c.process(fx3_bus)
+        if self.stutter_in_rack_c:
+            fx3_bus = self.stutter_c.process(fx3_bus)
 
-            # Simple EQ
-            if self.simple_eq_in_rack_a:
-                fx1_bus = self.simple_eq.process(fx1_bus)
-            if self.simple_eq_in_rack_b:
-                fx2_bus = self.simple_eq_b.process(fx2_bus)
+        # --- FX Processing Chain D (rack D → FX4) ---
+        if self.noise_gate_in_rack_d:
+            fx4_bus = self.noise_gate_d.process(fx4_bus)
+        if self.tremolo_in_rack_d:
+            fx4_bus = self.tremolo_d.process(fx4_bus)
+        if self.auto_wah_in_rack_d:
+            fx4_bus = self.auto_wah_d.process(fx4_bus)
+        if self.fet_limiter_in_rack_d:
+            fx4_bus = self.fet_limiter_d.process(fx4_bus)
+        if self.filter_a_in_rack_d and self.filter_a_d.state.enabled:
+            fx4_bus = self.filter_a_d.process(fx4_bus)
+        if self.filter_b_in_rack_d and self.filter_b_d.state.enabled:
+            fx4_bus = self.filter_b_d.process(fx4_bus)
+        if self.mod_in_rack_d:
+            fx4_bus = self.fx_bus_d.process_mod_only(fx4_bus)
+        if self.delay_in_rack_d and self.delay_d.state.enabled:
+            fx4_bus = self.delay_d.process(fx4_bus)
+        if self.tape_delay_in_rack_d and self.tape_delay_d.state.enabled:
+            fx4_bus = self.tape_delay_d.process(fx4_bus)
+        if self.reel_to_reel_in_rack_d:
+            fx4_bus = self.reel_to_reel_d.process(fx4_bus)
+        if self.cassette_tape_in_rack_d:
+            fx4_bus = self.cassette_tape_d.process(fx4_bus)
+        if self.vhs_in_rack_d:
+            fx4_bus = self.vhs_d.process(fx4_bus)
+        if self.vinyl_in_rack_d:
+            fx4_bus = self.vinyl_d.process(fx4_bus)
+        if self.hall_reverb_in_rack_d:
+            fx4_bus = self.hall_reverb_d.process(fx4_bus)
+        if self.plate_reverb_in_rack_d:
+            fx4_bus = self.plate_reverb_d.process(fx4_bus)
+        if self.compressor_in_rack_d:
+            sc_d = self._get_compressor_sidechain(self.compressor_d, fx4_bus, frames)
+            fx4_bus = self.compressor_d.process(fx4_bus, sc_d)
+        if self.glue_compressor_in_rack_d:
+            fx4_bus = self.glue_compressor_d.process(fx4_bus)
+        if self.bit_crusher_in_rack_d:
+            fx4_bus = self.bit_crusher_d.process(fx4_bus)
+        if self.tube_overdrive_in_rack_d:
+            fx4_bus = self.tube_overdrive_d.process(fx4_bus)
+        if self.exciter_in_rack_d:
+            fx4_bus = self.exciter_d.process(fx4_bus)
+        if self.transient_shaper_in_rack_d:
+            fx4_bus = self.transient_shaper_d.process(fx4_bus)
+        if self.ether_drift_in_rack_d:
+            fx4_bus = self.ether_drift_d.process(fx4_bus)
+        if self.harmonizer_in_rack_d:
+            fx4_bus = self.harmonizer_d.process(fx4_bus)
+        if self.rotary_in_rack_d:
+            fx4_bus = self.rotary_d.process(fx4_bus)
+        if self.stereo_widener_in_rack_d:
+            fx4_bus = self.stereo_widener_d.process(fx4_bus)
+        if self.freq_shifter_in_rack_d:
+            fx4_bus = self.freq_shifter_d.process(fx4_bus)
+        if self.ring_mod_in_rack_d:
+            fx4_bus = self.ring_mod_d.process(fx4_bus)
+        if self.simple_eq_in_rack_d:
+            fx4_bus = self.simple_eq_d.process(fx4_bus)
+        if self.ping_pong_delay_in_rack_d:
+            fx4_bus = self.ping_pong_delay_d.process(fx4_bus)
+        if self.shimmer_reverb_in_rack_d:
+            fx4_bus = self.shimmer_reverb_d.process(fx4_bus)
+        if self.lofi_radio_in_rack_d:
+            fx4_bus = self.lofi_radio_d.process(fx4_bus)
+        if self.auto_pan_in_rack_d:
+            fx4_bus = self.auto_pan_d.process(fx4_bus)
+        if self.fuzz_in_rack_d:
+            fx4_bus = self.fuzz_d.process(fx4_bus)
+        if self.granular_freeze_in_rack_d:
+            fx4_bus = self.granular_freeze_d.process(fx4_bus)
+        if self.gate_reverb_in_rack_d:
+            fx4_bus = self.gate_reverb_d.process(fx4_bus)
+        if self.stutter_in_rack_d:
+            fx4_bus = self.stutter_d.process(fx4_bus)
 
-            # Ping-Pong Delay
-            if self.ping_pong_delay_in_rack_a:
-                fx1_bus = self.ping_pong_delay.process(fx1_bus)
-            if self.ping_pong_delay_in_rack_b:
-                fx2_bus = self.ping_pong_delay_b.process(fx2_bus)
+        # Track FX bus peaks before summing (for per-rack metering)
+        tmp = self._peak_tmp[:frames]
+        np.abs(fx1_bus[:, 0], out=tmp)
+        _p = float(tmp.max())
+        self._fx1_peak[0] = max(self._fx1_peak[0] * 0.95, 0.0 if _p != _p else _p)
+        np.abs(fx1_bus[:, 1], out=tmp)
+        _p = float(tmp.max())
+        self._fx1_peak[1] = max(self._fx1_peak[1] * 0.95, 0.0 if _p != _p else _p)
+        np.abs(fx2_bus[:, 0], out=tmp)
+        _p = float(tmp.max())
+        self._fx2_peak[0] = max(self._fx2_peak[0] * 0.95, 0.0 if _p != _p else _p)
+        np.abs(fx2_bus[:, 1], out=tmp)
+        _p = float(tmp.max())
+        self._fx2_peak[1] = max(self._fx2_peak[1] * 0.95, 0.0 if _p != _p else _p)
+        np.abs(fx3_bus[:, 0], out=tmp)
+        _p = float(tmp.max())
+        self._fx3_peak[0] = max(self._fx3_peak[0] * 0.95, 0.0 if _p != _p else _p)
+        np.abs(fx3_bus[:, 1], out=tmp)
+        _p = float(tmp.max())
+        self._fx3_peak[1] = max(self._fx3_peak[1] * 0.95, 0.0 if _p != _p else _p)
+        np.abs(fx4_bus[:, 0], out=tmp)
+        _p = float(tmp.max())
+        self._fx4_peak[0] = max(self._fx4_peak[0] * 0.95, 0.0 if _p != _p else _p)
+        np.abs(fx4_bus[:, 1], out=tmp)
+        _p = float(tmp.max())
+        self._fx4_peak[1] = max(self._fx4_peak[1] * 0.95, 0.0 if _p != _p else _p)
 
-            # Shimmer Reverb
-            if self.shimmer_reverb_in_rack_a:
-                fx1_bus = self.shimmer_reverb.process(fx1_bus)
-            if self.shimmer_reverb_in_rack_b:
-                fx2_bus = self.shimmer_reverb_b.process(fx2_bus)
+        # Capture per-bus waveform for oscilloscopes (before summing)
+        # Only compute waveform data when we'll actually send it
+        _send_meters = False
+        if self._meter_callback is not None:
+            self._meter_counter += 1
+            if self._meter_counter >= self._meter_skip:
+                self._meter_counter = 0
+                _send_meters = True
+                _bus_step = max(1, frames // 64)
+                _wn = len(fx1_bus[::_bus_step, 0])
+                self._wf_fx1_l[:_wn] = fx1_bus[::_bus_step, 0]
+                self._wf_fx1_r[:_wn] = fx1_bus[::_bus_step, 1]
+                self._wf_fx2_l[:_wn] = fx2_bus[::_bus_step, 0]
+                self._wf_fx2_r[:_wn] = fx2_bus[::_bus_step, 1]
+                self._wf_fx3_l[:_wn] = fx3_bus[::_bus_step, 0]
+                self._wf_fx3_r[:_wn] = fx3_bus[::_bus_step, 1]
+                self._wf_fx4_l[:_wn] = fx4_bus[::_bus_step, 0]
+                self._wf_fx4_r[:_wn] = fx4_bus[::_bus_step, 1]
 
-            # Lo-Fi Radio
-            if self.lofi_radio_in_rack_a:
-                fx1_bus = self.lofi_radio.process(fx1_bus)
-            if self.lofi_radio_in_rack_b:
-                fx2_bus = self.lofi_radio_b.process(fx2_bus)
+        main_bus += fx1_bus
+        main_bus += fx2_bus
+        main_bus += fx3_bus
+        main_bus += fx4_bus
 
-            # Auto-Pan
-            if self.auto_pan_in_rack_a:
-                fx1_bus = self.auto_pan.process(fx1_bus)
-            if self.auto_pan_in_rack_b:
-                fx2_bus = self.auto_pan_b.process(fx2_bus)
+        if _prof:
+            _t3 = time.perf_counter()
 
-            # Fuzz
-            if self.fuzz_in_rack_a:
-                fx1_bus = self.fuzz.process(fx1_bus)
-            if self.fuzz_in_rack_b:
-                fx2_bus = self.fuzz_b.process(fx2_bus)
-            # Granular Freeze
-            if self.granular_freeze_in_rack_a:
-                fx1_bus = self.granular_freeze.process(fx1_bus)
-            if self.granular_freeze_in_rack_b:
-                fx2_bus = self.granular_freeze_b.process(fx2_bus)
-            # Gated Reverb
-            if self.gate_reverb_in_rack_a:
-                fx1_bus = self.gate_reverb.process(fx1_bus)
-            if self.gate_reverb_in_rack_b:
-                fx2_bus = self.gate_reverb_b.process(fx2_bus)
-            # Stutter
-            if self.stutter_in_rack_a:
-                fx1_bus = self.stutter.process(fx1_bus)
-            if self.stutter_in_rack_b:
-                fx2_bus = self.stutter_b.process(fx2_bus)
+        # Master output
+        dsp_output = self.mixer.apply_master(main_bus, aux_send)
 
-            # --- FX Processing Chain C (rack C → FX3) ---
-            if self.noise_gate_in_rack_c:
-                fx3_bus = self.noise_gate_c.process(fx3_bus)
-            if self.tremolo_in_rack_c:
-                fx3_bus = self.tremolo_c.process(fx3_bus)
-            if self.auto_wah_in_rack_c:
-                fx3_bus = self.auto_wah_c.process(fx3_bus)
-            if self.fet_limiter_in_rack_c:
-                fx3_bus = self.fet_limiter_c.process(fx3_bus)
-            if self.filter_a_in_rack_c and self.filter_a_c.state.enabled:
-                fx3_bus = self.filter_a_c.process(fx3_bus)
-            if self.filter_b_in_rack_c and self.filter_b_c.state.enabled:
-                fx3_bus = self.filter_b_c.process(fx3_bus)
-            if self.mod_in_rack_c:
-                fx3_bus = self.fx_bus_c.process_mod_only(fx3_bus)
-            if self.delay_in_rack_c and self.delay_c.state.enabled:
-                fx3_bus = self.delay_c.process(fx3_bus)
-            if self.tape_delay_in_rack_c and self.tape_delay_c.state.enabled:
-                fx3_bus = self.tape_delay_c.process(fx3_bus)
-            if self.reel_to_reel_in_rack_c:
-                fx3_bus = self.reel_to_reel_c.process(fx3_bus)
-            if self.cassette_tape_in_rack_c:
-                fx3_bus = self.cassette_tape_c.process(fx3_bus)
-            if self.vhs_in_rack_c:
-                fx3_bus = self.vhs_c.process(fx3_bus)
-            if self.vinyl_in_rack_c:
-                fx3_bus = self.vinyl_c.process(fx3_bus)
-            if self.hall_reverb_in_rack_c:
-                fx3_bus = self.hall_reverb_c.process(fx3_bus)
-            if self.plate_reverb_in_rack_c:
-                fx3_bus = self.plate_reverb_c.process(fx3_bus)
-            if self.compressor_in_rack_c:
-                sc_c = self._get_compressor_sidechain(self.compressor_c, fx3_bus, frames)
-                fx3_bus = self.compressor_c.process(fx3_bus, sc_c)
-            if self.glue_compressor_in_rack_c:
-                fx3_bus = self.glue_compressor_c.process(fx3_bus)
-            if self.bit_crusher_in_rack_c:
-                fx3_bus = self.bit_crusher_c.process(fx3_bus)
-            if self.tube_overdrive_in_rack_c:
-                fx3_bus = self.tube_overdrive_c.process(fx3_bus)
-            if self.exciter_in_rack_c:
-                fx3_bus = self.exciter_c.process(fx3_bus)
-            if self.transient_shaper_in_rack_c:
-                fx3_bus = self.transient_shaper_c.process(fx3_bus)
-            if self.ether_drift_in_rack_c:
-                fx3_bus = self.ether_drift_c.process(fx3_bus)
-            if self.harmonizer_in_rack_c:
-                fx3_bus = self.harmonizer_c.process(fx3_bus)
-            if self.rotary_in_rack_c:
-                fx3_bus = self.rotary_c.process(fx3_bus)
-            if self.stereo_widener_in_rack_c:
-                fx3_bus = self.stereo_widener_c.process(fx3_bus)
-            if self.freq_shifter_in_rack_c:
-                fx3_bus = self.freq_shifter_c.process(fx3_bus)
-            if self.ring_mod_in_rack_c:
-                fx3_bus = self.ring_mod_c.process(fx3_bus)
-            if self.simple_eq_in_rack_c:
-                fx3_bus = self.simple_eq_c.process(fx3_bus)
-            if self.ping_pong_delay_in_rack_c:
-                fx3_bus = self.ping_pong_delay_c.process(fx3_bus)
-            if self.shimmer_reverb_in_rack_c:
-                fx3_bus = self.shimmer_reverb_c.process(fx3_bus)
-            if self.lofi_radio_in_rack_c:
-                fx3_bus = self.lofi_radio_c.process(fx3_bus)
-            if self.auto_pan_in_rack_c:
-                fx3_bus = self.auto_pan_c.process(fx3_bus)
-            if self.fuzz_in_rack_c:
-                fx3_bus = self.fuzz_c.process(fx3_bus)
-            if self.granular_freeze_in_rack_c:
-                fx3_bus = self.granular_freeze_c.process(fx3_bus)
-            if self.gate_reverb_in_rack_c:
-                fx3_bus = self.gate_reverb_c.process(fx3_bus)
-            if self.stutter_in_rack_c:
-                fx3_bus = self.stutter_c.process(fx3_bus)
+        # Master filter trim (HP then LP)
+        # Apply any pending coefficient changes from the GUI thread
+        hp_pending = self._pending_master_hp
+        if hp_pending is not None:
+            self._pending_master_hp = None
+            self._master_hp.set_highpass(hp_pending, 0.707)
+            self._master_hp_freq = hp_pending
+        lp_pending = self._pending_master_lp
+        if lp_pending is not None:
+            self._pending_master_lp = None
+            self._master_lp.set_lowpass(lp_pending, 0.707)
+            self._master_lp_freq = lp_pending
+        if self._master_hp_freq > 21.0:
+            dsp_output = self._master_hp.process(dsp_output)
+        if self._master_lp_freq < 19900.0:
+            dsp_output = self._master_lp.process(dsp_output)
 
-            # --- FX Processing Chain D (rack D → FX4) ---
-            if self.noise_gate_in_rack_d:
-                fx4_bus = self.noise_gate_d.process(fx4_bus)
-            if self.tremolo_in_rack_d:
-                fx4_bus = self.tremolo_d.process(fx4_bus)
-            if self.auto_wah_in_rack_d:
-                fx4_bus = self.auto_wah_d.process(fx4_bus)
-            if self.fet_limiter_in_rack_d:
-                fx4_bus = self.fet_limiter_d.process(fx4_bus)
-            if self.filter_a_in_rack_d and self.filter_a_d.state.enabled:
-                fx4_bus = self.filter_a_d.process(fx4_bus)
-            if self.filter_b_in_rack_d and self.filter_b_d.state.enabled:
-                fx4_bus = self.filter_b_d.process(fx4_bus)
-            if self.mod_in_rack_d:
-                fx4_bus = self.fx_bus_d.process_mod_only(fx4_bus)
-            if self.delay_in_rack_d and self.delay_d.state.enabled:
-                fx4_bus = self.delay_d.process(fx4_bus)
-            if self.tape_delay_in_rack_d and self.tape_delay_d.state.enabled:
-                fx4_bus = self.tape_delay_d.process(fx4_bus)
-            if self.reel_to_reel_in_rack_d:
-                fx4_bus = self.reel_to_reel_d.process(fx4_bus)
-            if self.cassette_tape_in_rack_d:
-                fx4_bus = self.cassette_tape_d.process(fx4_bus)
-            if self.vhs_in_rack_d:
-                fx4_bus = self.vhs_d.process(fx4_bus)
-            if self.vinyl_in_rack_d:
-                fx4_bus = self.vinyl_d.process(fx4_bus)
-            if self.hall_reverb_in_rack_d:
-                fx4_bus = self.hall_reverb_d.process(fx4_bus)
-            if self.plate_reverb_in_rack_d:
-                fx4_bus = self.plate_reverb_d.process(fx4_bus)
-            if self.compressor_in_rack_d:
-                sc_d = self._get_compressor_sidechain(self.compressor_d, fx4_bus, frames)
-                fx4_bus = self.compressor_d.process(fx4_bus, sc_d)
-            if self.glue_compressor_in_rack_d:
-                fx4_bus = self.glue_compressor_d.process(fx4_bus)
-            if self.bit_crusher_in_rack_d:
-                fx4_bus = self.bit_crusher_d.process(fx4_bus)
-            if self.tube_overdrive_in_rack_d:
-                fx4_bus = self.tube_overdrive_d.process(fx4_bus)
-            if self.exciter_in_rack_d:
-                fx4_bus = self.exciter_d.process(fx4_bus)
-            if self.transient_shaper_in_rack_d:
-                fx4_bus = self.transient_shaper_d.process(fx4_bus)
-            if self.ether_drift_in_rack_d:
-                fx4_bus = self.ether_drift_d.process(fx4_bus)
-            if self.harmonizer_in_rack_d:
-                fx4_bus = self.harmonizer_d.process(fx4_bus)
-            if self.rotary_in_rack_d:
-                fx4_bus = self.rotary_d.process(fx4_bus)
-            if self.stereo_widener_in_rack_d:
-                fx4_bus = self.stereo_widener_d.process(fx4_bus)
-            if self.freq_shifter_in_rack_d:
-                fx4_bus = self.freq_shifter_d.process(fx4_bus)
-            if self.ring_mod_in_rack_d:
-                fx4_bus = self.ring_mod_d.process(fx4_bus)
-            if self.simple_eq_in_rack_d:
-                fx4_bus = self.simple_eq_d.process(fx4_bus)
-            if self.ping_pong_delay_in_rack_d:
-                fx4_bus = self.ping_pong_delay_d.process(fx4_bus)
-            if self.shimmer_reverb_in_rack_d:
-                fx4_bus = self.shimmer_reverb_d.process(fx4_bus)
-            if self.lofi_radio_in_rack_d:
-                fx4_bus = self.lofi_radio_d.process(fx4_bus)
-            if self.auto_pan_in_rack_d:
-                fx4_bus = self.auto_pan_d.process(fx4_bus)
-            if self.fuzz_in_rack_d:
-                fx4_bus = self.fuzz_d.process(fx4_bus)
-            if self.granular_freeze_in_rack_d:
-                fx4_bus = self.granular_freeze_d.process(fx4_bus)
-            if self.gate_reverb_in_rack_d:
-                fx4_bus = self.gate_reverb_d.process(fx4_bus)
-            if self.stutter_in_rack_d:
-                fx4_bus = self.stutter_d.process(fx4_bus)
+        # --- FX Group M (Master rack) — post-master-trim chain ---
+        if self.noise_gate_in_rack_m:
+            dsp_output = self.noise_gate_m.process(dsp_output)
+        if self.tremolo_in_rack_m:
+            dsp_output = self.tremolo_m.process(dsp_output)
+        if self.auto_wah_in_rack_m:
+            dsp_output = self.auto_wah_m.process(dsp_output)
+        if self.fet_limiter_in_rack_m:
+            dsp_output = self.fet_limiter_m.process(dsp_output)
+        if self.filter_a_in_rack_m and self.filter_a_m.state.enabled:
+            dsp_output = self.filter_a_m.process(dsp_output)
+        if self.filter_b_in_rack_m and self.filter_b_m.state.enabled:
+            dsp_output = self.filter_b_m.process(dsp_output)
+        if self.mod_in_rack_m:
+            dsp_output = self.fx_bus_m.process_mod_only(dsp_output)
+        if self.delay_in_rack_m and self.delay_m.state.enabled:
+            dsp_output = self.delay_m.process(dsp_output)
+        if self.tape_delay_in_rack_m and self.tape_delay_m.state.enabled:
+            dsp_output = self.tape_delay_m.process(dsp_output)
+        if self.reel_to_reel_in_rack_m:
+            dsp_output = self.reel_to_reel_m.process(dsp_output)
+        if self.cassette_tape_in_rack_m:
+            dsp_output = self.cassette_tape_m.process(dsp_output)
+        if self.vhs_in_rack_m:
+            dsp_output = self.vhs_m.process(dsp_output)
+        if self.vinyl_in_rack_m:
+            dsp_output = self.vinyl_m.process(dsp_output)
+        if self.hall_reverb_in_rack_m:
+            dsp_output = self.hall_reverb_m.process(dsp_output)
+        if self.plate_reverb_in_rack_m:
+            dsp_output = self.plate_reverb_m.process(dsp_output)
+        if self.compressor_in_rack_m:
+            dsp_output = self.compressor_m.process(dsp_output)
+        if self.glue_compressor_in_rack_m:
+            dsp_output = self.glue_compressor_m.process(dsp_output)
+        if self.bit_crusher_in_rack_m:
+            dsp_output = self.bit_crusher_m.process(dsp_output)
+        if self.tube_overdrive_in_rack_m:
+            dsp_output = self.tube_overdrive_m.process(dsp_output)
+        if self.exciter_in_rack_m:
+            dsp_output = self.exciter_m.process(dsp_output)
+        if self.transient_shaper_in_rack_m:
+            dsp_output = self.transient_shaper_m.process(dsp_output)
+        if self.ether_drift_in_rack_m:
+            dsp_output = self.ether_drift_m.process(dsp_output)
+        if self.harmonizer_in_rack_m:
+            dsp_output = self.harmonizer_m.process(dsp_output)
+        if self.rotary_in_rack_m:
+            dsp_output = self.rotary_m.process(dsp_output)
+        if self.stereo_widener_in_rack_m:
+            dsp_output = self.stereo_widener_m.process(dsp_output)
+        if self.freq_shifter_in_rack_m:
+            dsp_output = self.freq_shifter_m.process(dsp_output)
+        if self.ring_mod_in_rack_m:
+            dsp_output = self.ring_mod_m.process(dsp_output)
+        if self.simple_eq_in_rack_m:
+            dsp_output = self.simple_eq_m.process(dsp_output)
+        if self.ping_pong_delay_in_rack_m:
+            dsp_output = self.ping_pong_delay_m.process(dsp_output)
+        if self.shimmer_reverb_in_rack_m:
+            dsp_output = self.shimmer_reverb_m.process(dsp_output)
+        if self.lofi_radio_in_rack_m:
+            dsp_output = self.lofi_radio_m.process(dsp_output)
+        if self.auto_pan_in_rack_m:
+            dsp_output = self.auto_pan_m.process(dsp_output)
+        if self.fuzz_in_rack_m:
+            dsp_output = self.fuzz_m.process(dsp_output)
+        if self.granular_freeze_in_rack_m:
+            dsp_output = self.granular_freeze_m.process(dsp_output)
+        if self.gate_reverb_in_rack_m:
+            dsp_output = self.gate_reverb_m.process(dsp_output)
+        if self.stutter_in_rack_m:
+            dsp_output = self.stutter_m.process(dsp_output)
 
-            # Track FX bus peaks before summing (for per-rack metering)
-            tmp = self._peak_tmp[:frames]
-            np.abs(fx1_bus[:, 0], out=tmp)
-            self._fx1_peak[0] = max(self._fx1_peak[0] * 0.95, float(tmp.max()))
-            np.abs(fx1_bus[:, 1], out=tmp)
-            self._fx1_peak[1] = max(self._fx1_peak[1] * 0.95, float(tmp.max()))
-            np.abs(fx2_bus[:, 0], out=tmp)
-            self._fx2_peak[0] = max(self._fx2_peak[0] * 0.95, float(tmp.max()))
-            np.abs(fx2_bus[:, 1], out=tmp)
-            self._fx2_peak[1] = max(self._fx2_peak[1] * 0.95, float(tmp.max()))
-            np.abs(fx3_bus[:, 0], out=tmp)
-            self._fx3_peak[0] = max(self._fx3_peak[0] * 0.95, float(tmp.max()))
-            np.abs(fx3_bus[:, 1], out=tmp)
-            self._fx3_peak[1] = max(self._fx3_peak[1] * 0.95, float(tmp.max()))
-            np.abs(fx4_bus[:, 0], out=tmp)
-            self._fx4_peak[0] = max(self._fx4_peak[0] * 0.95, float(tmp.max()))
-            np.abs(fx4_bus[:, 1], out=tmp)
-            self._fx4_peak[1] = max(self._fx4_peak[1] * 0.95, float(tmp.max()))
+        if _prof:
+            _t4 = time.perf_counter()
 
-            # Capture per-bus waveform for oscilloscopes (before summing)
-            # Only compute waveform data when we'll actually send it
-            _send_meters = False
-            if self._meter_callback is not None:
-                self._meter_counter += 1
-                if self._meter_counter >= self._meter_skip:
-                    self._meter_counter = 0
-                    _send_meters = True
-                    _bus_step = max(1, frames // 64)
-                    _wn = len(fx1_bus[::_bus_step, 0])
-                    self._wf_fx1_l[:_wn] = fx1_bus[::_bus_step, 0]
-                    self._wf_fx1_r[:_wn] = fx1_bus[::_bus_step, 1]
-                    self._wf_fx2_l[:_wn] = fx2_bus[::_bus_step, 0]
-                    self._wf_fx2_r[:_wn] = fx2_bus[::_bus_step, 1]
-                    self._wf_fx3_l[:_wn] = fx3_bus[::_bus_step, 0]
-                    self._wf_fx3_r[:_wn] = fx3_bus[::_bus_step, 1]
-                    self._wf_fx4_l[:_wn] = fx4_bus[::_bus_step, 0]
-                    self._wf_fx4_r[:_wn] = fx4_bus[::_bus_step, 1]
+        # Peak metering
+        tmp = self._peak_tmp[:len(dsp_output)]
+        np.abs(dsp_output[:, 0], out=tmp)
+        self.output_peak[0] = max(self.output_peak[0] * 0.95, float(tmp.max()))
+        np.abs(dsp_output[:, 1], out=tmp)
+        self.output_peak[1] = max(self.output_peak[1] * 0.95, float(tmp.max()))
 
-            main_bus += fx1_bus
-            main_bus += fx2_bus
-            main_bus += fx3_bus
-            main_bus += fx4_bus
+        outbuf[:] = dsp_output
 
-            if _prof:
-                _t3 = time.perf_counter()
+        # Meter callback for UI — decimated to ~30 fps to reduce GC pressure
+        if _send_meters:
+            step = max(1, len(dsp_output) // 64)
+            _wn = len(dsp_output[::step, 0])
+            self._wf_master_l[:_wn] = dsp_output[::step, 0]
+            self._wf_master_r[:_wn] = dsp_output[::step, 1]
+            md = self._meter_dict
+            md["master"][0] = float(self.output_peak[0])
+            md["master"][1] = float(self.output_peak[1])
+            gp = self.mixer.group_peaks
+            md_groups = md["groups"]
+            for gi in range(NUM_GROUPS):
+                md_groups[gi] = gp[gi]
+            md["fx1"][0] = float(self._fx1_peak[0])
+            md["fx1"][1] = float(self._fx1_peak[1])
+            md["fx2"][0] = float(self._fx2_peak[0])
+            md["fx2"][1] = float(self._fx2_peak[1])
+            md["fx3"][0] = float(self._fx3_peak[0])
+            md["fx3"][1] = float(self._fx3_peak[1])
+            md["fx4"][0] = float(self._fx4_peak[0])
+            md["fx4"][1] = float(self._fx4_peak[1])
+            self._wf_snap_master_l[:_wn] = self._wf_master_l[:_wn]
+            self._wf_snap_master_r[:_wn] = self._wf_master_r[:_wn]
+            self._wf_snap_fx1_l[:_wn] = self._wf_fx1_l[:_wn]
+            self._wf_snap_fx1_r[:_wn] = self._wf_fx1_r[:_wn]
+            self._wf_snap_fx2_l[:_wn] = self._wf_fx2_l[:_wn]
+            self._wf_snap_fx2_r[:_wn] = self._wf_fx2_r[:_wn]
+            self._wf_snap_fx3_l[:_wn] = self._wf_fx3_l[:_wn]
+            self._wf_snap_fx3_r[:_wn] = self._wf_fx3_r[:_wn]
+            self._wf_snap_fx4_l[:_wn] = self._wf_fx4_l[:_wn]
+            self._wf_snap_fx4_r[:_wn] = self._wf_fx4_r[:_wn]
+            md["waveform_l"] = self._wf_snap_master_l[:_wn]
+            md["waveform_r"] = self._wf_snap_master_r[:_wn]
+            md["waveform_fx1_l"] = self._wf_snap_fx1_l[:_wn]
+            md["waveform_fx1_r"] = self._wf_snap_fx1_r[:_wn]
+            md["waveform_fx2_l"] = self._wf_snap_fx2_l[:_wn]
+            md["waveform_fx2_r"] = self._wf_snap_fx2_r[:_wn]
+            md["waveform_fx3_l"] = self._wf_snap_fx3_l[:_wn]
+            md["waveform_fx3_r"] = self._wf_snap_fx3_r[:_wn]
+            md["waveform_fx4_l"] = self._wf_snap_fx4_l[:_wn]
+            md["waveform_fx4_r"] = self._wf_snap_fx4_r[:_wn]
+            md["compressor_gr_a"] = self.compressor.gr_db
+            md["compressor_gr_b"] = self.compressor_b.gr_db
+            md["compressor_gr_c"] = self.compressor_c.gr_db
+            md["compressor_gr_d"] = self.compressor_d.gr_db
+            md["compressor_gr_m"] = self.compressor_m.gr_db
+            md["glue_compressor_gr_a"] = self.glue_compressor.gr_db
+            md["glue_compressor_gr_b"] = self.glue_compressor_b.gr_db
+            md["glue_compressor_gr_c"] = self.glue_compressor_c.gr_db
+            md["glue_compressor_gr_d"] = self.glue_compressor_d.gr_db
+            md["glue_compressor_gr_m"] = self.glue_compressor_m.gr_db
+            md["fet_limiter_gr_a"] = self.fet_limiter.gr_db
+            md["fet_limiter_gr_b"] = self.fet_limiter_b.gr_db
+            md["fet_limiter_gr_c"] = self.fet_limiter_c.gr_db
+            md["fet_limiter_gr_d"] = self.fet_limiter_d.gr_db
+            md["fet_limiter_gr_m"] = self.fet_limiter_m.gr_db
+            # Push meter snapshot to queue — GUI thread polls via
+            # poll_meters() instead of running Python on the DSP thread.
+            # Shallow copy so the GUI gets an independent snapshot; list
+            # values (master/groups/fx peaks) are copied to avoid aliasing.
+            snap = dict(md)
+            snap["master"] = list(md["master"])
+            snap["groups"] = list(md["groups"])
+            snap["fx1"] = list(md["fx1"])
+            snap["fx2"] = list(md["fx2"])
+            snap["fx3"] = list(md["fx3"])
+            snap["fx4"] = list(md["fx4"])
+            self._meter_queue.append(snap)
 
-            # Master output
-            aux_return = self._zero_buf[:frames]
-            dsp_output = self.mixer.apply_master(main_bus, aux_return)
-
-            # Master filter trim (HP then LP)
-            if self._master_hp_freq > 21.0:
-                dsp_output = self._master_hp.process(dsp_output)
-            if self._master_lp_freq < 19900.0:
-                dsp_output = self._master_lp.process(dsp_output)
-
-            # --- FX Group M (Master rack) — post-master-trim chain ---
-            if self.noise_gate_in_rack_m:
-                dsp_output = self.noise_gate_m.process(dsp_output)
-            if self.tremolo_in_rack_m:
-                dsp_output = self.tremolo_m.process(dsp_output)
-            if self.auto_wah_in_rack_m:
-                dsp_output = self.auto_wah_m.process(dsp_output)
-            if self.fet_limiter_in_rack_m:
-                dsp_output = self.fet_limiter_m.process(dsp_output)
-            if self.filter_a_in_rack_m and self.filter_a_m.state.enabled:
-                dsp_output = self.filter_a_m.process(dsp_output)
-            if self.filter_b_in_rack_m and self.filter_b_m.state.enabled:
-                dsp_output = self.filter_b_m.process(dsp_output)
-            if self.mod_in_rack_m:
-                dsp_output = self.fx_bus_m.process_mod_only(dsp_output)
-            if self.delay_in_rack_m and self.delay_m.state.enabled:
-                dsp_output = self.delay_m.process(dsp_output)
-            if self.tape_delay_in_rack_m and self.tape_delay_m.state.enabled:
-                dsp_output = self.tape_delay_m.process(dsp_output)
-            if self.reel_to_reel_in_rack_m:
-                dsp_output = self.reel_to_reel_m.process(dsp_output)
-            if self.cassette_tape_in_rack_m:
-                dsp_output = self.cassette_tape_m.process(dsp_output)
-            if self.vhs_in_rack_m:
-                dsp_output = self.vhs_m.process(dsp_output)
-            if self.vinyl_in_rack_m:
-                dsp_output = self.vinyl_m.process(dsp_output)
-            if self.hall_reverb_in_rack_m:
-                dsp_output = self.hall_reverb_m.process(dsp_output)
-            if self.plate_reverb_in_rack_m:
-                dsp_output = self.plate_reverb_m.process(dsp_output)
-            if self.compressor_in_rack_m:
-                dsp_output = self.compressor_m.process(dsp_output)
-            if self.glue_compressor_in_rack_m:
-                dsp_output = self.glue_compressor_m.process(dsp_output)
-            if self.bit_crusher_in_rack_m:
-                dsp_output = self.bit_crusher_m.process(dsp_output)
-            if self.tube_overdrive_in_rack_m:
-                dsp_output = self.tube_overdrive_m.process(dsp_output)
-            if self.exciter_in_rack_m:
-                dsp_output = self.exciter_m.process(dsp_output)
-            if self.transient_shaper_in_rack_m:
-                dsp_output = self.transient_shaper_m.process(dsp_output)
-            if self.ether_drift_in_rack_m:
-                dsp_output = self.ether_drift_m.process(dsp_output)
-            if self.harmonizer_in_rack_m:
-                dsp_output = self.harmonizer_m.process(dsp_output)
-            if self.rotary_in_rack_m:
-                dsp_output = self.rotary_m.process(dsp_output)
-            if self.stereo_widener_in_rack_m:
-                dsp_output = self.stereo_widener_m.process(dsp_output)
-            if self.freq_shifter_in_rack_m:
-                dsp_output = self.freq_shifter_m.process(dsp_output)
-            if self.ring_mod_in_rack_m:
-                dsp_output = self.ring_mod_m.process(dsp_output)
-            if self.simple_eq_in_rack_m:
-                dsp_output = self.simple_eq_m.process(dsp_output)
-            if self.ping_pong_delay_in_rack_m:
-                dsp_output = self.ping_pong_delay_m.process(dsp_output)
-            if self.shimmer_reverb_in_rack_m:
-                dsp_output = self.shimmer_reverb_m.process(dsp_output)
-            if self.lofi_radio_in_rack_m:
-                dsp_output = self.lofi_radio_m.process(dsp_output)
-            if self.auto_pan_in_rack_m:
-                dsp_output = self.auto_pan_m.process(dsp_output)
-            if self.fuzz_in_rack_m:
-                dsp_output = self.fuzz_m.process(dsp_output)
-            if self.granular_freeze_in_rack_m:
-                dsp_output = self.granular_freeze_m.process(dsp_output)
-            if self.gate_reverb_in_rack_m:
-                dsp_output = self.gate_reverb_m.process(dsp_output)
-            if self.stutter_in_rack_m:
-                dsp_output = self.stutter_m.process(dsp_output)
-
-            if _prof:
-                _t4 = time.perf_counter()
-
-            # Peak metering
-            tmp = self._peak_tmp[:len(dsp_output)]
-            np.abs(dsp_output[:, 0], out=tmp)
-            self.output_peak[0] = max(self.output_peak[0] * 0.95, float(tmp.max()))
-            np.abs(dsp_output[:, 1], out=tmp)
-            self.output_peak[1] = max(self.output_peak[1] * 0.95, float(tmp.max()))
-
-            outbuf[:] = dsp_output
-
-            # Meter callback for UI — decimated to ~30 fps to reduce GC pressure
-            if _send_meters:
-                step = max(1, len(dsp_output) // 64)
-                _wn = len(dsp_output[::step, 0])
-                self._wf_master_l[:_wn] = dsp_output[::step, 0]
-                self._wf_master_r[:_wn] = dsp_output[::step, 1]
-                md = self._meter_dict
-                md["master"][0] = float(self.output_peak[0])
-                md["master"][1] = float(self.output_peak[1])
-                gp = self.mixer.group_peaks
-                md_groups = md["groups"]
-                for gi in range(NUM_GROUPS):
-                    md_groups[gi] = gp[gi]
-                md["fx1"][0] = float(self._fx1_peak[0])
-                md["fx1"][1] = float(self._fx1_peak[1])
-                md["fx2"][0] = float(self._fx2_peak[0])
-                md["fx2"][1] = float(self._fx2_peak[1])
-                md["fx3"][0] = float(self._fx3_peak[0])
-                md["fx3"][1] = float(self._fx3_peak[1])
-                md["fx4"][0] = float(self._fx4_peak[0])
-                md["fx4"][1] = float(self._fx4_peak[1])
-                md["waveform_l"] = self._wf_master_l[:_wn]
-                md["waveform_r"] = self._wf_master_r[:_wn]
-                md["waveform_fx1_l"] = self._wf_fx1_l[:_wn]
-                md["waveform_fx1_r"] = self._wf_fx1_r[:_wn]
-                md["waveform_fx2_l"] = self._wf_fx2_l[:_wn]
-                md["waveform_fx2_r"] = self._wf_fx2_r[:_wn]
-                md["waveform_fx3_l"] = self._wf_fx3_l[:_wn]
-                md["waveform_fx3_r"] = self._wf_fx3_r[:_wn]
-                md["waveform_fx4_l"] = self._wf_fx4_l[:_wn]
-                md["waveform_fx4_r"] = self._wf_fx4_r[:_wn]
-                md["compressor_gr_a"] = self.compressor.gr_db
-                md["compressor_gr_b"] = self.compressor_b.gr_db
-                md["compressor_gr_c"] = self.compressor_c.gr_db
-                md["compressor_gr_d"] = self.compressor_d.gr_db
-                md["compressor_gr_m"] = self.compressor_m.gr_db
-                md["glue_compressor_gr_a"] = self.glue_compressor.gr_db
-                md["glue_compressor_gr_b"] = self.glue_compressor_b.gr_db
-                md["glue_compressor_gr_c"] = self.glue_compressor_c.gr_db
-                md["glue_compressor_gr_d"] = self.glue_compressor_d.gr_db
-                md["glue_compressor_gr_m"] = self.glue_compressor_m.gr_db
-                md["fet_limiter_gr_a"] = self.fet_limiter.gr_db
-                md["fet_limiter_gr_b"] = self.fet_limiter_b.gr_db
-                md["fet_limiter_gr_c"] = self.fet_limiter_c.gr_db
-                md["fet_limiter_gr_d"] = self.fet_limiter_d.gr_db
-                md["fet_limiter_gr_m"] = self.fet_limiter_m.gr_db
-                self._meter_callback(md)
-
-            # ── Profiling accumulation ──
-            if _prof:
-                _t5 = time.perf_counter()
-                total = _t5 - _t0
-                self._prof_total += total
-                self._prof_channels += (_t1 - _t0)
-                self._prof_mixer += (_t2 - _t1)
-                self._prof_fx += (_t3 - _t2)
-                self._prof_master += (_t4 - _t3)
-                self._prof_meter += (_t5 - _t4)
-                if total > self._prof_max:
-                    self._prof_max = total
-                if total > self._prof_budget:
-                    self._prof_overruns += 1
-                self._prof_count += 1
-                if self._prof_count >= self._prof_interval:
-                    n = self._prof_count
-                    budget_ms = self._prof_budget * 1000
-                    print(f"\n[DSP PROFILE] {n} blocks, budget={budget_ms:.2f}ms")
-                    print(f"  avg total:   {self._prof_total/n*1000:.2f}ms  "
-                          f"max: {self._prof_max*1000:.2f}ms  "
-                          f"overruns: {self._prof_overruns} ({self._prof_overruns/n*100:.1f}%)")
-                    print(f"  channels:    {self._prof_channels/n*1000:.2f}ms  "
-                          f"({self._prof_channels/self._prof_total*100:.0f}%)")
-                    print(f"  mixer:       {self._prof_mixer/n*1000:.2f}ms  "
-                          f"({self._prof_mixer/self._prof_total*100:.0f}%)")
-                    print(f"  fx_buses:    {self._prof_fx/n*1000:.2f}ms  "
-                          f"({self._prof_fx/self._prof_total*100:.0f}%)")
-                    print(f"  master:      {self._prof_master/n*1000:.2f}ms  "
-                          f"({self._prof_master/self._prof_total*100:.0f}%)")
-                    print(f"  metering:    {self._prof_meter/n*1000:.2f}ms  "
-                          f"({self._prof_meter/self._prof_total*100:.0f}%)")
-                    active = len(channel_outputs)
-                    ring_avg = self._prof_ring_sum / max(n, 1)
-                    print(f"  active_ch:   {active}  numba: {_HAS_NUMBA}  "
-                          f"ring: min={self._prof_ring_min} avg={ring_avg:.1f}")
-                    # Reset
-                    self._prof_count = 0
-                    self._prof_total = 0.0
-                    self._prof_channels = 0.0
-                    self._prof_mixer = 0.0
-                    self._prof_fx = 0.0
-                    self._prof_master = 0.0
-                    self._prof_meter = 0.0
-                    self._prof_max = 0.0
-                    self._prof_overruns = 0
-                    self._prof_ring_min = self._ring_blocks
-                    self._prof_ring_sum = 0
-
-        except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            outbuf[:] = 0
+        # ── Profiling accumulation ──
+        if _prof:
+            _t5 = time.perf_counter()
+            total = _t5 - _t0
+            self._prof_total += total
+            self._prof_channels += (_t1 - _t0)
+            self._prof_mixer += (_t2 - _t1)
+            self._prof_fx += (_t3 - _t2)
+            self._prof_master += (_t4 - _t3)
+            self._prof_meter += (_t5 - _t4)
+            if total > self._prof_max:
+                self._prof_max = total
+            if total > self._prof_budget:
+                self._prof_overruns += 1
+            self._prof_count += 1
+            if self._prof_count >= self._prof_interval:
+                n = self._prof_count
+                budget_ms = self._prof_budget * 1000
+                print(f"\n[DSP PROFILE] {n} blocks, budget={budget_ms:.2f}ms")
+                print(f"  avg total:   {self._prof_total/n*1000:.2f}ms  "
+                      f"max: {self._prof_max*1000:.2f}ms  "
+                      f"overruns: {self._prof_overruns} ({self._prof_overruns/n*100:.1f}%)")
+                print(f"  channels:    {self._prof_channels/n*1000:.2f}ms  "
+                      f"({self._prof_channels/self._prof_total*100:.0f}%)")
+                print(f"  mixer:       {self._prof_mixer/n*1000:.2f}ms  "
+                      f"({self._prof_mixer/self._prof_total*100:.0f}%)")
+                print(f"  fx_buses:    {self._prof_fx/n*1000:.2f}ms  "
+                      f"({self._prof_fx/self._prof_total*100:.0f}%)")
+                print(f"  master:      {self._prof_master/n*1000:.2f}ms  "
+                      f"({self._prof_master/self._prof_total*100:.0f}%)")
+                print(f"  metering:    {self._prof_meter/n*1000:.2f}ms  "
+                      f"({self._prof_meter/self._prof_total*100:.0f}%)")
+                active = len(channel_outputs)
+                ring_avg = self._prof_ring_sum / max(n, 1)
+                print(f"  active_ch:   {active}  numba: {_HAS_NUMBA}  "
+                      f"ring: min={self._prof_ring_min} avg={ring_avg:.1f}")
+                # Reset
+                self._prof_count = 0
+                self._prof_total = 0.0
+                self._prof_channels = 0.0
+                self._prof_mixer = 0.0
+                self._prof_fx = 0.0
+                self._prof_master = 0.0
+                self._prof_meter = 0.0
+                self._prof_max = 0.0
+                self._prof_overruns = 0
+                self._prof_ring_min = self._ring_blocks
+                self._prof_ring_sum = 0
 
     def _dsp_worker(self):
         """Background thread that fills the ring buffer with processed audio.
@@ -1576,10 +1678,13 @@ class AudioEngine:
             slot[:] = 0
             try:
                 self._process_block(frames, slot)
-            except Exception:
+                self._dsp_error_count = 0  # reset on success
+            except Exception as exc:
                 import traceback
                 traceback.print_exc()
                 slot[:] = 0
+                self._dsp_error_count += 1
+                self._dsp_last_error = str(exc)
 
             # Advance write pointer
             new_w = (w + 1) % n
@@ -1636,14 +1741,20 @@ class AudioEngine:
             setattr(self, flag_name, in_rack)
 
     def set_master_hp(self, freq: float):
-        """Set master highpass trim frequency (20-500 Hz)."""
-        self._master_hp_freq = freq
-        self._master_hp.set_highpass(freq, 0.707)
+        """Set master highpass trim frequency (20-500 Hz).
+
+        Stores the new frequency for the DSP thread to apply, avoiding
+        a torn coefficient update across threads.
+        """
+        self._pending_master_hp = freq
 
     def set_master_lp(self, freq: float):
-        """Set master lowpass trim frequency (5000-20000 Hz)."""
-        self._master_lp_freq = freq
-        self._master_lp.set_lowpass(freq, 0.707)
+        """Set master lowpass trim frequency (5000-20000 Hz).
+
+        Stores the new frequency for the DSP thread to apply, avoiding
+        a torn coefficient update across threads.
+        """
+        self._pending_master_lp = freq
 
     def trigger_channel(self, row: int, column: int, columns: int = 16):
         """Queue a channel trigger — processed on the audio thread."""
@@ -1678,14 +1789,14 @@ class AudioEngine:
 
     def set_channel_speed(self, row: int, tempo: float):
         """Set channel playback speed based on tempo and sample length."""
-        if 0 <= row < MAX_ROWS:
+        if 0 <= row < MAX_ROWS and tempo > 0:
             ch = self.channels[row]
             if ch.sample is not None and ch.sample.duration_sec > 0:
                 # Calculate speed to fit sample into the step grid
                 beats = ch.state.steps
                 bar_duration = beats * (60.0 / tempo)
                 sample_duration = ch.sample.duration_sec * (ch.state.sel_end - ch.state.sel_start)
-                if sample_duration > 0:
+                if sample_duration > 0 and bar_duration > 0:
                     ch.state.speed = sample_duration / bar_duration
 
     def set_tempo(self, tempo: float):
@@ -1694,9 +1805,13 @@ class AudioEngine:
         self.config.tempo = tempo
         self.delay.set_tempo(tempo)
         self.delay_b.set_tempo(tempo)
+        self.delay_c.set_tempo(tempo)
+        self.delay_d.set_tempo(tempo)
         self.delay_m.set_tempo(tempo)
         self.tape_delay.set_tempo(tempo)
         self.tape_delay_b.set_tempo(tempo)
+        self.tape_delay_c.set_tempo(tempo)
+        self.tape_delay_d.set_tempo(tempo)
         self.tape_delay_m.set_tempo(tempo)
         # Scale existing channel speeds proportionally instead of
         # recalculating from scratch, so manual speed overrides are preserved.

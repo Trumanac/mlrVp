@@ -66,6 +66,7 @@ class GridController:
         self._thread: Optional[threading.Thread] = None
         self._monome_row_offset = 0  # 1 when monome connected (top row = control)
         self._pending_monome_connect = False
+        self._state_lock = threading.Lock()  # guards _connected / _monome_row_offset
 
         # Thread-safe bridge for forwarding grid events to Qt main thread
         self._bridge = _GridSignalBridge()
@@ -81,12 +82,14 @@ class GridController:
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        with self._state_lock:
+            return self._connected
 
     @property
     def has_control_row(self) -> bool:
         """True if the grid uses a physical control row (monome top row)."""
-        return self._monome_row_offset > 0
+        with self._state_lock:
+            return self._monome_row_offset > 0
 
     @property
     def led_state(self) -> list[list[int]]:
@@ -196,11 +199,12 @@ class GridController:
                     self.controller = controller
 
                 def on_grid_ready(self):
-                    self.controller._connected = True
-                    self.controller.info.rows = self.grid.height
-                    self.controller.info.columns = self.grid.width
-                    self.controller._monome_row_offset = 1  # top row = controls
-                    self.controller._pending_monome_connect = True
+                    with self.controller._state_lock:
+                        self.controller._connected = True
+                        self.controller.info.rows = self.grid.height
+                        self.controller.info.columns = self.grid.width
+                        self.controller._monome_row_offset = 1  # top row = controls
+                        self.controller._pending_monome_connect = True
                     self.controller._refresh_leds()
                     # Enable tilt sensor if requested
                     if self.controller._tilt_enabled:
@@ -219,8 +223,9 @@ class GridController:
                         self.controller._bridge.button_event.emit(x, adj_y, s)
 
                 def on_grid_disconnect(self):
-                    self.controller._connected = False
-                    self.controller._monome_row_offset = 0
+                    with self.controller._state_lock:
+                        self.controller._connected = False
+                        self.controller._monome_row_offset = 0
 
                 def on_tilt(self, n, x, y, z):
                     """Accelerometer data from the monome."""
@@ -239,6 +244,8 @@ class GridController:
             self._loop.run_forever()
         except Exception as e:
             print(f"Serialosc error: {e}")
+        finally:
+            self._loop.close()
 
     def disconnect(self):
         """Disconnect from all grid hardware."""
@@ -248,14 +255,21 @@ class GridController:
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                log.warning("Grid asyncio thread did not exit within timeout")
+            self._thread = None
+        self._loop = None
 
     def set_led(self, x: int, y: int, brightness: int, color: int = 0):
         """Set a single LED (logical channel row coordinates)."""
         if 0 <= x < MAX_COLUMNS and 0 <= y < MAX_ROWS:
             self._led_state[y][x] = brightness
-            if self._connected and self._monome is not None:
+            with self._state_lock:
+                connected = self._connected
+                offset = self._monome_row_offset
+            if connected and self._monome is not None:
                 try:
-                    physical_y = y + self._monome_row_offset
+                    physical_y = y + offset
                     self._monome.grid.led_level_set(x, physical_y, brightness)
                 except Exception:
                     pass
@@ -266,11 +280,14 @@ class GridController:
         """Set an LED on the control row (monome top row / LP CC buttons)."""
         if 0 <= x < MAX_COLUMNS:
             key = (x, brightness, color)
-            if key == self._control_led_sent.get(x):
-                return  # unchanged — skip redundant MIDI send
-            self._control_led_sent[x] = key
-            self._control_led_state[x] = brightness
-            if self._connected and self._monome is not None and self._monome_row_offset > 0:
+            with self._state_lock:
+                if key == self._control_led_sent.get(x):
+                    return  # unchanged — skip redundant MIDI send
+                self._control_led_sent[x] = key
+                self._control_led_state[x] = brightness
+                connected = self._connected
+                offset = self._monome_row_offset
+            if connected and self._monome is not None and offset > 0:
                 try:
                     self._monome.grid.led_level_set(x, 0, brightness)
                 except Exception:
@@ -284,10 +301,14 @@ class GridController:
             for x, val in enumerate(values):
                 if x < MAX_COLUMNS:
                     self._led_state[y][x] = val
-            if self._connected and self._monome is not None:
+            with self._state_lock:
+                connected = self._connected
+                offset = self._monome_row_offset
+                cols = self.info.columns
+            if connected and self._monome is not None:
                 try:
-                    physical_y = y + self._monome_row_offset
-                    self._monome.grid.led_level_row(0, physical_y, values[:self.info.columns])
+                    physical_y = y + offset
+                    self._monome.grid.led_level_row(0, physical_y, values[:cols])
                 except Exception:
                     pass
             if self._midi_grid is not None and self._midi_grid.connected:
@@ -306,22 +327,27 @@ class GridController:
 
     def _refresh_leds(self):
         """Push all LED state to the hardware grid."""
-        if self._connected and self._monome is not None:
+        with self._state_lock:
+            connected = self._connected
+            offset = self._monome_row_offset
+            cols = self.info.columns
+            rows = self.info.rows
+        if connected and self._monome is not None:
             # Control row at physical y=0 for monome
-            if self._monome_row_offset > 0:
+            if offset > 0:
                 try:
                     self._monome.grid.led_level_row(
-                        0, 0, self._control_led_state[:self.info.columns]
+                        0, 0, self._control_led_state[:cols]
                     )
                 except Exception:
                     pass
             # Data rows offset by monome_row_offset
-            data_rows = self.info.rows - self._monome_row_offset
+            data_rows = rows - offset
             for y in range(min(data_rows, MAX_ROWS)):
                 try:
-                    physical_y = y + self._monome_row_offset
+                    physical_y = y + offset
                     self._monome.grid.led_level_row(
-                        0, physical_y, self._led_state[y][:self.info.columns]
+                        0, physical_y, self._led_state[y][:cols]
                     )
                 except Exception:
                     pass

@@ -74,6 +74,8 @@ class _APIVUMeter(QWidget):
 
     def __init__(self, label: str = "GR", is_gr: bool = True, parent=None):
         super().__init__(parent)
+        self._FONT_FOOTER = QFont("Arial", 5, QFont.Weight.Bold)
+        self._FONT_SCALE = QFont("Arial", 4)
         self.setFixedSize(64, 62)
         self._level = 0.0
         self._label = label
@@ -95,7 +97,7 @@ class _APIVUMeter(QWidget):
         # Footer label strip
         p.fillRect(0, bar_h, w, 9, QColor(_DARK_MTR))
         p.setPen(QColor(_WHITE))
-        p.setFont(QFont("Arial", 5, QFont.Weight.Bold))
+        p.setFont(self._FONT_FOOTER)
         p.drawText(0, bar_h, w, 9, Qt.AlignmentFlag.AlignCenter, self._label)
         # Arc geometry: pivot bottom-center
         cx, cy = w // 2, bar_h - 4
@@ -107,7 +109,7 @@ class _APIVUMeter(QWidget):
         else:
             marks = [("-20", 0.0), ("-10", 0.25), ("-6", 0.48), ("0", 0.78), ("+3", 0.9)]
         p.setPen(QPen(QColor("#8b6a22"), 0.8))
-        p.setFont(QFont("Arial", 4))
+        p.setFont(self._FONT_SCALE)
         for txt, frac in marks:
             angle = math.radians(arc_left - frac * arc_span)
             ox = cx + int(radius * math.cos(angle))
@@ -147,6 +149,7 @@ class _ThrustButton(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._FONT_LABEL = QFont("Arial", 7, QFont.Weight.Bold)
         self.setFixedSize(60, 28)
         self._active = True
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -174,7 +177,7 @@ class _ThrustButton(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.drawEllipse(5, h // 2 - 4, 8, 8)
         p.setPen(QColor(_BLU_BRT) if self._active else QColor(_BLU_DIM))
-        p.setFont(QFont("Arial", 7, QFont.Weight.Bold))
+        p.setFont(self._FONT_LABEL)
         p.drawText(16, 0, w - 17, h,
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    "THRUST")

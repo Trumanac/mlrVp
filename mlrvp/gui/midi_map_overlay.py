@@ -146,7 +146,11 @@ class MidiMapManager(QObject):
             if event.button() != _Qt.MouseButton.LeftButton:
                 return False  # pass right-clicks through to widget handlers
             for ctrl in self._controls:
-                if ctrl.widget is obj:
+                try:
+                    match = ctrl.widget is obj
+                except RuntimeError:
+                    continue
+                if match:
                     self._start_learn(ctrl)
                     return True  # consume the click
         return False

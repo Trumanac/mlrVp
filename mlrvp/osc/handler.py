@@ -24,6 +24,8 @@ class OscHandler:
 
     def start(self):
         """Start OSC server and client."""
+        if self._running:
+            return
         try:
             from pythonosc import osc_server, dispatcher, udp_client
 
@@ -64,6 +66,9 @@ class OscHandler:
         if self._server is not None:
             self._server.shutdown()
             self._server = None
+        if self._server_thread is not None:
+            self._server_thread.join(timeout=2.0)
+            self._server_thread = None
 
     def add_handler(self, address: str, handler: Callable):
         """Register an OSC address handler."""

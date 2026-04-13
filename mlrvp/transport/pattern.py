@@ -5,6 +5,7 @@ replicating the mlrV2 pattern recorder system.
 """
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Callable
@@ -31,6 +32,7 @@ class PatternRecorder:
         self.index = index
         self.length_beats = length_beats
         self.events: list[PatternEvent] = []
+        self._lock = threading.Lock()
         self._recording = False
         self._playing = False
         self._start_beat: float = 0.0
@@ -61,102 +63,128 @@ class PatternRecorder:
 
     def set_length(self, length_beats: int):
         """Update the pattern loop length in beats."""
-        self.length_beats = max(1, int(length_beats))
+        with self._lock:
+            self.length_beats = max(1, int(length_beats))
 
     def toggle_record(self, current_beat: float):
         """Toggle recording on/off."""
-        if self._recording:
-            self._recording = False
-            self._playing = True  # Auto-play after recording
-            self._start_beat = current_beat
-        else:
-            self.events.clear()
-            self._recording = True
-            self._playing = False
-            self._start_beat = current_beat
+        with self._lock:
+            if self._recording:
+                self._recording = False
+                self._playing = True  # Auto-play after recording
+                self._start_beat = current_beat
+            else:
+                self.events.clear()
+                self._recording = True
+                self._playing = False
+                self._start_beat = current_beat
 
     def toggle_play(self, current_beat: float):
         """Toggle playback on/off."""
-        if self._playing:
-            self._playing = False
-        else:
-            self._playing = True
-            self._start_beat = current_beat
+        with self._lock:
+            if self._playing:
+                self._playing = False
+            else:
+                self._playing = True
+                self._start_beat = current_beat
 
     def stop(self):
         """Stop recording and playback."""
-        self._recording = False
-        self._playing = False
+        with self._lock:
+            self._recording = False
+            self._playing = False
 
     def clear(self):
         """Clear all recorded events."""
-        self.events.clear()
-        self._recording = False
-        self._playing = False
+        with self._lock:
+            self.events.clear()
+            self._recording = False
+            self._playing = False
+            self._last_playback_pos = -1.0
 
     def record_event(self, current_beat: float, row: int, column: int,
                      event_type: str = 'trigger'):
         """Record a grid event during recording."""
-        if not self._recording:
-            return
+        with self._lock:
+            if not self._recording:
+                return
 
-        # Calculate position within the pattern
-        pos_in_pattern = (current_beat - self._start_beat) % self.length_beats
+            # Calculate position within the pattern
+            pos_in_pattern = (current_beat - self._start_beat) % self.length_beats
 
-        self.events.append(PatternEvent(
-            beat_position=pos_in_pattern,
-            event_type=event_type,
-            row=row,
-            column=column,
-        ))
+            self.events.append(PatternEvent(
+                beat_position=pos_in_pattern,
+                event_type=event_type,
+                row=row,
+                column=column,
+            ))
 
     def update(self, current_beat: float):
-        """Called every tick to check if any events should fire during playback."""
-        # Auto-stop recording when pattern duration reached
-        if self._recording:
-            elapsed = current_beat - self._start_beat
-            if elapsed >= self.length_beats:
-                self._recording = False
-                if self.events:
-                    self._playing = True
-                if self._state_change_callback:
-                    state = 'playing' if self._playing else 'idle'
-                    try:
-                        self._state_change_callback(self.index, state)
-                    except Exception as exc:
-                        log.warning("Pattern state callback error: %s", exc)
+        """Called every beat to check if any events should fire during playback."""
+        state_cb = None
+        state = None
+        events_snapshot = None
+        trigger_cb = None
 
-        if not self._playing or not self.events or self._trigger_callback is None:
+        with self._lock:
+            # Auto-stop recording when pattern duration reached
+            if self._recording:
+                elapsed = current_beat - self._start_beat
+                if elapsed >= self.length_beats:
+                    self._recording = False
+                    if self.events:
+                        self._playing = True
+                    state_cb = self._state_change_callback
+                    state = 'playing' if self._playing else 'idle'
+
+            if self._playing and self.events and self._trigger_callback is not None:
+                events_snapshot = list(self.events)
+                trigger_cb = self._trigger_callback
+                start_beat = self._start_beat
+                length_beats = self.length_beats
+                last_pos = self._last_playback_pos
+
+        # Fire state callback outside lock
+        if state_cb is not None:
+            try:
+                state_cb(self.index, state)
+            except Exception as exc:
+                log.warning("Pattern state callback error: %s", exc)
+
+        if events_snapshot is None:
             return
 
         # Current position in pattern
-        pos = (current_beat - self._start_beat) % self.length_beats
+        pos = (current_beat - start_beat) % length_beats
 
         # Check for events that fall between last_pos and current_pos
-        if self._last_playback_pos < 0:
-            self._last_playback_pos = pos
+        if last_pos < 0:
+            with self._lock:
+                self._last_playback_pos = pos
             return
 
-        for event in self.events:
+        for event in events_snapshot:
             # Check if event falls in the window
-            if self._last_playback_pos <= event.beat_position < pos:
+            if last_pos <= event.beat_position < pos:
                 try:
-                    self._trigger_callback(event.row, event.column, event.event_type)
+                    trigger_cb(event.row, event.column, event.event_type)
                 except Exception as exc:
                     log.warning("Pattern trigger callback error: %s", exc)
-            elif pos < self._last_playback_pos:
+            elif pos < last_pos:
                 # Wrapped around
-                if event.beat_position >= self._last_playback_pos or event.beat_position < pos:
+                if event.beat_position >= last_pos or event.beat_position < pos:
                     try:
-                        self._trigger_callback(event.row, event.column, event.event_type)
+                        trigger_cb(event.row, event.column, event.event_type)
                     except Exception as exc:
                         log.warning("Pattern trigger callback error: %s", exc)
 
-        self._last_playback_pos = pos
+        with self._lock:
+            self._last_playback_pos = pos
 
     @property
     def progress(self) -> float:
         """Current playback position as fraction 0-1 within pattern length."""
-        if not self._playing:
-            return 0.0
-        return self._last_playback_pos / self.length_beats if self.length_beats > 0 else 0.0
+        with self._lock:
+            if not self._playing:
+                return 0.0
+            return self._last_playback_pos / self.length_beats if self.length_beats > 0 else 0.0

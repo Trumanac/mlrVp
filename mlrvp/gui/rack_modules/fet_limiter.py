@@ -56,6 +56,8 @@ class _VUNeedleMeter(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._FONT_SCALE = QFont("Arial", 5)
+        self._FONT_GR = QFont("Arial", 6, QFont.Weight.Bold)
         self.setFixedSize(130, 80)
         self._gr_db = 0.0  # 0 = no reduction
 
@@ -142,7 +144,7 @@ class _VUNeedleMeter(QWidget):
             )
 
         # ── Tick marks + numbers — evenly spaced ──
-        scale_font = QFont("Arial", 5)
+        scale_font = self._FONT_SCALE
         p.setFont(scale_font)
         fm = p.fontMetrics()
 
@@ -169,7 +171,7 @@ class _VUNeedleMeter(QWidget):
                 p.drawText(int(lx), int(ly), lbl)
 
         # ── "GR  dB" label below cream window, in dark bezel ──
-        gr_font = QFont("Arial", 6, QFont.Weight.Bold)
+        gr_font = self._FONT_GR
         p.setFont(gr_font)
         gr_text = "GR  dB"
         gtw = p.fontMetrics().horizontalAdvance(gr_text)
@@ -201,6 +203,7 @@ class _VUNeedleMeter(QWidget):
 
 class _RatioButtons(QWidget):
     """Custom-painted vertical ratio selector — no QPushButton clipping issues."""
+    _FONT_CELL = QFont("Arial", 6, QFont.Weight.Bold)
 
     _LABELS = ("20", "12", "8", "4", "ALL")
     _IDX_MAP = (3, 2, 1, 0, 4)  # display position → ratio_idx
@@ -241,7 +244,7 @@ class _RatioButtons(QWidget):
         if not p.isActive():
             return
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        fnt = QFont("Arial", 6, QFont.Weight.Bold)
+        fnt = self._FONT_CELL
         p.setFont(fnt)
         fm = p.fontMetrics()
         for i, label in enumerate(self._LABELS):

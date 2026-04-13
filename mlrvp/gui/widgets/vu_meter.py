@@ -7,6 +7,7 @@ levels for different intensity zones.
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPainter, QColor, QLinearGradient
+import weakref
 
 from mlrvp.gui.styles import BG_BLACK, BG_PANEL, VU_COLOR
 
@@ -17,15 +18,21 @@ _shared_timer: QTimer | None = None
 
 
 def _tick_all_meters():
-    for m in _all_meters:
-        m._decay()
+    # Iterate a snapshot in case _unregister_meter modifies the list
+    for m in list(_all_meters):
+        try:
+            m._decay()
+        except RuntimeError:
+            # C++ object already deleted
+            _unregister_meter(m)
 
 
 def _register_meter(meter):
     global _shared_timer
     _all_meters.append(meter)
     if _shared_timer is None:
-        _shared_timer = QTimer()
+        from PySide6.QtWidgets import QApplication
+        _shared_timer = QTimer(QApplication.instance())
         _shared_timer.timeout.connect(_tick_all_meters)
         _shared_timer.start(30)
 
@@ -63,10 +70,8 @@ class VUMeter(QWidget):
         self._cached_gradient_size = (0, 0)
 
         _register_meter(self)
-
-    def closeEvent(self, event):
-        _unregister_meter(self)
-        super().closeEvent(event)
+        _weak = weakref.ref(self)
+        self.destroyed.connect(lambda: _unregister_meter(_weak()) if _weak() is not None else None)
 
     def set_level(self, level: float):
         self._level = max(0.0, min(1.0, level))

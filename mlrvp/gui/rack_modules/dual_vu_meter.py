@@ -46,6 +46,8 @@ class _AnalogMeter(QWidget):
 
     def __init__(self, label: str = "L", parent=None):
         super().__init__(parent)
+        self._FONT_SCALE = QFont("Arial", 5)
+        self._FONT_LABEL = QFont("Arial", 7, QFont.Weight.Bold)
         self.setFixedSize(110, 52)
         self._level = 0.0    # 0..1
         self._peak = 0.0
@@ -84,7 +86,7 @@ class _AnalogMeter(QWidget):
 
         # Scale tick marks — fractions derived from dBFS: frac = (db + 40) / 46
         p.setPen(QPen(QColor("#333322"), 0.7))
-        p.setFont(QFont("Arial", 5))
+        p.setFont(self._FONT_SCALE)
         db_marks = [("-40", 0.0), ("-20", 0.435), ("-10", 0.652),
                     ("0", 0.870), ("+6", 1.0)]
         for txt, frac in db_marks:
@@ -129,7 +131,7 @@ class _AnalogMeter(QWidget):
 
         # Channel label
         p.setPen(QColor("#666655"))
-        p.setFont(QFont("Arial", 7, QFont.Weight.Bold))
+        p.setFont(self._FONT_LABEL)
         p.drawText(4, h - 3, self._label)
         p.end()
 

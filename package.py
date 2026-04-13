@@ -18,7 +18,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-VERSION = "0.6.9"
+VERSION = "0.6.9.13"
 RELEASE_DIR = ROOT / "release"
 
 # Files/dirs to include in the source package

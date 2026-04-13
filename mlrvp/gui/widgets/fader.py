@@ -32,8 +32,10 @@ class _ValueDisplayMixin:
       1. Adding _ValueDisplayMixin first in the base-class list.
       2. Calling self._init_value_display() at the END of __init__.
     """
+    _FONT_OVERLAY = None
 
     def _init_value_display(self):
+        self._FONT_OVERLAY = QFont("Segoe UI", 7, QFont.Weight.Bold)
         self._latched: bool = False
         self._popup_visible: bool = False
         self._formatter = lambda v: f"{int(round(v * 100))}%"
@@ -82,8 +84,7 @@ class _ValueDisplayMixin:
 
     def _draw_value_overlay(self, painter: QPainter, w: int, h: int):
         text = self._formatter(self._value)
-        font = QFont("Segoe UI", 7, QFont.Weight.Bold)
-        painter.setFont(font)
+        painter.setFont(self._FONT_OVERLAY)
         fm = painter.fontMetrics()
         tw = min(fm.horizontalAdvance(text) + 8, w - 2)
         th = fm.height() + 3

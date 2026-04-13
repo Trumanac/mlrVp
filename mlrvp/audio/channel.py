@@ -83,27 +83,28 @@ class Channel:
         self._pending_sample_path: Optional[str] = None
 
         # Pre-allocated output buffer to avoid per-callback allocation
-        self._output_buf = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
-        self._buf_size = BUFFER_SIZE
+        _MAX_BUF = max(BUFFER_SIZE, 4096)
+        self._output_buf = np.zeros((_MAX_BUF, 2), dtype=np.float32)
+        self._buf_size = _MAX_BUF
 
         # Pre-allocated arange buffer for position computation
-        self._arange_f64 = np.arange(BUFFER_SIZE, dtype=np.float64)
-        self._arange_f32 = np.arange(BUFFER_SIZE, dtype=np.float32)
+        self._arange_f64 = np.arange(_MAX_BUF, dtype=np.float64)
+        self._arange_f32 = np.arange(_MAX_BUF, dtype=np.float32)
 
         # Pre-allocated intermediate buffers — eliminates per-callback
         # temporary array allocations that cause malloc/free churn and
         # reduce headroom for GIL contention with the GUI thread.
-        self._pos_buf = np.zeros(BUFFER_SIZE, dtype=np.float64)
-        self._pos_int_buf = np.zeros(BUFFER_SIZE, dtype=np.intp)
-        self._pos_frac_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
-        self._frac_f64_buf = np.zeros(BUFFER_SIZE, dtype=np.float64)
-        self._next_pos_buf = np.zeros(BUFFER_SIZE, dtype=np.intp)
-        self._inv_frac_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
-        self._samp_a_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
-        self._samp_b_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
-        self._env_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
-        self._env_gain_buf = np.zeros(BUFFER_SIZE, dtype=np.float32)
-        self._bool_buf = np.zeros(BUFFER_SIZE, dtype=bool)
+        self._pos_buf = np.zeros(_MAX_BUF, dtype=np.float64)
+        self._pos_int_buf = np.zeros(_MAX_BUF, dtype=np.intp)
+        self._pos_frac_buf = np.zeros(_MAX_BUF, dtype=np.float32)
+        self._frac_f64_buf = np.zeros(_MAX_BUF, dtype=np.float64)
+        self._next_pos_buf = np.zeros(_MAX_BUF, dtype=np.intp)
+        self._inv_frac_buf = np.zeros(_MAX_BUF, dtype=np.float32)
+        self._samp_a_buf = np.zeros(_MAX_BUF, dtype=np.float32)
+        self._samp_b_buf = np.zeros(_MAX_BUF, dtype=np.float32)
+        self._env_buf = np.zeros(_MAX_BUF, dtype=np.float32)
+        self._env_gain_buf = np.zeros(_MAX_BUF, dtype=np.float32)
+        self._bool_buf = np.zeros(_MAX_BUF, dtype=bool)
 
         # Pitch-shift cache (populated by app.py via librosa in a background thread)
         self._pitch_cache: Optional[np.ndarray] = None
@@ -118,7 +119,9 @@ class Channel:
         # Each entry is a full-sample librosa.effects.pitch_shift result.
         # Entries accumulate across pitch_root / pitch_scale changes and are
         # only cleared when the source audio changes (sample load or transpose).
+        # Capped at _PSC_MAX_ENTRIES to prevent unbounded memory growth.
         self._pitch_scale_cache: dict[int, np.ndarray] = {}
+        self._PSC_MAX_ENTRIES = 24  # 2 full octaves — covers any scale
         _PSC_CLEAR = object()  # sentinel for clearing the scale cache
         self._PSC_CLEAR = _PSC_CLEAR
         # Deque of (semitone, ndarray) pairs or _PSC_CLEAR sentinel.
@@ -218,7 +221,7 @@ class Channel:
         Maps the column to a position within the sample's selected region.
         Uses crossfade when retriggering during playback to avoid clicks.
         """
-        if self.sample is None:
+        if self.sample is None or total_columns <= 0 or column < 0 or column >= total_columns:
             return
 
         # Calculate position within sample
@@ -239,6 +242,12 @@ class Channel:
             # volume fight between attack ramp and crossfade.
         else:
             self._envelope = 0.0  # first trigger: normal attack from zero
+
+        # Non-PITCH modes: clear any stale pitch-mode audio selection
+        # so _get_audio_data() returns the correct source.
+        if self.state.mode != PlaybackMode.PITCH:
+            self._active_pitch_data = None
+            self._active_pitch_semitone = None
 
         # PITCH mode: each column = different pitch, always play from start
         if self.state.mode == PlaybackMode.PITCH:
@@ -293,12 +302,11 @@ class Channel:
         """
         xlen = self.XFADE_LEN
         buf = self._xfade_buf
-        num_sample_frames = self.sample.num_frames
+        audio_data = self._get_audio_data()
+        num_sample_frames = audio_data.shape[0]
         if num_sample_frames < 2:
             buf[:] = 0
             return
-
-        audio_data = self._get_audio_data()
         speed = self._effective_speed()
         if self.state.reverse or self.state.mode == PlaybackMode.REVERSE:
             speed = -speed
@@ -429,8 +437,13 @@ class Channel:
             if entry is self._PSC_CLEAR:
                 self._pitch_scale_cache = {}
                 self._active_pitch_data = None
+                self._active_pitch_semitone = None
             else:
                 st, data = entry
+                # Evict oldest entry if cache is full
+                if st not in self._pitch_scale_cache and len(self._pitch_scale_cache) >= self._PSC_MAX_ENTRIES:
+                    oldest = next(iter(self._pitch_scale_cache))
+                    del self._pitch_scale_cache[oldest]
                 self._pitch_scale_cache[st] = data
                 # Auto-update: if this semitone matches the currently-playing
                 # button, apply it immediately (mid-playback pickup).
@@ -450,7 +463,7 @@ class Channel:
             return output
 
         sample_data = self._get_audio_data()
-        num_sample_frames = self.sample.num_frames
+        num_sample_frames = sample_data.shape[0]
         num_channels = self.sample.num_channels
 
         sel_start = max(0.0, min(1.0, self.state.sel_start)) * num_sample_frames

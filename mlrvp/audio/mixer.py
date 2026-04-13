@@ -24,18 +24,21 @@ class Mixer:
         # Peak levels per group (updated each process call)
         self.group_peaks = [0.0] * NUM_GROUPS
 
-        # Pre-allocated buffers to avoid per-callback allocation
-        self._buf_size = BUFFER_SIZE
-        self._group_buses = [np.zeros((BUFFER_SIZE, 2), dtype=np.float32) for _ in range(NUM_GROUPS)]
-        self._group_audio = [np.zeros((BUFFER_SIZE, 2), dtype=np.float32) for _ in range(NUM_GROUPS)]
-        self._main_bus = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
-        self._aux_send = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
-        self._fx1_bus = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
-        self._fx2_bus = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
-        self._fx3_bus = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
-        self._fx4_bus = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
+        # Pre-allocated buffers to avoid per-callback allocation.
+        # Allocate at a generous max size so dynamic buffer size changes
+        # never trigger reallocation on the audio thread.
+        _MAX_BUF = max(BUFFER_SIZE, 4096)
+        self._buf_size = _MAX_BUF
+        self._group_buses = [np.zeros((_MAX_BUF, 2), dtype=np.float32) for _ in range(NUM_GROUPS)]
+        self._group_audio = [np.zeros((_MAX_BUF, 2), dtype=np.float32) for _ in range(NUM_GROUPS)]
+        self._main_bus = np.zeros((_MAX_BUF, 2), dtype=np.float32)
+        self._aux_send = np.zeros((_MAX_BUF, 2), dtype=np.float32)
+        self._fx1_bus = np.zeros((_MAX_BUF, 2), dtype=np.float32)
+        self._fx2_bus = np.zeros((_MAX_BUF, 2), dtype=np.float32)
+        self._fx3_bus = np.zeros((_MAX_BUF, 2), dtype=np.float32)
+        self._fx4_bus = np.zeros((_MAX_BUF, 2), dtype=np.float32)
         # Temp buffer for wet/dry routing (avoids per-group temporaries)
-        self._route_tmp = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
+        self._route_tmp = np.zeros((_MAX_BUF, 2), dtype=np.float32)
 
     def process_groups(self, channel_outputs: list[tuple[int, np.ndarray]],
                        num_frames: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -48,8 +51,11 @@ class Mixer:
         Returns:
             (main_bus, aux_send_bus, fx1_bus, fx2_bus, fx3_bus, fx4_bus) - all stereo arrays
         """
-        # Re-allocate if buffer size changed
-        if num_frames != self._buf_size:
+        # Re-allocate only if buffer size exceeds pre-allocated max
+        if num_frames <= 0:
+            return (self._main_bus[:0], self._aux_send[:0], self._fx1_bus[:0],
+                    self._fx2_bus[:0], self._fx3_bus[:0], self._fx4_bus[:0])
+        if num_frames > self._buf_size:
             self._buf_size = num_frames
             self._group_buses = [np.zeros((num_frames, 2), dtype=np.float32) for _ in range(NUM_GROUPS)]
             self._group_audio = [np.zeros((num_frames, 2), dtype=np.float32) for _ in range(NUM_GROUPS)]
@@ -61,23 +67,23 @@ class Mixer:
             self._fx4_bus = np.zeros((num_frames, 2), dtype=np.float32)
             self._route_tmp = np.zeros((num_frames, 2), dtype=np.float32)
 
-        # Zero pre-allocated buffers
-        for gb in self._group_buses:
-            gb[:] = 0
-        self._main_bus[:] = 0
-        self._aux_send[:] = 0
-        self._fx1_bus[:] = 0
-        self._fx2_bus[:] = 0
-        self._fx3_bus[:] = 0
-        self._fx4_bus[:] = 0
+        # Slice to actual frame count then zero
+        group_buses = [gb[:num_frames] for gb in self._group_buses]
+        main_bus = self._main_bus[:num_frames]
+        aux_send = self._aux_send[:num_frames]
+        fx1_bus = self._fx1_bus[:num_frames]
+        fx2_bus = self._fx2_bus[:num_frames]
+        fx3_bus = self._fx3_bus[:num_frames]
+        fx4_bus = self._fx4_bus[:num_frames]
 
-        group_buses = self._group_buses
-        main_bus = self._main_bus
-        aux_send = self._aux_send
-        fx1_bus = self._fx1_bus
-        fx2_bus = self._fx2_bus
-        fx3_bus = self._fx3_bus
-        fx4_bus = self._fx4_bus
+        for gb in group_buses:
+            gb[:] = 0
+        main_bus[:] = 0
+        aux_send[:] = 0
+        fx1_bus[:] = 0
+        fx2_bus[:] = 0
+        fx3_bus[:] = 0
+        fx4_bus[:] = 0
 
         # Sum channels into their assigned groups
         for group_idx, audio in channel_outputs:
@@ -90,11 +96,13 @@ class Mixer:
                 continue
 
             # Apply group volume in-place into pre-allocated buffer
-            scaled = self._group_audio[i]
+            scaled = self._group_audio[i][:num_frames]
             np.multiply(bus, group.volume, out=scaled)
 
             # Track peak level (with decay) — use pre-allocated tmp for max
             peak = float(np.abs(scaled).max())
+            if np.isnan(peak):
+                peak = 0.0
             self.group_peaks[i] = max(self.group_peaks[i] * 0.95, peak)
 
             # Route to FX bus or main using send fader as wet/dry mix

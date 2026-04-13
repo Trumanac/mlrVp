@@ -78,6 +78,8 @@ def phaser_kernel(
             c = 0.95
         mc = -c
         phase += rps
+        if phase >= 1.0:
+            phase -= 1.0
 
         # Left channel
         x0 = float(data[i, 0]) + fb0 * feedback
@@ -103,9 +105,6 @@ def phaser_kernel(
 
         out[i, 0] = float(data[i, 0]) * 0.5 + x0 * 0.5
         out[i, 1] = float(data[i, 1]) * 0.5 + x1 * 0.5
-
-    if phase >= 1.0:
-        phase -= int(phase)
 
     return phase, fb0, fb1
 

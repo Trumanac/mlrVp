@@ -56,6 +56,8 @@ class _SSLVUMeter(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._FONT_FOOTER = QFont("Arial", 5, QFont.Weight.Bold)
+        self._FONT_SCALE = QFont("Arial", 4)
         self.setFixedSize(80, 62)
         self._gr_db = 0.0
 
@@ -75,7 +77,7 @@ class _SSLVUMeter(QWidget):
         # Footer strip
         p.fillRect(0, bar_h, w, 9, QColor("#8090a0"))
         p.setPen(QColor("#ffffff"))
-        p.setFont(QFont("Arial", 5, QFont.Weight.Bold))
+        p.setFont(self._FONT_FOOTER)
         p.drawText(0, bar_h, w, 9, Qt.AlignmentFlag.AlignCenter, "COMP GR")
         # Arc geometry
         cx, cy = w // 2, bar_h - 4
@@ -87,7 +89,7 @@ class _SSLVUMeter(QWidget):
         # Scale marks
         marks = [("-20", 0.0), ("-10", 0.25), ("-6", 0.48), ("-3", 0.68), ("0", 1.0)]
         p.setPen(QPen(QColor("#333333"), 0.8))
-        p.setFont(QFont("Arial", 4))
+        p.setFont(self._FONT_SCALE)
         for txt, mfrac in marks:
             angle = math.radians(arc_left - mfrac * arc_span)
             ox = cx + int(radius * math.cos(angle))
@@ -120,6 +122,8 @@ class _StepLabel(QWidget):
 
     def __init__(self, options: list, label: str = "", parent=None):
         super().__init__(parent)
+        self._FONT_VALUE = QFont("Arial", 9, QFont.Weight.Bold)
+        self._FONT_SUB = QFont("Arial", 5)
         self._options = list(options)
         self._idx = 0
         self._label = label
@@ -145,13 +149,13 @@ class _StepLabel(QWidget):
         p.drawRoundedRect(0, 0, w - 1, h - 1, 3, 3)
         # Value in dark SSL-navy
         p.setPen(QColor(_DARK))
-        p.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        p.setFont(self._FONT_VALUE)
         p.drawText(0, 0, w, h - 8, Qt.AlignmentFlag.AlignCenter,
                    self._options[self._idx])
         # Sub-label in gray
         if self._label:
             p.setPen(QColor(_MGRAY))
-            p.setFont(QFont("Arial", 5))
+            p.setFont(self._FONT_SUB)
             p.drawText(0, h - 10, w, 10, Qt.AlignmentFlag.AlignCenter,
                        self._label)
         p.end()

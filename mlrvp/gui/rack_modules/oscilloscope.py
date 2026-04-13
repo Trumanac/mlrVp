@@ -2,11 +2,12 @@
 
 import collections
 import math
+import threading
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QWidget
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QFont, QLinearGradient, QRadialGradient,
-    QPainterPath,
+    QPainterPath, QPixmap,
 )
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
@@ -55,13 +56,18 @@ class _CRTDisplay(QWidget):
         self.setMinimumSize(160, 80)
         self._buffer_l = collections.deque([0.0] * _BUFFER_LEN, maxlen=_BUFFER_LEN)
         self._buffer_r = collections.deque([0.0] * _BUFFER_LEN, maxlen=_BUFFER_LEN)
+        self._buf_lock = threading.Lock()
         self._mode = 0       # 0=waveform, 1=lissajous
         self._zoom = 0.5     # vertical scale
+        # Cached static background (bezel, vignette, grid, scanlines)
+        self._bg_cache: QPixmap | None = None
+        self._bg_size = (0, 0)
 
     def push_samples(self, left_chunk: list[float], right_chunk: list[float]):
         """Push a chunk of audio samples (normalized -1..1)."""
-        self._buffer_l.extend(left_chunk)
-        self._buffer_r.extend(right_chunk)
+        with self._buf_lock:
+            self._buffer_l.extend(left_chunk)
+            self._buffer_r.extend(right_chunk)
         self.update()
 
     def set_mode(self, m: int):
@@ -71,12 +77,15 @@ class _CRTDisplay(QWidget):
     def set_zoom(self, v: float):
         self._zoom = max(0.1, min(2.0, v))
 
-    def paintEvent(self, event):
-        p = QPainter(self)
-        if not p.isActive():
+    def _rebuild_bg_cache(self, w: int, h: int):
+        """Pre-render static CRT elements into a QPixmap."""
+        if w <= 0 or h <= 0:
+            self._bg_cache = None
             return
+        pm = QPixmap(w, h)
+        pm.fill(QColor(0, 0, 0, 0))
+        p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
 
         # CRT bezel
         p.setPen(QPen(QColor(_BEZEL), 2))
@@ -103,11 +112,32 @@ class _CRTDisplay(QWidget):
         p.drawLine(4, h // 2, w - 4, h // 2)
         p.drawLine(w // 2, 4, w // 2, h - 4)
 
+        # Scanline overlay effect
+        p.setPen(QPen(QColor(0, 0, 0, 25), 0.5))
+        for sl in range(4, h - 4, 2):
+            p.drawLine(4, sl, w - 4, sl)
+
+        p.end()
+        self._bg_cache = pm
+        self._bg_size = (w, h)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        if not p.isActive():
+            return
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        # Draw cached static background (rebuilt on resize)
+        if self._bg_cache is None or self._bg_size != (w, h):
+            self._rebuild_bg_cache(w, h)
+        p.drawPixmap(0, 0, self._bg_cache)
+
         inner_w = w - 8
         inner_h = h - 8
-        buf_l = list(self._buffer_l)
-        buf_r = list(self._buffer_r)
-        n = len(buf_l)
+        with self._buf_lock:
+            buf_l = list(self._buffer_l)
+            buf_r = list(self._buffer_r)
 
         if self._mode == 0:
             # Waveform mode — draw L (bright) and R (dim)
@@ -120,11 +150,6 @@ class _CRTDisplay(QWidget):
         else:
             # Lissajous mode — L vs R
             self._draw_lissajous(p, buf_l, buf_r, inner_w, inner_h, 4, 4)
-
-        # Scanline overlay effect
-        p.setPen(QPen(QColor(0, 0, 0, 25), 0.5))
-        for sl in range(4, h - 4, 2):
-            p.drawLine(4, sl, w - 4, sl)
 
         p.end()
 

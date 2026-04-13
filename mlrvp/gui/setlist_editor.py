@@ -311,10 +311,11 @@ class SetlistEditorDialog(QDialog):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._pm.delete_preset(name)
-            # Remove from current setlist too
-            self._pm.setlist_presets = [
-                p for p in self._pm.setlist_presets if p != name
-            ]
+            # Remove from current setlist too (under lock for thread safety)
+            with self._pm._io_lock:
+                self._pm.setlist_presets = [
+                    p for p in self._pm.setlist_presets if p != name
+                ]
             self._pm.save_setlist()
             self._refresh()
             self.setlist_changed.emit()

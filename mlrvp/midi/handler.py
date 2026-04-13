@@ -132,6 +132,7 @@ class MidiHandler(QObject):
                 if key in self._cc_to_param:
                     del self._cc_to_param[key]
                 del self._mappings[param_path]
+                self._toggle_state.pop(param_path, None)
 
     def set_param_callback(self, param_path: str, callback: Callable):
         """Set callback for when a mapped parameter changes via MIDI."""
@@ -215,35 +216,41 @@ class MidiHandler(QObject):
             mapping = self._mappings.get(param_path)
             if mapping is None:
                 return
+            # Snapshot mapping values under lock to avoid races
+            m_toggle = mapping.toggle
+            m_min = mapping.min_val
+            m_max = mapping.max_val
 
         scaled = None
         if msg_type == 0xB0:
             value = data2
-            if mapping.toggle:
+            if m_toggle:
                 if value > 0:
-                    cur = self._toggle_state.get(param_path, False)
-                    nxt = not cur
-                    self._toggle_state[param_path] = nxt
-                    scaled = mapping.max_val if nxt else mapping.min_val
+                    with self._lock:
+                        cur = self._toggle_state.get(param_path, False)
+                        nxt = not cur
+                        self._toggle_state[param_path] = nxt
+                    scaled = m_max if nxt else m_min
             else:
                 normalized = value / 127.0
-                scaled = mapping.min_val + normalized * (mapping.max_val - mapping.min_val)
+                scaled = m_min + normalized * (m_max - m_min)
 
         elif msg_type == 0x90:
             velocity = data2
-            if mapping.toggle:
+            if m_toggle:
                 if velocity > 0:
-                    cur = self._toggle_state.get(param_path, False)
-                    nxt = not cur
-                    self._toggle_state[param_path] = nxt
-                    scaled = mapping.max_val if nxt else mapping.min_val
+                    with self._lock:
+                        cur = self._toggle_state.get(param_path, False)
+                        nxt = not cur
+                        self._toggle_state[param_path] = nxt
+                    scaled = m_max if nxt else m_min
             else:
                 normalized = velocity / 127.0
-                scaled = mapping.min_val + normalized * (mapping.max_val - mapping.min_val)
+                scaled = m_min + normalized * (m_max - m_min)
 
         elif msg_type == 0x80:
-            if not mapping.toggle:
-                scaled = mapping.min_val
+            if not m_toggle:
+                scaled = m_min
 
         # Dispatch callback on Qt main thread (never from rtmidi thread)
         if scaled is not None:
@@ -294,12 +301,16 @@ class MidiHandler(QObject):
 
     def load_mappings(self, mappings_data: list[dict]):
         """Load mappings from serialized data."""
-        with self._lock:
-            self._mappings.clear()
-            self._cc_to_param.clear()
+        new_mappings = {}
+        new_cc_to_param = {}
         for m_data in mappings_data:
             mapping = MidiMapping(**m_data)
-            self.add_mapping(mapping.param_path, mapping)
+            mapping.param_path = m_data.get('param_path', mapping.param_path)
+            new_mappings[mapping.param_path] = mapping
+            new_cc_to_param[(mapping.channel, mapping.cc)] = mapping.param_path
+        with self._lock:
+            self._mappings = new_mappings
+            self._cc_to_param = new_cc_to_param
 
     def update_mapping_range(self, param_path: str, min_val: float, max_val: float):
         """Update the min/max range for an existing mapping."""

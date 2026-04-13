@@ -7,6 +7,7 @@ mixer state, effect parameters, MIDI mappings, and setlist.
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -47,6 +48,13 @@ class PresetManager:
         self.setlist_presets: list[str] = []   # ordered preset names in current setlist
         self.active_index: int = -1            # selected preset in setlist (-1 = none)
 
+        # Cached list of setlist names — avoids re-scanning disk on every
+        # UI refresh, which can stall the main thread on slow storage (HDD).
+        self._setlist_names_cache: Optional[list[str]] = None
+
+        # Serialize file writes so background saves don't race.
+        self._io_lock = threading.Lock()
+
         self._ensure_dirs()
         self.load_setlist("Default")
 
@@ -77,7 +85,11 @@ class PresetManager:
 
     def save_preset(self, name: str, config: AppConfig,
                     midi_mappings: Optional[list] = None) -> bool:
-        """Save current state to the preset library under the given name."""
+        """Save current state to the preset library under the given name.
+
+        The actual file write happens on a background thread so slow
+        storage doesn't block the main thread during playback.
+        """
         fp = get_presets_dir() / f"{_sanitize_name(name)}.json"
         data = {
             "version": "4.0.0",
@@ -85,13 +97,17 @@ class PresetManager:
             "config": self._serialize_config(config),
             "midi_mappings": midi_mappings or [],
         }
-        try:
-            with open(fp, 'w') as f:
-                json.dump(data, f, indent=2)
-            return True
-        except Exception as e:
-            log.error("Preset save error: %s", e)
-            return False
+
+        def _write():
+            try:
+                with self._io_lock:
+                    with open(fp, 'w') as f:
+                        json.dump(data, f, indent=2)
+            except Exception as e:
+                log.error("Preset save error: %s", e)
+
+        threading.Thread(target=_write, daemon=True).start()
+        return True
 
     def load_preset(self, name: str) -> Optional[dict]:
         """Load a preset from the library by name."""
@@ -99,8 +115,9 @@ class PresetManager:
         if not fp.exists():
             return None
         try:
-            with open(fp) as f:
-                return json.load(f)
+            with self._io_lock:
+                with open(fp) as f:
+                    return json.load(f)
         except Exception as e:
             log.error("Preset load error: %s", e)
             return None
@@ -108,8 +125,9 @@ class PresetManager:
     def delete_preset(self, name: str):
         """Remove a preset from the library."""
         fp = get_presets_dir() / f"{_sanitize_name(name)}.json"
-        if fp.exists():
-            fp.unlink()
+        with self._io_lock:
+            if fp.exists():
+                fp.unlink()
 
     def rename_preset(self, old_name: str, new_name: str) -> bool:
         """Rename a preset in the library. Updates internal name field."""
@@ -118,16 +136,17 @@ class PresetManager:
         if not old_fp.exists() or new_fp.exists():
             return False
         try:
-            with open(old_fp) as f:
-                data = json.load(f)
-            data["name"] = new_name
-            with open(new_fp, 'w') as f:
-                json.dump(data, f, indent=2)
-            old_fp.unlink()
-            # Update references in current setlist
-            for i, p in enumerate(self.setlist_presets):
-                if p == old_name:
-                    self.setlist_presets[i] = new_name
+            with self._io_lock:
+                with open(old_fp) as f:
+                    data = json.load(f)
+                data["name"] = new_name
+                with open(new_fp, 'w') as f:
+                    json.dump(data, f, indent=2)
+                old_fp.unlink()
+                # Update references in current setlist
+                for i, p in enumerate(self.setlist_presets):
+                    if p == old_name:
+                        self.setlist_presets[i] = new_name
             self.save_setlist()
             return True
         except Exception:
@@ -142,7 +161,9 @@ class PresetManager:
     # ------------------------------------------------------------------ #
 
     def list_setlists(self) -> list[str]:
-        """Return names of all setlists on disk."""
+        """Return names of all setlists on disk (cached)."""
+        if self._setlist_names_cache is not None:
+            return list(self._setlist_names_cache)
         result = []
         for fp in sorted(get_setlists_dir().glob("*.json")):
             try:
@@ -151,7 +172,13 @@ class PresetManager:
                 result.append(data.get("name", fp.stem))
             except Exception:
                 result.append(fp.stem)
-        return result or ["Default"]
+        result = result or ["Default"]
+        self._setlist_names_cache = result
+        return list(result)
+
+    def _invalidate_setlist_cache(self):
+        """Clear the cached setlist names so the next list_setlists() re-reads."""
+        self._setlist_names_cache = None
 
     def load_setlist(self, name: str) -> bool:
         """Load a setlist by name."""
@@ -159,55 +186,80 @@ class PresetManager:
         if not fp.exists():
             return False
         try:
-            with open(fp) as f:
-                data = json.load(f)
-            self.setlist_name = data.get("name", name)
-            self.setlist_presets = data.get("presets", [])
-            self.active_index = -1
+            with self._io_lock:
+                with open(fp) as f:
+                    data = json.load(f)
+                self.setlist_name = data.get("name", name)
+                self.setlist_presets = data.get("presets", [])
+                self.active_index = -1
             return True
         except Exception as e:
             print(f"Setlist load error: {e}")
             return False
 
     def save_setlist(self):
-        """Persist the current setlist."""
-        fp = get_setlists_dir() / f"{_sanitize_name(self.setlist_name)}.json"
-        data = {"name": self.setlist_name, "presets": self.setlist_presets}
-        try:
-            with open(fp, 'w') as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            print(f"Setlist save error: {e}")
+        """Persist the current setlist on a background thread."""
+        self._invalidate_setlist_cache()
+
+        def _write():
+            try:
+                with self._io_lock:
+                    fp = get_setlists_dir() / f"{_sanitize_name(self.setlist_name)}.json"
+                    data = {"name": self.setlist_name, "presets": list(self.setlist_presets)}
+                    with open(fp, 'w') as f:
+                        json.dump(data, f, indent=2)
+            except Exception as e:
+                log.error("Setlist save error: %s", e)
+
+        threading.Thread(target=_write, daemon=True).start()
 
     def create_setlist(self, name: str):
-        """Create a new empty setlist."""
+        """Create a new empty setlist (background write)."""
         fp = get_setlists_dir() / f"{_sanitize_name(name)}.json"
         data = {"name": name, "presets": []}
-        with open(fp, 'w') as f:
-            json.dump(data, f, indent=2)
+        self._invalidate_setlist_cache()
+
+        def _write():
+            try:
+                with self._io_lock:
+                    with open(fp, 'w') as f:
+                        json.dump(data, f, indent=2)
+            except Exception as e:
+                log.error("Create setlist error: %s", e)
+
+        threading.Thread(target=_write, daemon=True).start()
 
     def rename_setlist(self, old_name: str, new_name: str):
-        """Rename a setlist."""
+        """Rename a setlist (background I/O)."""
         old_fp = get_setlists_dir() / f"{_sanitize_name(old_name)}.json"
         new_fp = get_setlists_dir() / f"{_sanitize_name(new_name)}.json"
         if old_fp.exists() and not new_fp.exists():
-            try:
-                with open(old_fp) as f:
-                    data = json.load(f)
-                data["name"] = new_name
-                with open(new_fp, 'w') as f:
-                    json.dump(data, f, indent=2)
-                old_fp.unlink()
-                if self.setlist_name == old_name:
-                    self.setlist_name = new_name
-            except Exception:
-                pass
+            self._invalidate_setlist_cache()
+            current_name = self.setlist_name
+
+            def _io():
+                try:
+                    with self._io_lock:
+                        with open(old_fp) as f:
+                            data = json.load(f)
+                        data["name"] = new_name
+                        with open(new_fp, 'w') as f:
+                            json.dump(data, f, indent=2)
+                        old_fp.unlink()
+                        if current_name == old_name:
+                            self.setlist_name = new_name
+                except Exception:
+                    pass
+
+            threading.Thread(target=_io, daemon=True).start()
 
     def delete_setlist(self, name: str):
         """Delete a setlist (does not delete the presets it references)."""
         fp = get_setlists_dir() / f"{_sanitize_name(name)}.json"
-        if fp.exists():
-            fp.unlink()
+        self._invalidate_setlist_cache()
+        with self._io_lock:
+            if fp.exists():
+                fp.unlink()
         if self.setlist_name == name:
             self._ensure_dirs()
             self.load_setlist("Default")
@@ -239,13 +291,14 @@ class PresetManager:
 
     def reorder_setlist(self, new_order: list[int]):
         """Reorder setlist by a list of old indices."""
-        old = list(self.setlist_presets)
-        self.setlist_presets = [old[i] for i in new_order if 0 <= i < len(old)]
-        if 0 <= self.active_index < len(new_order):
-            try:
-                self.active_index = new_order.index(self.active_index)
-            except ValueError:
-                self.active_index = -1
+        with self._io_lock:
+            old = list(self.setlist_presets)
+            self.setlist_presets = [old[i] for i in new_order if 0 <= i < len(old)]
+            if 0 <= self.active_index < len(new_order):
+                try:
+                    self.active_index = new_order.index(self.active_index)
+                except ValueError:
+                    self.active_index = -1
         self.save_setlist()
 
     def load_setlist_preset(self, index: int) -> Optional[dict]:
@@ -467,7 +520,7 @@ class PresetManager:
             for suffix in ("", "_b", "_m", "_c", "_d"):
                 cfg_key = f"{fx_name}{suffix}" if suffix else fx_name
                 fx_data = cfg_data.get(cfg_key, {})
-                if fx_data:
+                if fx_data and hasattr(config, cfg_key):
                     state = getattr(config, cfg_key)
                     for key in fx_keys:
                         if key in fx_data:
@@ -495,7 +548,7 @@ class PresetManager:
             for suffix in ("_b", "_m", "_c", "_d"):
                 cfg_name = f"{base_name}{suffix}"
                 entry = cfg_data.get(cfg_name, {})
-                if entry:
+                if entry and hasattr(config, cfg_name):
                     st = getattr(config, cfg_name)
                     for key in base_keys:
                         if key in entry:
@@ -1391,6 +1444,8 @@ class PresetManager:
                         "lofi_radio", "auto_pan", "fuzz"):
             for sfx in ("", "_b", "_m"):
                 key = f"{fx_name}{sfx}" if sfx else fx_name
+                if not hasattr(config, key):
+                    continue
                 state = getattr(config, key)
                 cfg_data[key] = {
                     k: v for k, v in vars(state).items() if not k.startswith("_")
@@ -1418,6 +1473,8 @@ class PresetManager:
         for suffix in ("_c", "_d"):
             for fx_base in _ALL_FX:
                 cfg_key = f"{fx_base}{suffix}"
+                if not hasattr(config, cfg_key):
+                    continue
                 state = getattr(config, cfg_key)
                 result[cfg_key] = {
                     k: v for k, v in vars(state).items()
