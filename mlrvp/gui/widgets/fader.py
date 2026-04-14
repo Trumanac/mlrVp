@@ -103,15 +103,22 @@ class VerticalFader(_ValueDisplayMixin, QWidget):
 
     value_changed = Signal(float)  # 0.0 - 1.0
 
-    def __init__(self, color: str = FADER_SLIDER, parent=None):
+    def __init__(self, color: str = FADER_SLIDER, default_value: float = 0.75, parent=None):
         super().__init__(parent)
-        self._value: float = 0.75
+        self._value: float = default_value
+        self._default_value: float = default_value
         self._dragging: bool = False
         self._color = QColor(color)
         self._midi_highlight: int = 0  # 0=off, 1=highlight, 2=learning
+        self._ref_mark: float | None = None  # optional reference line (0-1 position)
         self.setMinimumSize(20, 80)
         self.setMaximumWidth(36)
         self._init_value_display()
+
+    def set_reference_mark(self, pos: float | None):
+        """Set a visual reference tick at *pos* (0-1 fader position), or None to clear."""
+        self._ref_mark = pos
+        self.update()
 
     @property
     def value(self) -> float:
@@ -166,6 +173,12 @@ class VerticalFader(_ValueDisplayMixin, QWidget):
         painter.setPen(QPen(QColor(0, 0, 0, 80), 1))
         painter.drawLine(4, handle_y, w - 4, handle_y)
 
+        # Reference mark (e.g. 0 dB unity line)
+        if self._ref_mark is not None:
+            ref_y = track_bot - int(self._ref_mark * track_h)
+            painter.setPen(QPen(QColor(255, 255, 255, 140), 1))
+            painter.drawLine(1, ref_y, w - 1, ref_y)
+
         # MIDI highlight border
         if self._midi_highlight:
             hc = _MIDI_LEARNING_COLOR if self._midi_highlight == 2 else _MIDI_HIGHLIGHT_COLOR
@@ -194,8 +207,9 @@ class VerticalFader(_ValueDisplayMixin, QWidget):
             self._dragging = False
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
-        self._value = 0.75
+        self._value = self._default_value
         self.value_changed.emit(self._value)
+        self.show_value_popup()
         self.update()
 
     def _update_value(self, y: float):

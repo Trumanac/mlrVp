@@ -51,8 +51,12 @@ class WaveformWidget(QWidget):
         self.update()
 
     def set_selection(self, start: float, end: float):
-        self._sel_start = max(0.0, min(1.0, start))
-        self._sel_end = max(0.0, min(1.0, end))
+        start = max(0.0, min(1.0, start))
+        end = max(0.0, min(1.0, end))
+        if start > end:
+            start, end = end, start
+        self._sel_start = start
+        self._sel_end = end
         self.update()
 
     def set_group_color(self, idx: int):
@@ -108,6 +112,7 @@ class WaveformWidget(QWidget):
             num_points = len(self._waveform_data)
 
             if w < 1:
+                painter.end()
                 return
 
             # Vectorized: compute all bar heights at once

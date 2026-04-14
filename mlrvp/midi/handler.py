@@ -7,7 +7,7 @@ Uses Qt signals for thread-safe communication from the MIDI callback thread.
 import logging
 import threading
 from typing import Optional, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from PySide6.QtCore import QObject, Signal, QTimer
 
@@ -310,8 +310,10 @@ class MidiHandler(QObject):
         """Load mappings from serialized data."""
         new_mappings = {}
         new_cc_to_param = {}
+        _fields = {f.name for f in fields(MidiMapping)}
         for m_data in mappings_data:
-            mapping = MidiMapping(**m_data)
+            filtered = {k: v for k, v in m_data.items() if k in _fields}
+            mapping = MidiMapping(**filtered)
             mapping.param_path = m_data.get('param_path', mapping.param_path)
             new_mappings[mapping.param_path] = mapping
             new_cc_to_param[(mapping.channel, mapping.cc)] = mapping.param_path

@@ -313,9 +313,13 @@ class SetlistEditorDialog(QDialog):
             self._pm.delete_preset(name)
             # Remove from current setlist too (under lock for thread safety)
             with self._pm._io_lock:
+                old_list = self._pm.setlist_presets
                 self._pm.setlist_presets = [
-                    p for p in self._pm.setlist_presets if p != name
+                    p for p in old_list if p != name
                 ]
+                # Adjust active_index if it now points past the end
+                if self._pm.active_index >= len(self._pm.setlist_presets):
+                    self._pm.active_index = max(-1, len(self._pm.setlist_presets) - 1)
             self._pm.save_setlist()
             self._refresh()
             self.setlist_changed.emit()

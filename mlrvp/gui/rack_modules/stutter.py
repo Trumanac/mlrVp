@@ -15,6 +15,13 @@ _GROOVE  = "#666666"   # groove ring colour
 _DIM     = "#555555"   # dim text
 _CREAM   = "#ccccbb"   # knob labels
 
+# ── Sync division names (index-aligned with SYNC_DIVISIONS in DSP) ───────────
+SYNC_NAMES = [
+    "1/32", "1/16t", "1/16", "1/8t", "1/8",
+    "1/4t", "3/16", "1/4", "1/3", "3/8",
+    "1/2", "3/4", "1 bar",
+]
+
 
 def _knob_col(label: str, knob: RotaryKnob, color: str = _CREAM) -> QVBoxLayout:
     col = QVBoxLayout()
@@ -117,16 +124,13 @@ class StutterModule(RackModuleBase):
         )
         row.addLayout(_knob_col("SIZE", self._size, _RED))
 
-        # RATE knob
+        # RATE knob — tempo-synced beat divisions
         self._rate = RotaryKnob(color=_CREAM)
-        self._rate.set_value(0.5)
-        self._rate.value_changed.connect(
-            lambda v: self.param_changed.emit("rate", round(v, 3))
-        )
-        self._rate.setToolTip("Retrigger rate — 10 ms to 2 seconds (logarithmic)")
+        self._rate.set_value(7 / 12)  # default = 1/4 note (index 7)
+        self._rate.value_changed.connect(self._on_rate_changed)
+        self._rate.setToolTip("Retrigger rate — tempo-synced beat division")
         self._rate.set_formatter(
-            lambda v: f"{10 * (200 ** v):.0f} ms" if 10 * (200 ** v) < 1000
-            else f"{10 * (200 ** v) / 1000:.2f} s"
+            lambda v: SYNC_NAMES[max(0, min(round(v * 12), 12))]
         )
         row.addLayout(_knob_col("RATE", self._rate))
 
@@ -182,6 +186,11 @@ class StutterModule(RackModuleBase):
 
         self._faceplate_layout.addLayout(row)
 
+    def _on_rate_changed(self, value: float):
+        """Map 0-1 knob to sync division index 0-12 and emit."""
+        idx = max(0, min(round(value * (len(SYNC_NAMES) - 1)), len(SYNC_NAMES) - 1))
+        self.param_changed.emit("rate", int(idx))
+
     def _on_trigger(self):
         active = self._trigger.isChecked()
         self.param_changed.emit("trigger", active)
@@ -207,7 +216,9 @@ class StutterModule(RackModuleBase):
     def set_state(self, state):
         self.set_power(state.enabled, emit=False)
         self._size.set_value(state.size)
-        self._rate.set_value(state.rate)
+        # rate is an integer index 0-12; convert to 0-1 knob position
+        idx = max(0, min(int(state.rate), len(SYNC_NAMES) - 1))
+        self._rate.set_value(idx / max(1, len(SYNC_NAMES) - 1))
         self._chaos.set_value(state.chaos)
         self._smear.set_value(state.smear)
         self._trigger.setChecked(state.trigger)

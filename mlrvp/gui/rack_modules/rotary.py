@@ -226,6 +226,7 @@ class RotaryModule(RackModuleBase):
     # ── state restore ──
 
     def set_state(self, state: RotaryState):
+        self.set_power(state.enabled, emit=False)
         self._speed_sel.set_index(state.speed)
         _speeds = [0.0, 0.7, 6.7]
         if 0 <= state.speed < len(_speeds):

@@ -162,6 +162,7 @@ class TransientShaperModule(RackModuleBase):
     # ── state restore ──
 
     def set_state(self, state: TransientShaperState):
+        self.set_power(state.enabled, emit=False)
         # Attack: -1..+1 → 0..1 knob
         self._attack_knob.blockSignals(True)
         self._attack_knob.set_value((state.attack_shape + 1.0) / 2.0)

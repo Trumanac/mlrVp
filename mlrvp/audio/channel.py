@@ -285,7 +285,9 @@ class Channel:
             return
 
         # Reverse mode: invert mapping so column 0 starts from end
-        if self.state.mode == PlaybackMode.REVERSE:
+        if self.state.mode == PlaybackMode.REVERSE or (
+            self.state.mode == PlaybackMode.ONESHOT and self.state.reverse
+        ):
             self._position = sel_end_samp - col_frac * sel_length
         else:
             self._position = sel_start_samp + col_frac * sel_length
@@ -560,7 +562,7 @@ class Channel:
             np.subtract(self._envelope, env, out=env)
             np.maximum(env, 0.0, out=env)
             self._envelope = float(env[-1]) if active_frames > 0 else 0.0
-            if self._envelope <= 0:
+            if self._envelope < 1e-6:
                 self._envelope = 0.0
                 self._playing = False
                 self.state.playing = False

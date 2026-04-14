@@ -149,6 +149,7 @@ class StereoWidenerModule(RackModuleBase):
     # ── state restore ──
 
     def set_state(self, state: StereoWidenerState):
+        self.set_power(state.enabled, emit=False)
         import math
 
         self._width_knob.blockSignals(True)

@@ -6,6 +6,8 @@ volume fader (multislider style), VU meter overlay, send fader, route menu,
 mute/stop buttons, and a group-color icon header.
 """
 
+import math
+
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
     QFrame, QComboBox, QSizePolicy
@@ -23,6 +25,48 @@ from mlrvp.gui.styles import (
 )
 from mlrvp.gui.widgets.fader import VerticalFader
 from mlrvp.gui.widgets.vu_meter import VUMeter
+
+
+# ── Volume fader dB taper (matches channel gain fader curve) ──────────
+# Fader position 0.0 → silence (-inf dB)
+# Fader position 0.75 → unity (0 dB)
+# Fader position 1.0 → +6 dB boost
+_UNITY_POS = 0.75
+_BOOST_DB = 6.0
+
+
+def _fader_to_gain(pos: float) -> float:
+    """Convert 0-1 fader position to linear gain (audio taper)."""
+    if pos <= 0.0:
+        return 0.0
+    if pos <= _UNITY_POS:
+        t = pos / _UNITY_POS
+        return t * t * t           # cubic taper → 0 to 1.0
+    boost_db = (pos - _UNITY_POS) / (1.0 - _UNITY_POS) * _BOOST_DB
+    return 10.0 ** (boost_db / 20.0)
+
+
+def _gain_to_fader(gain: float) -> float:
+    """Convert linear gain back to 0-1 fader position."""
+    if gain <= 0.0:
+        return 0.0
+    if gain <= 1.0:
+        return gain ** (1.0 / 3.0) * _UNITY_POS
+    db = 20.0 * math.log10(gain)
+    return min(1.0, _UNITY_POS + (db / _BOOST_DB) * (1.0 - _UNITY_POS))
+
+
+def _vol_db_label(pos: float) -> str:
+    """Format fader position as a dB string for the overlay."""
+    if pos <= 0.0:
+        return "-inf dB"
+    gain = _fader_to_gain(pos)
+    if gain <= 0.0:
+        return "-inf dB"
+    db = 20.0 * math.log10(gain)
+    if db <= -60.0:
+        return "-inf dB"
+    return f"{db:+.1f} dB"
 
 
 class _ParallelogramLogo(QWidget):
@@ -90,10 +134,12 @@ class GroupChannel(QFrame):
         self._vu.setFixedWidth(14)
         fader_row.addWidget(self._vu)
 
-        self._vol_fader = VerticalFader(FADER_SLIDER)
-        self._vol_fader.set_value(0.78)  # 127/163 ≈ default
+        self._vol_fader = VerticalFader(FADER_SLIDER, default_value=_UNITY_POS)
+        self._vol_fader.set_value(_UNITY_POS)
+        self._vol_fader.set_reference_mark(_UNITY_POS)
+        self._vol_fader.set_formatter(_vol_db_label)
         self._vol_fader.value_changed.connect(
-            lambda v: self.volume_changed.emit(self._group, v)
+            lambda v: self.volume_changed.emit(self._group, _fader_to_gain(v))
         )
         self._vol_fader.setToolTip(f"Group {group_idx + 1} volume fader")
         fader_row.addWidget(self._vol_fader)
@@ -207,7 +253,7 @@ class GroupChannel(QFrame):
         self._vu_r.set_level(level)
 
     def set_volume(self, vol: float):
-        self._vol_fader.set_value(vol)
+        self._vol_fader.set_value(_gain_to_fader(vol))
 
     def set_send(self, send: float):
         self._send_fader.set_value(send)
@@ -293,9 +339,13 @@ class MixerView(QWidget):
         self._aux_vu_l.setFixedWidth(14)
         aux_fader_row.addWidget(self._aux_vu_l)
 
-        self._aux_fader = VerticalFader(FADER_SLIDER)
-        self._aux_fader.set_value(0.78)
-        self._aux_fader.value_changed.connect(self.aux_volume_changed.emit)
+        self._aux_fader = VerticalFader(FADER_SLIDER, default_value=_UNITY_POS)
+        self._aux_fader.set_value(_UNITY_POS)
+        self._aux_fader.set_reference_mark(_UNITY_POS)
+        self._aux_fader.set_formatter(_vol_db_label)
+        self._aux_fader.value_changed.connect(
+            lambda v: self.aux_volume_changed.emit(_fader_to_gain(v))
+        )
         self._aux_fader.setToolTip("AUX return volume — overall level of the delay/FX return channel")
         aux_fader_row.addWidget(self._aux_fader)
 
@@ -399,9 +449,13 @@ class MixerView(QWidget):
         self._master_vu_l.setFixedWidth(14)
         master_fader_row.addWidget(self._master_vu_l)
 
-        self._master_fader = VerticalFader(FADER_SLIDER)
-        self._master_fader.set_value(0.78)
-        self._master_fader.value_changed.connect(self.master_volume_changed.emit)
+        self._master_fader = VerticalFader(FADER_SLIDER, default_value=_UNITY_POS)
+        self._master_fader.set_value(_UNITY_POS)
+        self._master_fader.set_reference_mark(_UNITY_POS)
+        self._master_fader.set_formatter(_vol_db_label)
+        self._master_fader.value_changed.connect(
+            lambda v: self.master_volume_changed.emit(_fader_to_gain(v))
+        )
         self._master_fader.setToolTip("Master output volume — controls the final DAC output level")
         master_fader_row.addWidget(self._master_fader)
 

@@ -49,6 +49,14 @@ class SlicerPreviewService:
             return min(self._pos / len(self._buf), 1.0)
 
     @property
+    def loop_progress(self) -> float:
+        """Return 0.0–1.0 progress within the current loop iteration."""
+        with self._lock:
+            if self._buf is None or len(self._buf) == 0:
+                return 0.0
+            return (self._pos % len(self._buf)) / len(self._buf)
+
+    @property
     def current_buf_len(self) -> int:
         """Length of the currently-playing buffer (samples)."""
         with self._lock:

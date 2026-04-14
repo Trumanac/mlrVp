@@ -308,7 +308,10 @@ class GridController:
             if connected and self._monome is not None:
                 try:
                     physical_y = y + offset
-                    self._monome.grid.led_level_row(0, physical_y, values[:cols])
+                    row_data = list(values[:cols])
+                    if len(row_data) < cols:
+                        row_data.extend([0] * (cols - len(row_data)))
+                    self._monome.grid.led_level_row(0, physical_y, row_data)
                 except Exception:
                     pass
             if self._midi_grid is not None and self._midi_grid.connected:

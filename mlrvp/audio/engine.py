@@ -546,7 +546,7 @@ class AudioEngine:
         # Thread-safe event queue — all channel trigger/stop mutations are
         # deferred to the audio thread to avoid races with process().
         # deque.append / popleft are atomic in CPython.
-        self._event_queue: deque = deque(maxlen=512)
+        self._event_queue: deque = deque()
 
         # Callback for UI updates (called from audio thread, should be fast)
         self._meter_callback: Optional[Callable] = None
@@ -1751,7 +1751,7 @@ class AudioEngine:
         self._pending_master_hp = freq
 
     def set_master_lp(self, freq: float):
-        """Set master lowpass trim frequency (5000-20000 Hz).
+        """Set master lowpass trim frequency (200-20000 Hz).
 
         Stores the new frequency for the DSP thread to apply, avoiding
         a torn coefficient update across threads.
@@ -1815,6 +1815,11 @@ class AudioEngine:
         self.tape_delay_c.set_tempo(tempo)
         self.tape_delay_d.set_tempo(tempo)
         self.tape_delay_m.set_tempo(tempo)
+        self.stutter.set_tempo(tempo)
+        self.stutter_b.set_tempo(tempo)
+        self.stutter_c.set_tempo(tempo)
+        self.stutter_d.set_tempo(tempo)
+        self.stutter_m.set_tempo(tempo)
         # Scale existing channel speeds proportionally instead of
         # recalculating from scratch, so manual speed overrides are preserved.
         # SEQ channels use a user-defined speed (default 1.0) that is not

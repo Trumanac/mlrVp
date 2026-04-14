@@ -574,7 +574,7 @@ class StutterState:
     """State for the Broken Record stutter/glitch buffer looper."""
     enabled: bool = True
     size: float = 0.3           # 0–1 → 10–2000 ms capture size
-    rate: float = 0.3           # 0–1 → 10–2000 ms repeat rate
+    rate: int = 7               # sync division index (0-12, default 7 = 1/4 note)
     chaos: float = 0.0          # 0–1 random jump probability
     smear: float = 0.3          # 0–1 crossfade at loop boundary
     trigger: bool = False       # True = stutter active, False = pass-through
@@ -896,6 +896,8 @@ class AppConfig:
 
     # Master
     master_volume: float = 1.0
+    master_hp: float = 20.0      # Hz, master HP trim (20–500)
+    master_lp: float = 20000.0   # Hz, master LP trim (200–20000)
     fadetime: float = 1.2
 
     # OSC

@@ -1612,20 +1612,27 @@ class SlicePanel(QFrame):
                     self._play_end_frac = self._waveform.end_frac
                     self._loop_segment_len = new_len
                     self._play_total = new_len
-                    self._play_pos = 0
 
-        self._play_pos += int(self._sample_rate * 0.030)
-        if self._play_pos >= self._play_total:
-            if self._loop_segment_len <= 0:
-                self._stop_play()
-                return
-        # Wrap position within single loop iteration for playhead display
+        # Use real playback position from the preview service when available
         sel_span = self._play_end_frac - self._play_start_frac
-        if self._loop_segment_len > 0:
-            pos_in_loop = self._play_pos % self._loop_segment_len
-            frac = self._play_start_frac + (pos_in_loop / self._loop_segment_len) * sel_span
+        if self._preview_service is not None and self._preview_service.is_playing:
+            if self._loop_segment_len > 0:
+                progress = self._preview_service.loop_progress
+            else:
+                progress = self._preview_service.playback_progress
+            frac = self._play_start_frac + progress * sel_span
         else:
-            frac = self._play_start_frac + (self._play_pos / self._play_total) * sel_span
+            # Fallback: estimate from timer (CUE+MAIN mode without service)
+            self._play_pos += int(self._sample_rate * 0.030)
+            if self._play_pos >= self._play_total:
+                if self._loop_segment_len <= 0:
+                    self._stop_play()
+                    return
+            if self._loop_segment_len > 0:
+                pos_in_loop = self._play_pos % self._loop_segment_len
+                frac = self._play_start_frac + (pos_in_loop / self._loop_segment_len) * sel_span
+            else:
+                frac = self._play_start_frac + (self._play_pos / max(self._play_total, 1)) * sel_span
         self._waveform.set_playhead(frac)
 
     def _auto_name(self):

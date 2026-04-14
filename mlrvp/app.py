@@ -29,6 +29,7 @@ from mlrvp.preset.manager import PresetManager
 from mlrvp.gui.main_window import MainWindow
 from mlrvp.gui.midi_map_overlay import MidiMapManager
 from mlrvp.gui.widgets.fader import ControlDisplaySettings
+from mlrvp.gui.views.mixer_view import _fader_to_gain
 
 log = logging.getLogger("mlrvp")
 
@@ -246,7 +247,7 @@ class AppController:
         for g in range(4):
             grp = g  # capture
             osc.add_handler(f"/mlrvp/group/{g+1}/volume",
-                            _osc(lambda addr, v, _g=grp: self._gui_group_volume(_g, float(v))))
+                            _osc(lambda addr, v, _g=grp: self._gui_group_volume(_g, _fader_to_gain(float(v)))))
             osc.add_handler(f"/mlrvp/group/{g+1}/send",
                             _osc(lambda addr, v, _g=grp: self._gui_group_send(_g, float(v))))
             osc.add_handler(f"/mlrvp/group/{g+1}/mute",
@@ -258,7 +259,7 @@ class AppController:
 
         # AUX: /mlrvp/aux/volume|mute|fx_route|send
         osc.add_handler("/mlrvp/aux/volume",
-                        _osc(lambda addr, v: self._gui_aux_volume(float(v))))
+                        _osc(lambda addr, v: self._gui_aux_volume(_fader_to_gain(float(v)))))
         osc.add_handler("/mlrvp/aux/mute",
                         _osc(lambda addr, v: self._gui_aux_mute(int(v) > 0)))
         osc.add_handler("/mlrvp/aux/fx_route",
@@ -268,7 +269,7 @@ class AppController:
 
         # Master: /mlrvp/master/volume
         osc.add_handler("/mlrvp/master/volume",
-                        _osc(lambda addr, v: self._gui_master_volume(float(v))))
+                        _osc(lambda addr, v: self._gui_master_volume(_fader_to_gain(float(v)))))
 
         # Transport: /mlrvp/transport/tempo|play|stop
         osc.add_handler("/mlrvp/transport/tempo",
@@ -376,12 +377,16 @@ class AppController:
         Only one row per group can play at a time.  When a new row in
         a group is triggered, every *other* row in that group is stopped
         and its LEDs are cleared.
+
+        We unconditionally queue force_stop for every sibling rather
+        than checking ch.playing, because _playing is set on the DSP
+        thread and a queued trigger may not have been processed yet.
         """
-        if not self.engine:
+        if not self.engine or row >= len(self.engine.channels):
             return
         group = self.engine.channels[row].state.group
         for i, ch in enumerate(self.engine.channels[:self.config.row_count]):
-            if i != row and ch.state.group == group and ch.playing:
+            if i != row and ch.state.group == group:
                 self.engine.force_stop_channel(i)
                 # Reset any SLICE state on the stopped channel
                 if ch.state.mode == PlaybackMode.SLICE:
@@ -446,6 +451,8 @@ class AppController:
                 col = beat_int % columns if columns > 0 else 0
                 ch._seq_column = col
                 if col in ch._seq_steps:
+                    # Stop other channels in the same group before triggering
+                    self._stop_group_siblings(i, columns)
                     # Retrigger sample from the beginning on each active step
                     self.engine.trigger_channel(i, 0, 1)
                     ch._seq_playing_step = True
@@ -468,19 +475,20 @@ class AppController:
 
     def _execute_pattern_trigger(self, row: int, column: int, event_type: str):
         """Handle pattern replay event on the Qt main thread."""
-        if self.engine:
-            ch = self.engine.channels[row]
-            if event_type == 'stop':
-                self.engine.stop_channel(row)
-                self.grid.clear_row_leds(row, self.config.grid_columns)
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        ch = self.engine.channels[row]
+        if event_type == 'stop':
+            self.engine.stop_channel(row)
+            self.grid.clear_row_leds(row, self.config.grid_columns)
+        else:
+            self._stop_group_siblings(row, self.config.grid_columns)
+            self.engine.trigger_channel(row, column, self.config.grid_columns)
+            grp = ch.state.group
+            if ch.state.mode == PlaybackMode.PITCH:
+                self._update_pitch_mode_leds(row, active_col=column)
             else:
-                self._stop_group_siblings(row, self.config.grid_columns)
-                self.engine.trigger_channel(row, column, self.config.grid_columns)
-                grp = ch.state.group
-                if ch.state.mode == PlaybackMode.PITCH:
-                    self._update_pitch_mode_leds(row, active_col=column)
-                else:
-                    self.grid.update_playback_leds(row, column, self.config.grid_columns, color=grp)
+                self.grid.update_playback_leds(row, column, self.config.grid_columns, color=grp)
 
     # ------------------------------------------------------------------ #
     #  Grid callbacks                                                     #
@@ -497,6 +505,8 @@ class AppController:
         columns = self.config.grid_columns
 
         if row >= self.config.row_count:
+            return
+        if self.engine and row >= len(self.engine.channels):
             return
 
         if state == 0:
@@ -781,6 +791,8 @@ class AppController:
             if self.engine:
                 triggered_rows = set(e.row for e in pr.events if e.event_type == 'trigger')
                 for r in triggered_rows:
+                    if r >= len(self.engine.channels):
+                        continue
                     ch = self.engine.channels[r]
                     if ch.playing:
                         self.engine.stop_channel(r)
@@ -817,6 +829,8 @@ class AppController:
             return
         self.grid._pending_monome_connect = False
 
+        if not self.grid.info:
+            return
         rows = self.grid.info.rows - self.grid._monome_row_offset  # data rows
         cols = self.grid.info.columns
         # Clamp to engine channel count to avoid index-out-of-bounds
@@ -827,6 +841,9 @@ class AppController:
 
         for ch in self.config.channels:
             ch.steps = cols
+        if self.engine:
+            for i in range(min(len(self.config.channels), len(self.engine.channels))):
+                self.engine.channels[i].state.steps = cols
 
         if self.window:
             self.window.channel_view.set_visible_rows(rows)
@@ -1144,11 +1161,13 @@ class AppController:
     def _gui_tap_tempo(self, bpm: float):
         """Apply a BPM value received from the tap tempo button."""
         bpm = round(bpm, 1)
-        self.config.tempo = bpm
+        # Use immediate clock change for responsive tap feel
         if self.clock:
             self.clock.set_tempo(bpm, immediate=True)
-        if self.engine:
-            self.engine.set_tempo(bpm)
+        # Delegate to the same path as the BPM spinner so channel speeds
+        # and all config state update correctly.
+        self._gui_tempo_changed(bpm)
+        # Update the spinner display (blocked signals — already handled above)
         if self.window:
             self.window.transport.set_tempo(bpm)
 
@@ -1166,6 +1185,8 @@ class AppController:
             if pr.playing and self.engine:
                 triggered_rows = set(e.row for e in pr.events if e.event_type == 'trigger')
                 for r in triggered_rows:
+                    if r >= len(self.engine.channels):
+                        continue
                     ch = self.engine.channels[r]
                     if ch.playing:
                         self.engine.stop_channel(r)
@@ -1176,6 +1197,8 @@ class AppController:
             if pr.playing and self.engine:
                 triggered_rows = set(e.row for e in pr.events if e.event_type == 'trigger')
                 for r in triggered_rows:
+                    if r >= len(self.engine.channels):
+                        continue
                     ch = self.engine.channels[r]
                     if ch.playing:
                         self.engine.stop_channel(r)
@@ -1246,6 +1269,19 @@ class AppController:
                 ech.state.reverse = False
                 ech._pending_sample_path = None
                 ech._pending_sample_buffer = None
+                # Clear mode-specific state
+                ech._seq_steps.clear()
+                ech._seq_column = -1
+                ech._seq_playing_step = False
+                ech._slice_btn1 = None
+                ech._slice_btn2 = None
+                ech._slice_loop_start = None
+                ech._slice_loop_end = None
+                ech._slice_reverse = False
+                ech._slice_latched = False
+                ech._slice_held = set()
+                ech._slice_col_start = -1
+                ech._slice_col_end = -1
             self._apply_config_to_engine()
 
         # Clear waveform displays BEFORE applying config to GUI, so
@@ -1469,7 +1505,7 @@ class AppController:
         try:
             data = self.presets._serialize_config(self.config)
             payload = {
-                "version": "0.6.9",
+                "version": "0.6.9.15",
                 "config": data,
                 "midi_mappings": self.midi.get_mappings_serializable(),
             }
@@ -1650,6 +1686,10 @@ class AppController:
             ch.mute = value
             if self.engine:
                 self.engine.channels[row].state.mute = value
+        elif param == "reverse":
+            ch.reverse = bool(value)
+            if self.engine:
+                self.engine.channels[row].state.reverse = bool(value)
         elif param == "steps":
             ch.steps = value
             if self.engine:
@@ -1685,6 +1725,7 @@ class AppController:
     def _gui_group_send(self, group: int, send: float):
         if not (0 <= group < NUM_GROUPS):
             return
+        send = max(0.0, min(1.0, send))
         self.config.groups[group].send = send
         if self.engine:
             self.engine.set_group_send(group, send)
@@ -1807,12 +1848,14 @@ class AppController:
     def _gui_master_hp(self, val: float):
         """Master HP trim: knob 0.0=20Hz (off), 1.0=500Hz (max trim)."""
         freq = 20.0 + val * 480.0  # 20-500 Hz range
+        self.config.master_hp = freq
         if self.engine:
             self.engine.set_master_hp(freq)
 
     def _gui_master_lp(self, val: float):
-        """Master LP trim: knob 0.0=5kHz (max trim), 1.0=20kHz (off)."""
-        freq = 5000.0 + val * 15000.0  # 5000-20000 Hz range
+        """Master LP trim: knob 0.0=200Hz (max trim), 1.0=20kHz (off)."""
+        freq = 200.0 + val * 19800.0  # 200-20000 Hz range
+        self.config.master_lp = freq
         if self.engine:
             self.engine.set_master_lp(freq)
 
@@ -2145,6 +2188,9 @@ class AppController:
             # Update channel steps to match grid columns
             for ch in self.config.channels:
                 ch.steps = cols
+            if self.engine:
+                for i in range(min(len(self.config.channels), len(self.engine.channels))):
+                    self.engine.channels[i].state.steps = cols
             if self.window:
                 self.window.channel_view.set_visible_rows(rows)
                 self.window.set_grid_dimensions(rows, cols)
@@ -2885,7 +2931,7 @@ class AppController:
             param = parts[2]
             if param == "volume":
                 self.midi.set_param_callback(param_path,
-                    lambda v, g=grp: self._gui_group_volume(g, v))
+                    lambda v, g=grp: self._gui_group_volume(g, _fader_to_gain(v)))
             elif param == "send":
                 self.midi.set_param_callback(param_path,
                     lambda v, g=grp: self._gui_group_send(g, v))
@@ -3048,7 +3094,7 @@ class AppController:
         elif parts[0] == "aux" and len(parts) == 2:
             if parts[1] == "volume":
                 self.midi.set_param_callback(param_path,
-                    lambda v: self._gui_aux_volume(v))
+                    lambda v: self._gui_aux_volume(_fader_to_gain(v)))
             elif parts[1] == "send":
                 self.midi.set_param_callback(param_path,
                     lambda v: self._gui_aux_send(v))
@@ -3061,7 +3107,7 @@ class AppController:
         elif parts[0] == "master" and len(parts) == 2:
             if parts[1] == "volume":
                 self.midi.set_param_callback(param_path,
-                    lambda v: self._gui_master_volume(v))
+                    lambda v: self._gui_master_volume(_fader_to_gain(v)))
             elif parts[1] == "dac":
                 self.midi.set_param_callback(param_path,
                     lambda v: QTimer.singleShot(
@@ -3184,6 +3230,8 @@ class AppController:
 
         self.engine.set_tempo(self.config.tempo)
         self.engine.set_master_volume(self.config.master_volume)
+        self.engine.set_master_hp(self.config.master_hp)
+        self.engine.set_master_lp(self.config.master_lp)
         self.engine.set_aux_volume(self.config.aux_volume)
         self.engine.mixer.aux_mute = self.config.aux_mute
         self.engine.mixer.aux_fx_route = self.config.aux_fx_route
@@ -3255,6 +3303,8 @@ class AppController:
             ech.state.attack = ch.attack
             ech.state.release = ch.release
             ech.state.transpose = ch.transpose
+            if ch.transpose != 0 and ech.sample is not None:
+                self._apply_pitch_shift_async(i, ch.transpose)
 
     def _apply_config_to_engine_live(self, playing_rows: set[int]):
         """Push config to engine, but protect playing channels from state
@@ -3265,6 +3315,8 @@ class AppController:
 
         self.engine.set_tempo(self.config.tempo)
         self.engine.set_master_volume(self.config.master_volume)
+        self.engine.set_master_hp(self.config.master_hp)
+        self.engine.set_master_lp(self.config.master_lp)
         self.engine.set_aux_volume(self.config.aux_volume)
         self.engine.mixer.aux_mute = self.config.aux_mute
         self.engine.mixer.aux_fx_route = self.config.aux_fx_route
@@ -3344,6 +3396,8 @@ class AppController:
                 ech.state.attack = ch.attack
                 ech.state.release = ch.release
             ech.state.transpose = ch.transpose
+            if ch.transpose != 0 and ech.sample is not None:
+                self._apply_pitch_shift_async(i, ch.transpose)
 
     def _apply_pitch_shift_async(self, row: int, semitones: int):
         """Pitch-shift the channel's sample in a background thread using librosa.
@@ -3571,7 +3625,7 @@ class AppController:
             if self.window:
                 self.window.set_status(f"Failed to load: {filepath}")
             return
-        if not self.engine:
+        if not self.engine or row >= len(self.engine.channels):
             return
         ech = self.engine.channels[row]
 
@@ -3746,6 +3800,18 @@ class AppController:
             w.mixer_view.set_aux_send(self.config.aux_send_level)
             w.mixer_view.set_aux_mute(self.config.aux_mute)
             w.mixer_view.set_aux_fx_route(self.config.aux_fx_route)
+
+            # Master filter knobs — convert freq back to 0-1 knob value
+            hp_v = max(0.0, min(1.0, (self.config.master_hp - 20.0) / 480.0))
+            lp_v = max(0.0, min(1.0, (self.config.master_lp - 200.0) / 19800.0))
+            mf = w.master_filter_view
+            mf._hp_knob.blockSignals(True)
+            mf._hp_knob.set_value(hp_v)
+            mf._hp_knob.blockSignals(False)
+            mf._lp_knob.blockSignals(True)
+            mf._lp_knob.set_value(lp_v)
+            mf._lp_knob.blockSignals(False)
+            mf._curve.set_params(self.config.master_hp, self.config.master_lp)
 
             # Effects
             w.effects_view.delay_panel.set_state(self.config.delay)
@@ -3973,7 +4039,7 @@ def run_app(argv=None) -> int:
 
     app = QApplication(argv or sys.argv)
     app.setApplicationName("mlrVp")
-    app.setApplicationVersion("0.6.9")
+    app.setApplicationVersion("0.6.9.15")
 
     # Delay tooltips so they only appear after hovering intentionally.
     from PySide6.QtWidgets import QProxyStyle, QStyle

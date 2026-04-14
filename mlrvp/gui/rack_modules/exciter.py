@@ -163,6 +163,7 @@ class ExciterModule(RackModuleBase):
     # ── state restore ──
 
     def set_state(self, state: ExciterState):
+        self.set_power(state.enabled, emit=False)
         import math
         # Reverse TUNE: v = log(freq/1000) / log(12)
         freq = max(1000.0, min(12000.0, state.tune))

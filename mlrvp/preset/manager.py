@@ -360,6 +360,14 @@ class PresetManager:
         except (ValueError, TypeError):
             pass
         try:
+            config.master_hp = max(20.0, min(500.0, float(cfg_data.get("master_hp", config.master_hp))))
+        except (ValueError, TypeError):
+            pass
+        try:
+            config.master_lp = max(200.0, min(20000.0, float(cfg_data.get("master_lp", config.master_lp))))
+        except (ValueError, TypeError):
+            pass
+        try:
             config.fadetime = max(0.0, min(5000.0, float(cfg_data.get("fadetime", config.fadetime))))
         except (ValueError, TypeError):
             pass
@@ -392,6 +400,8 @@ class PresetManager:
                     ch.octave = max(-4, min(4, int(ch_data.get("octave", ch.octave))))
                     ch.sel_start = max(0.0, min(1.0, float(ch_data.get("sel_start", ch.sel_start))))
                     ch.sel_end = max(0.0, min(1.0, float(ch_data.get("sel_end", ch.sel_end))))
+                    if ch.sel_start > ch.sel_end:
+                        ch.sel_start, ch.sel_end = ch.sel_end, ch.sel_start
                 except (ValueError, TypeError):
                     pass
                 ch.mute = ch_data.get("mute", ch.mute)
@@ -542,6 +552,13 @@ class PresetManager:
                           "phase_offset", "mix", "fx_route"]),
             ("fuzz", ["enabled", "gain", "tone", "sustain",
                       "gate", "mix", "fx_route"]),
+            ("stutter", ["enabled", "size", "rate", "chaos",
+                         "smear", "trigger", "mix", "fx_route"]),
+            ("granular_freeze", ["enabled", "grain_size", "scatter",
+                                 "spread", "density", "freeze",
+                                 "mix", "fx_route"]),
+            ("gate_reverb", ["enabled", "room", "gate_time", "slope",
+                             "pre_delay", "mode", "mix", "fx_route"]),
         )
         for fx_name, fx_keys in _FX_KEYS:
             for suffix in ("", "_b", "_m", "_c", "_d"):
@@ -635,6 +652,8 @@ class PresetManager:
             "quantize": int(config.quantize),
             "row_count": config.row_count,
             "master_volume": config.master_volume,
+            "master_hp": config.master_hp,
+            "master_lp": config.master_lp,
             "fadetime": config.fadetime,
             "channels": [
                 {
@@ -1477,7 +1496,8 @@ class PresetManager:
 
         # Auto-serialize new effects (A / B / M) via dataclass vars
         for fx_name in ("simple_eq", "ping_pong_delay", "shimmer_reverb",
-                        "lofi_radio", "auto_pan", "fuzz"):
+                        "lofi_radio", "auto_pan", "fuzz", "stutter",
+                        "granular_freeze", "gate_reverb"):
             for sfx in ("", "_b", "_m"):
                 key = f"{fx_name}{sfx}" if sfx else fx_name
                 if not hasattr(config, key):
@@ -1505,6 +1525,9 @@ class PresetManager:
             "lofi_radio",
             "auto_pan",
             "fuzz",
+            "stutter",
+            "granular_freeze",
+            "gate_reverb",
         )
         for suffix in ("_c", "_d"):
             for fx_base in _ALL_FX:

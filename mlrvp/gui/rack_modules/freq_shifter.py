@@ -237,6 +237,7 @@ class FreqShifterModule(RackModuleBase):
     # ── state restore ──
 
     def set_state(self, state: FreqShifterState):
+        self.set_power(state.enabled, emit=False)
         # SHIFT: hz → knob 0–1
         knob_v = max(0.0, min(1.0, state.shift_hz / 1000.0 + 0.5))
         self._shift_knob.blockSignals(True)

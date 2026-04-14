@@ -2869,9 +2869,7 @@ class FETLimiterProcessor:
         if peak < 1e-4:  # ≈ −80 dBFS post-gain
             self._env[:] = 0.0
             self.gr_db = 0.0
-            out = self._driven_buf[:n]
-            out[:] = 0
-            return out
+            return np.zeros_like(data)
 
         # Timing coefficients
         att_s = self._ATTACK_S[min(s.attack_idx, 6)]
@@ -5137,12 +5135,29 @@ class StutterProcessor:
 
     When triggered, captures a short slice of live audio into a fixed buffer
     and loops it on repeat.  SIZE controls capture length, RATE controls
-    repeat speed, CHAOS adds random position jumps.  When not triggered,
-    audio passes through untouched.
+    repeat speed (tempo-synced beat divisions), CHAOS adds random position
+    jumps.  When not triggered, audio passes through untouched.
     """
+
+    SYNC_DIVISIONS = [
+        0.125,      # 1/32
+        1.0 / 6,    # 1/16t (triplet)
+        0.25,       # 1/16
+        1.0 / 3,    # 1/8t (triplet)
+        0.5,        # 1/8
+        2.0 / 3,    # 1/4t (triplet)
+        0.75,       # 3/16
+        1.0,        # 1/4
+        4.0 / 3,    # 1/3
+        1.5,        # 3/8
+        2.0,        # 1/2
+        3.0,        # 3/4
+        4.0,        # 1 bar
+    ]
 
     def __init__(self, sample_rate: int = SAMPLE_RATE, buffer_size: int = 512):
         self.sr = sample_rate
+        self.tempo = 120.0
         from mlrvp.config import StutterState
         self.state = StutterState()
         # Capture buffer — max ~2 seconds stereo
@@ -5167,6 +5182,16 @@ class StutterProcessor:
         self._out_buf = np.empty((buffer_size, 2), dtype=np.float32)
         self._out_buf_size = buffer_size
 
+    def set_tempo(self, tempo: float):
+        self.tempo = max(20.0, min(300.0, tempo))
+
+    def _sync_to_samples(self, idx: int) -> int:
+        """Convert a sync division index to a sample count at current tempo."""
+        idx = max(0, min(idx, len(self.SYNC_DIVISIONS) - 1))
+        beats = self.SYNC_DIVISIONS[idx]
+        sec = beats * 60.0 / self.tempo
+        return max(1, min(int(sec * self.sr), self._buf_len))
+
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
         if not st.enabled:
@@ -5190,9 +5215,8 @@ class StutterProcessor:
         size_ms = 10.0 * (200.0 ** st.size)  # 10–2000 ms
         capture_len = min(int(size_ms * 0.001 * self.sr), self._buf_len)
 
-        # Repeat rate from RATE: log scale 10–2000 ms
-        rate_ms = 10.0 * (200.0 ** st.rate)
-        repeat_len = max(1, int(rate_ms * 0.001 * self.sr))
+        # Repeat rate from RATE: tempo-synced beat division
+        repeat_len = self._sync_to_samples(int(st.rate))
 
         # On rising edge of trigger — start capturing audio
         if not self._was_triggered:

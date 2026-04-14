@@ -213,7 +213,22 @@ class ChannelStrip(QFrame):
         )
 
         top_row.addWidget(_vdiv())
-        top_row.addWidget(_section("MODE", self._mode_combo))
+        # MODE combo + REV toggle for SHOT mode
+        self._rev_btn = QPushButton("REV")
+        self._rev_btn.setCheckable(True)
+        self._rev_btn.setChecked(False)
+        self._rev_btn.setFixedSize(30, 20)
+        self._rev_btn.setToolTip("Reverse one-shot — play backwards from the triggered position")
+        self._rev_btn.setStyleSheet(
+            f"QPushButton {{ background: #1a1a1a; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; font-weight: bold; border: 1px solid {SEPARATOR}; "
+            f"padding: 0px; }}"
+            f"QPushButton:checked {{ background: {ACCENT_GOLD}; color: #111; "
+            f"border: 1px solid {ACCENT_GOLD}; }}"
+        )
+        self._rev_btn.toggled.connect(self._on_reverse_toggled)
+        self._rev_btn.setVisible(False)  # shown only in SHOT mode
+        top_row.addWidget(_section("MODE", self._mode_combo, self._rev_btn))
         top_row.addWidget(_vdiv())
 
         # Group buttons — 4 colored squares matching mlrv GRP layout
@@ -489,16 +504,27 @@ class ChannelStrip(QFrame):
             cls._sample_library.append(filepath)
 
     def _on_mode_changed(self, idx: int):
-        """Handle mode combo change — show/hide PITCH-mode controls."""
+        """Handle mode combo change — show/hide mode-specific controls."""
         _, mode = self._mode_map[idx]
         is_pitch = mode == PlaybackMode.PITCH
+        is_shot = mode == PlaybackMode.ONESHOT
         # Show SCALE and ROOT sections only in PTCH mode
         self._scale_section.setVisible(is_pitch)
         self._pitch_mode_root.setVisible(is_pitch)
         # Hide standard PITCH (transpose) and STEP in PTCH mode
         self._pitch_section.setVisible(not is_pitch)
         self._steps_section.setVisible(not is_pitch)
+        # REV toggle only in SHOT mode
+        self._rev_btn.setVisible(is_shot)
+        if not is_shot:
+            self._rev_btn.blockSignals(True)
+            self._rev_btn.setChecked(False)
+            self._rev_btn.blockSignals(False)
+            self.param_changed.emit(self._row, "reverse", False)
         self.param_changed.emit(self._row, "mode", mode)
+
+    def _on_reverse_toggled(self, checked: bool):
+        self.param_changed.emit(self._row, "reverse", checked)
 
     def _select_group(self, idx: int):
         for i, btn in enumerate(self._group_btns):
@@ -574,6 +600,13 @@ class ChannelStrip(QFrame):
         self._mode_combo.setCurrentIndex(combo_idx)
         self._mode_combo.blockSignals(False)
 
+        # REV toggle — visible only in SHOT mode
+        is_shot = state.mode == PlaybackMode.ONESHOT
+        self._rev_btn.blockSignals(True)
+        self._rev_btn.setChecked(state.reverse and is_shot)
+        self._rev_btn.blockSignals(False)
+        self._rev_btn.setVisible(is_shot)
+
         for i, btn in enumerate(self._group_btns):
             btn.setChecked(i == state.group)
 
@@ -639,7 +672,7 @@ class ChannelStrip(QFrame):
             self._gain_fader, self._speed_spin, self._pitch_spin, self._steps_spin,
             self._half_btn, self._double_btn, self._mute_btn, self._stop_btn,
             self._waveform, self._pitch_scale_combo, self._pitch_root_spin,
-            self._pitch_hold_btn,
+            self._pitch_hold_btn, self._rev_btn,
         ):
             w.setEnabled(enabled)
         for btn in self._group_btns:
