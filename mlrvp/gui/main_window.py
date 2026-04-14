@@ -175,6 +175,7 @@ Click <b>ARM</b> and recording starts on the next beat, writing directly into th
 <li>Click <b>AUTO</b> with <b>FIT</b> checked (default): start snaps to the nearest transient, end snaps to the nearest transient near the ideal bar boundary, both aligned to zero-crossings.</li>
 <li>Click <b>SLICE + SAVE</b>: the region is resampled to the exact sample count for the chosen bar length and saved to <code>data/slices/</code>. Every slice at the same BPM and bar count will be exactly the same duration — perfect for seamless looping at 1.0× speed.</li>
 <li>Uncheck <b>FIT</b> for classic mode: start snaps to a transient, end is calculated from BPM math only.</li>
+<li>Use <b>▶ Sel</b> to preview the selected region through your cue (headphone) output. With <b>Loop</b> checked, moving the selection while playing queues the new region — it takes effect when the current loop finishes, so you hear a seamless transition. Stop and press ▶ Sel again to jump straight to the new selection.</li>
 <li>The <b>SLICES</b> library panel at the bottom lists all saved slices. Drag any entry onto a channel waveform to load it, or onto the slicer waveform to open it for editing. Click <b>✕</b> to delete (confirmation required).</li>
 </ol>
 
@@ -237,6 +238,29 @@ Click <b>ARM</b> and recording starts on the next beat, writing directly into th
 <li>The Twin Peaks VU meter has a mode selector: VU (ballistic needle), PEAK (fast attack/slow decay), or RMS (power average).</li>
 <li>Both MIDI MAP buttons (FX Rack header and Setup → MIDI → Learn) are the same mode and stay in sync.</li>
 </ul>
+
+<h2>Slicer &amp; Cue</h2>
+<p>The Slice tab (Tools panel) includes a dedicated <b>cue output</b> for headphone monitoring
+and advanced chopping tools:</p>
+<ul>
+<li><b>Cue device</b> — select a separate audio interface for preview. Choose a channel pair and set the
+cue volume (VOL fader) independently.</li>
+<li><b>CUE ONLY / CUE+MAIN / OFF</b> — controls whether preview audio goes to cue only, both outputs, or is muted.</li>
+<li><b>▶ Sel</b> — play the selected region through the cue output. With <b>Loop</b> enabled, moving the selection
+queues the new region — it transitions seamlessly when the current loop iteration ends. Stop and re-press
+to jump directly to the new selection.</li>
+<li><b>Slice mode</b>: Manual (hand-placed markers), Transient (sensitivity-adjustable auto-detection),
+Equal (N divisions), and BPM Grid (beat boundaries). Click CHOP to create regions, audition each one,
+and EXPORT ALL to batch-save.</li>
+<li><b>ZX snap</b> — toggle zero-crossing snap so markers always land on a zero-crossing (eliminates clicks/pops at edit points).</li>
+<li><b>GRID snap</b> — toggle beat-grid snap so markers land on quarter-note boundaries based on the BPM setting.</li>
+<li><b>Numeric spinboxes</b> — type exact start/end/duration values in seconds (3 decimal places).</li>
+<li><b>Undo / Redo</b> — <code>Ctrl+Z</code> / <code>Ctrl+Shift+Z</code> to step through marker position history (up to 50 levels).</li>
+<li><b>Marker nudge</b> — <code>Shift+Arrow</code> = ±1 ms, <code>Ctrl+Shift+Arrow</code> = ±1 sample.</li>
+</ul>
+<p>The <b>Slices Library</b> at the bottom lists all saved slices with search, sort, BPM badges, and
+right-click "Load to channel N". Hold Ctrl to multi-select, then batch delete.</p>
+<p><b>Tip:</b> Hover over any control in the slicer for a tooltip describing what it does.</p>
 """
 
 
@@ -364,11 +388,6 @@ class MainWindow(QMainWindow):
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("mlrVp — Ready")
-
-        # --- UI refresh timer ---
-        self._refresh_timer = QTimer(self)
-        self._refresh_timer.timeout.connect(self._on_refresh)
-        self._refresh_timer.start(33)  # ~30fps UI update
 
         # Auto-size to fit content
         self._auto_resize()
@@ -571,10 +590,6 @@ class MainWindow(QMainWindow):
         self._howto_dialog = dlg
         dlg.show()
 
-    def _on_refresh(self):
-        """Periodic UI update — called by the app controller to push levels."""
-        pass
-
     # --- Public accessors for app controller ---
 
     @property
@@ -650,7 +665,6 @@ class MainWindow(QMainWindow):
         self.resize(self.width(), min(needed_h, 1400))
 
     def closeEvent(self, event):
-        self._refresh_timer.stop()
         self._grid_window.close()
         self.quit_requested.emit()
         event.accept()

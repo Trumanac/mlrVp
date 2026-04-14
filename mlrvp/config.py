@@ -583,6 +583,18 @@ class StutterState:
 
 
 @dataclass
+class SlicerState:
+    """State for the slicer tool (cue preview, chop workflow, export)."""
+    cue_volume: float = 1.0              # 0.0–2.0 preview gain (linear)
+    cue_device: int = -1                 # sounddevice output device index; -1 = system default
+    cue_channel_offset: int = 0          # first output channel on cue device (0-based pair)
+    cue_mode: int = 0                    # 0 = CUE ONLY, 1 = CUE + MAIN, 2 = OFF
+    preview_loop: bool = True            # default loop state when previewing
+    auto_chop_mode: int = 0              # 0 = manual, 1 = transient, 2 = equal-division
+    naming_template: str = "{source}_slice{n:02d}"  # export filename template
+
+
+@dataclass
 class RecorderState:
     """State for the live recorder."""
     buffer_idx: int = 0
@@ -867,6 +879,9 @@ class AppConfig:
     stutter_m: StutterState = field(default_factory=StutterState)
     stutter_c: StutterState = field(default_factory=StutterState)
     stutter_d: StutterState = field(default_factory=StutterState)
+
+    # Slicer tool
+    slicer: SlicerState = field(default_factory=SlicerState)
 
     # Recorder
     recorder: RecorderState = field(default_factory=RecorderState)

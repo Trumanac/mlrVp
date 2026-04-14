@@ -109,8 +109,13 @@ class PatternRecorder:
             if not self._recording:
                 return
 
+            # Cap events to prevent unbounded memory growth
+            if len(self.events) >= 10000:
+                self.events.pop(0)
+
             # Calculate position within the pattern
-            pos_in_pattern = (current_beat - self._start_beat) % self.length_beats
+            length = self.length_beats
+            pos_in_pattern = (current_beat - self._start_beat) % length
 
             self.events.append(PatternEvent(
                 beat_position=pos_in_pattern,

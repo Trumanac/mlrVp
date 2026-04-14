@@ -129,7 +129,8 @@ class MasterClock:
                     self._anchor_time = now
                 self.tempo = tempo
         else:
-            self._next_tempo = tempo
+            with self._anchor_lock:
+                self._next_tempo = tempo
 
     def get_quantize_delay(self) -> float:
         """Get delay in seconds until next quantize boundary."""
@@ -211,12 +212,12 @@ class MasterClock:
                 # Apply pending tempo change on beat boundary.
                 # Re-anchor so the new tempo starts from the current position
                 # without a discontinuity.
-                if self._next_tempo is not None:
-                    with self._anchor_lock:
+                with self._anchor_lock:
+                    if self._next_tempo is not None:
                         self._anchor_beats = self._beat_position
                         self._anchor_time = now
                         self.tempo = self._next_tempo
-                    self._next_tempo = None
+                        self._next_tempo = None
 
             # Check bar boundary
             current_bar = int(self._beat_position / 4)

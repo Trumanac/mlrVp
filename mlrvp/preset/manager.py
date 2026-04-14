@@ -6,15 +6,42 @@ mixer state, effect parameters, MIDI mappings, and setlist.
 
 import json
 import logging
+import math
 import re
 import threading
 from pathlib import Path
 from typing import Optional
 
+
+class _SafeFloatEncoder(json.JSONEncoder):
+    """JSON encoder that replaces NaN / Infinity with 0.0.
+
+    Prevents ``json.dump`` from crashing or producing non-standard output
+    if any config value somehow becomes NaN (e.g. filter feedback blowup).
+    """
+
+    def default(self, o):
+        return super().default(o)
+
+    def encode(self, o):
+        return super().encode(self._sanitize(o))
+
+    def _sanitize(self, obj):
+        if isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return 0.0
+            return obj
+        if isinstance(obj, dict):
+            return {k: self._sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [self._sanitize(v) for v in obj]
+        return obj
+
 from mlrvp.config import (
     AppConfig, ChannelState, GroupState, DelayState,
     RecorderState, PatternRecorderState, FilterState, FilterBState,
     TapeDelayState, ModState, HallReverbState, PlateReverbState,
+    SlicerState,
     PlaybackMode, QuantizeMode,
     get_presets_dir, get_setlists_dir, NUM_PRESETS, NUM_SETLIST_SLOTS
 )
@@ -102,7 +129,7 @@ class PresetManager:
             try:
                 with self._io_lock:
                     with open(fp, 'w') as f:
-                        json.dump(data, f, indent=2)
+                        json.dump(data, f, indent=2, cls=_SafeFloatEncoder)
             except Exception as e:
                 log.error("Preset save error: %s", e)
 
@@ -141,7 +168,7 @@ class PresetManager:
                     data = json.load(f)
                 data["name"] = new_name
                 with open(new_fp, 'w') as f:
-                    json.dump(data, f, indent=2)
+                    json.dump(data, f, indent=2, cls=_SafeFloatEncoder)
                 old_fp.unlink()
                 # Update references in current setlist
                 for i, p in enumerate(self.setlist_presets):
@@ -589,6 +616,15 @@ class PresetManager:
         if "delay_route" in cfg_data:
             config.delay.fx_route = max(0, min(2, int(cfg_data["delay_route"])))
         config.mod_route = cfg_data.get("mod_route", config.mod_route)
+
+        # Slicer tool state (backward-compatible: missing key → defaults)
+        slicer_data = cfg_data.get("slicer", {})
+        if slicer_data:
+            for key in ["cue_volume", "cue_device", "cue_channel_offset",
+                        "cue_mode", "preview_loop", "auto_chop_mode",
+                        "naming_template"]:
+                if key in slicer_data:
+                    _safe_setattr(config.slicer, key, slicer_data[key])
 
         return config
 
@@ -1447,7 +1483,7 @@ class PresetManager:
                 if not hasattr(config, key):
                     continue
                 state = getattr(config, key)
-                cfg_data[key] = {
+                result[key] = {
                     k: v for k, v in vars(state).items() if not k.startswith("_")
                 }
 
@@ -1480,5 +1516,16 @@ class PresetManager:
                     k: v for k, v in vars(state).items()
                     if not k.startswith('_')
                 }
+
+        # Slicer tool state
+        result["slicer"] = {
+            "cue_volume": config.slicer.cue_volume,
+            "cue_device": config.slicer.cue_device,
+            "cue_channel_offset": config.slicer.cue_channel_offset,
+            "cue_mode": config.slicer.cue_mode,
+            "preview_loop": config.slicer.preview_loop,
+            "auto_chop_mode": config.slicer.auto_chop_mode,
+            "naming_template": config.slicer.naming_template,
+        }
 
         return result

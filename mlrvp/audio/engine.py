@@ -768,6 +768,23 @@ class AudioEngine:
                 device=output_device,
                 latency='low',
             )
+            # Pre-fill the ring buffer BEFORE starting the stream so the
+            # callback has audio from the very first invocation.
+            self._ring_read = 0
+            self._ring_write = 0
+            self._ring_buf_full = False
+            try:
+                for i in range(self._ring_blocks - 1):
+                    slot = self._ring_buf[i]
+                    slot[:] = 0
+                    self._process_block(self.buffer_size, slot)
+                    self._ring_write = (self._ring_write + 1) % self._ring_blocks
+            except Exception:
+                self._stream.close()
+                self._stream = None
+                gc.enable()
+                raise
+            self._ring_event.clear()
             try:
                 self._stream.start()
             except Exception:
@@ -779,26 +796,6 @@ class AudioEngine:
             gc.enable()
             print(f"Audio engine start error: {e}")
             raise
-
-        # Pre-fill the ring buffer so the callback has audio from the start
-        self._ring_read = 0
-        self._ring_write = 0
-        self._ring_buf_full = False
-        try:
-            for i in range(self._ring_blocks - 1):
-                slot = self._ring_buf[i]
-                slot[:] = 0
-                self._process_block(self.buffer_size, slot)
-                self._ring_write = (self._ring_write + 1) % self._ring_blocks
-        except Exception:
-            self._running = False
-            if self._stream is not None:
-                self._stream.stop()
-                self._stream.close()
-                self._stream = None
-            gc.enable()
-            raise
-        self._ring_event.clear()
 
         # Launch the DSP worker thread
         self._dsp_thread = threading.Thread(
@@ -824,8 +821,9 @@ class AudioEngine:
                 self._input_stream.close()
                 self._input_stream = None
                 raise
-        except Exception:
+        except Exception as e:
             # Input not critical - recording just won't work
+            print(f"[AudioEngine] Input stream unavailable (recording disabled): {e}")
             self._input_stream = None
 
     def stop(self):
@@ -1506,6 +1504,10 @@ class AudioEngine:
 
         if _prof:
             _t4 = time.perf_counter()
+
+        # Flush any NaN/Inf that crept through the FX chain to silence.
+        # Cheaper than checking every effect — one pass at the end.
+        np.nan_to_num(dsp_output, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Peak metering
         tmp = self._peak_tmp[:len(dsp_output)]

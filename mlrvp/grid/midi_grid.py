@@ -241,6 +241,7 @@ class MidiGridAdapter:
         if self._midi_in is not None:
             try:
                 self._midi_in.close_port()
+                self._midi_in.delete()
             except Exception:
                 pass
             self._midi_in = None
@@ -251,6 +252,7 @@ class MidiGridAdapter:
                 pass
             try:
                 self._midi_out.close_port()
+                self._midi_out.delete()
             except Exception:
                 pass
             self._midi_out = None

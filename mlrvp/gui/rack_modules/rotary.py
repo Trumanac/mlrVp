@@ -220,14 +220,16 @@ class RotaryModule(RackModuleBase):
     def _on_speed(self, idx: int):
         self.param_changed.emit("speed", idx)
         _speeds = [0.0, 0.7, 6.7]
-        self._rotor_anim.set_speed(_speeds[idx])
+        if 0 <= idx < len(_speeds):
+            self._rotor_anim.set_speed(_speeds[idx])
 
     # ── state restore ──
 
     def set_state(self, state: RotaryState):
         self._speed_sel.set_index(state.speed)
         _speeds = [0.0, 0.7, 6.7]
-        self._rotor_anim.set_speed(_speeds[state.speed])
+        if 0 <= state.speed < len(_speeds):
+            self._rotor_anim.set_speed(_speeds[state.speed])
         for param, val in [
             ("acceleration", state.acceleration),
             ("horn_level",   state.horn_level),

@@ -714,4 +714,6 @@ class ChannelView(QWidget):
             strip.setVisible(i < count)
 
     def get_strip(self, row: int) -> ChannelStrip:
-        return self._strips[row]
+        if 0 <= row < len(self._strips):
+            return self._strips[row]
+        return self._strips[0]

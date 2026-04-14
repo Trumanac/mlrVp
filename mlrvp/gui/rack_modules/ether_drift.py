@@ -332,6 +332,8 @@ class EtherDriftModule(RackModuleBase):
     def _on_route_change(self, route: int):
         labels = ["RISE↑  +  FALL↓", "RISE↑ only", "FALL↓ only"]
         colors = [_DIM, _RISE, _FALL]
+        if not (0 <= route < len(labels)):
+            return
         self._status_lbl.setText(labels[route])
         self._status_lbl.setStyleSheet(
             f"color: {colors[route]}; font-size: 8px; font-family: 'Courier New';"

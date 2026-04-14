@@ -89,6 +89,7 @@ class MidiHandler(QObject):
         if port in self._midi_inputs:
             try:
                 self._midi_inputs[port].close_port()
+                self._midi_inputs[port].delete()
             except Exception:
                 pass
             del self._midi_inputs[port]
@@ -99,6 +100,7 @@ class MidiHandler(QObject):
             import rtmidi
             if self._midi_out is not None:
                 self._midi_out.close_port()
+                self._midi_out.delete()
             self._midi_out = rtmidi.MidiOut()
             self._midi_out.open_port(port)
         except Exception as e:
@@ -109,11 +111,16 @@ class MidiHandler(QObject):
         for port, midi_in in list(self._midi_inputs.items()):
             try:
                 midi_in.close_port()
+                midi_in.delete()
             except Exception:
                 pass
         self._midi_inputs.clear()
         if self._midi_out is not None:
-            self._midi_out.close_port()
+            try:
+                self._midi_out.close_port()
+                self._midi_out.delete()
+            except Exception:
+                pass
             self._midi_out = None
 
     def add_mapping(self, param_path: str, mapping: MidiMapping):

@@ -111,7 +111,12 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 - **Slice editor** with interactive waveform, automatic transient detection, draggable markers, zoom/pan, and fixed-width selection mode
 - **FIT mode slicer**: Snaps both start and end of a slice to transients, then resamples on save to the exact bar length — guarantees seamless looping and identical durations across all slices at a given BPM
 - **BPM override**: Manual BPM entry in the slicer for precise bar-length calculations (auto-detect by default)
-- **Scrollable Slices Library**: All saved slices listed in the Slice tab with drag-to-load and per-file delete (with confirmation)
+- **Dedicated cue output**: Preview slices on a separate audio device/channel pair with independent volume — headphone monitoring while the audience hears the main output
+- **Live loop region update**: While looping a selection, moving the markers queues the new region — it transitions seamlessly at the end of the current loop iteration. Stop and re-press to jump to the new selection immediately
+- **Auto-chop (Slice Mode)**: Manual, Transient, Equal, and BPM Grid chop modes with batch export of all regions, metadata sidecar files, and sensitivity control
+- **Precision editing**: Numeric start/end/duration spinboxes, zero-crossing snap (ZX), BPM-grid snap (GRID), marker nudge (±1ms / ±1 sample), and undo/redo (Ctrl+Z / Ctrl+Shift+Z)
+- **Contextual tooltips**: Hover over any slicer control for a description of what it does
+- **Scrollable Slices Library**: All saved slices listed with search, sort (name/date), BPM badges, right-click "Load to channel", multi-select batch delete, and drag-to-load
 
 ### Controllers
 - **Monome grids** via serialosc/OSC (auto-detected)
@@ -797,7 +802,73 @@ At the bottom of the Slice tab is a scrollable **SLICES** library panel listing 
 - **Drag any entry** from the library onto a channel strip waveform to load it for playback.
 - **Drag any entry** onto the slicer waveform to open it in the Slice editor.
 - **Click ✕** on any entry to permanently delete the file (a confirmation dialog appears before deleting).
+- **Search**: Type in the search box at the top of the library to filter slices by filename.
+- **Sort**: Use the dropdown to sort by Name (A-Z / Z-A) or date (Newest / Oldest).
+- **BPM badge**: Slices exported with metadata show their BPM next to the filename.
+- **Right-click → Load to channel N**: Sends the slice directly to a specific channel (1–16).
+- **Multi-select**: Hold `Ctrl` and click multiple slices, then click **Delete** to batch-remove them.
 - The library updates automatically whenever a new slice is saved.
+
+#### Cue Output Setup
+
+The slicer has a **dedicated cue output** so you can preview slices on headphones while the main audio plays through the audience speakers:
+
+1. In the cue row (below the transport controls), select a **Device** from the dropdown — this can be a completely separate audio interface from the main output.
+2. Choose a **Channel pair** (e.g. 1/2 or 3/4) if your device has more than 2 outputs.
+3. Set the **Mode**:
+   - **CUE ONLY** — preview only through the cue device (audience hears nothing).
+   - **CUE + MAIN** — preview through both cue and main (useful during soundcheck).
+   - **OFF** — disable cue output entirely.
+4. Adjust the **VOL** fader (0–200%) independently of the main output.
+
+All cue settings are saved with presets and restored on recall.
+
+#### Loop Region Updates
+
+When playing a selection with **Loop** enabled, you can move the selection markers to a different region while the audio keeps playing. The new loop region is queued and **transitions seamlessly at the end of the current loop iteration** — the old region plays through to its end, then the new region begins. This lets you audition different sections without hearing a jump or pop mid-loop.
+
+If you **stop** playback first, then adjust the selection and press **▶ Sel**, it plays the new selection immediately.
+
+#### Auto-Chop Workflow
+
+The slicer can automatically divide a sample into regions for batch export:
+
+1. **Select a slice mode** from the dropdown:
+   - **Manual** (default) — standard single-marker workflow, no auto-chop.
+   - **Transient** — detects transients in the audio and creates a region between each pair. Adjust the **Sensitivity** fader (more left = more regions, more right = fewer).
+   - **Equal** — divides the sample (or current selection) into **N** equal parts. Set the count with the **Slices** spinner.
+   - **BPM Grid** — divides at beat boundaries using the BPM from the spinbox or auto-detect.
+2. **Click CHOP** to run the algorithm. Regions appear as alternating shaded bands in the waveform.
+3. **Click any band** to audition it through the cue device. Use `←`/`→` arrow keys to step through regions.
+4. **Click EXPORT ALL** to save every region as a separate WAV file in `data/slices/`. FIT-mode resampling is applied per-slice if FIT is checked.
+5. A metadata `.json` sidecar is written alongside each exported WAV containing source filename, BPM, bar count, FIT flag, and timestamp.
+
+#### Precision Editing
+
+- **Numeric spinboxes** for Start, End, and Duration (seconds, 3 decimal places) — type a value to move the corresponding marker, or drag the marker and the spinbox updates automatically.
+- **Duration spinbox** adjusts the end marker to match the desired duration.
+- **ZX button** (zero-crossing snap) — when toggled on (gold highlight), every marker drag auto-snaps to the nearest zero-crossing within ±64 samples. Eliminates clicks at slice boundaries.
+- **GRID button** (BPM-grid snap) — when toggled on (blue highlight), markers snap to the nearest quarter-note beat boundary at the current BPM.
+
+#### Slicer Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Space` | Audition the region under the cursor (or toggle play if no regions) |
+| `←` / `→` | Step through chop regions and auto-audition each |
+| `Shift+←` / `Shift+→` | Nudge the active marker by ±1 ms |
+| `Ctrl+Shift+←` / `Ctrl+Shift+→` | Nudge the active marker by ±1 sample |
+| `Enter` | Play from current playhead to end of selection |
+| `Ctrl+Z` | Undo last marker move |
+| `Ctrl+Shift+Z` | Redo last undone marker move |
+
+The **active marker** (start or end) is whichever was last dragged or edited via a spinbox.
+
+#### Platform Notes
+
+- **Windows (WASAPI)**: When using a separate cue device, both the main and cue outputs must use **Shared** mode (not Exclusive). If your DAW or another app holds Exclusive mode on a device, cue playback on that device will fail silently.
+- **Windows (ASIO)**: Most ASIO drivers only allow one application at a time. If you need both main and cue on the same ASIO interface, use different channel pairs on the same device rather than two separate devices.
+- **macOS (CoreAudio)**: Separate devices work out of the box. For aggregate devices, create them in Audio MIDI Setup and select the aggregate as your main or cue device.
 
 ### Effects and Mixer
 

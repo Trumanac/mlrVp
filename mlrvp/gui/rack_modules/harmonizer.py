@@ -301,6 +301,8 @@ class HarmonizerModule(RackModuleBase):
     # ── Handlers ──────────────────────────────────────────────────────────────
 
     def _on_algo(self, algo: int):
+        if not (0 <= algo < len(_ALGO_NAMES)):
+            return
         self._lcd.setText(_ALGO_NAMES[algo])
         self.param_changed.emit("algorithm", algo)
 
@@ -318,4 +320,5 @@ class HarmonizerModule(RackModuleBase):
         self._fdbk.set_value(state.feedback / 0.9 if state.feedback else 0.0)
         self._mix.set_value(state.mix)
         self._algo_sel.set_algo(state.algorithm)
-        self._lcd.setText(_ALGO_NAMES[state.algorithm])
+        if 0 <= state.algorithm < len(_ALGO_NAMES):
+            self._lcd.setText(_ALGO_NAMES[state.algorithm])

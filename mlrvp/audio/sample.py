@@ -33,6 +33,15 @@ def load_sample(filepath: str, target_sr: int = SAMPLE_RATE) -> Optional[SampleB
     path = Path(filepath)
     if not path.exists():
         return None
+
+    # Guard against absurdly large files that would exhaust RAM
+    _MAX_FILE_BYTES = 500 * 1024 * 1024  # 500 MB
+    try:
+        if path.stat().st_size > _MAX_FILE_BYTES:
+            return None
+    except OSError:
+        return None
+
     try:
         data, sr = sf.read(str(path), dtype='float32', always_2d=True)
     except Exception:
@@ -43,6 +52,8 @@ def load_sample(filepath: str, target_sr: int = SAMPLE_RATE) -> Optional[SampleB
         return None
 
     # Resample if needed
+    if len(data) == 0:
+        return None
     if sr != target_sr:
         try:
             import resampy

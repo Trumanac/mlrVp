@@ -463,7 +463,9 @@ class MixerView(QWidget):
         self._aux_vu_r.set_level(level)
 
     def get_group_channel(self, idx: int) -> GroupChannel:
-        return self._groups[idx]
+        if 0 <= idx < len(self._groups):
+            return self._groups[idx]
+        return self._groups[0]
 
     def set_group_fx_route(self, group: int, route: int):
         """Set FX route display for a group channel (syncs from effects view)."""

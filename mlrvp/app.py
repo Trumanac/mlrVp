@@ -18,6 +18,7 @@ from PySide6.QtGui import QIcon
 
 from mlrvp.config import AppConfig, PlaybackMode, MAX_ROWS, NUM_GROUPS, NUM_PATTERN_RECORDERS, LED_OFF, LED_DIM, LED_BRIGHT, PITCH_SCALE_MAPS, PITCH_SCALE_NAMES
 from mlrvp.audio.engine import AudioEngine
+from mlrvp.audio.slicer_preview import SlicerPreviewService
 from mlrvp.audio.sample import load_sample, get_waveform_overview
 from mlrvp.transport.clock import MasterClock
 from mlrvp.transport.pattern import PatternRecorder
@@ -109,6 +110,7 @@ class AppController:
         self.midi = MidiHandler()
         self.osc: Optional[OscHandler] = None
         self.presets = PresetManager()
+        self.slicer_preview = SlicerPreviewService()
         self.patterns: list[PatternRecorder] = [
             PatternRecorder(i, length * 4)  # convert bars to beats
             for i, length in enumerate([4, 8, 16, 32])
@@ -303,6 +305,7 @@ class AppController:
     def init_gui(self, app: QApplication):
         """Create the main window and wire GUI signals."""
         self.window = MainWindow()
+        self.window.tools_view.slice_panel.set_preview_service(self.slicer_preview)
         self._midi_map = MidiMapManager(self.window)
         self._connect_gui_signals()
         self._populate_gui_devices()
@@ -359,6 +362,7 @@ class AppController:
             self.engine.stop()
         if self.osc:
             self.osc.stop()
+        self.slicer_preview.close()
         self.grid.disconnect()
         log.info("All subsystems stopped")
 
@@ -881,7 +885,7 @@ class AppController:
 
         Disk I/O runs on a background thread so the GUI never blocks.
         """
-        if not self.engine:
+        if not self.engine or not (0 <= row < MAX_ROWS):
             return
 
         ch = self.engine.channels[row]
@@ -1007,6 +1011,9 @@ class AppController:
         # --- Tools ---
         w.tools_view.record_toggled.connect(self._gui_record_toggle)
         w.tools_view.slice_saved.connect(self._on_slice_saved)
+        w.tools_view.slice_panel.load_to_channel.connect(
+            lambda fp, ch: self.load_sample_to_channel(ch, fp)
+        )
 
         # --- Setup ---
         w.setup_view.audio_setting_changed.connect(self._gui_audio_setting)
@@ -1508,6 +1515,8 @@ class AppController:
     # --- Channel param handlers ---
 
     def _gui_channel_param(self, row: int, param: str, value):
+        if not (0 <= row < MAX_ROWS):
+            return
         ch = self.config.channels[row]
         if param == "mode":
             old_mode = ch.mode
@@ -1667,16 +1676,22 @@ class AppController:
     # --- Mixer handlers ---
 
     def _gui_group_volume(self, group: int, vol: float):
+        if not (0 <= group < NUM_GROUPS):
+            return
         self.config.groups[group].volume = vol
         if self.engine:
             self.engine.set_group_volume(group, vol)
 
     def _gui_group_send(self, group: int, send: float):
+        if not (0 <= group < NUM_GROUPS):
+            return
         self.config.groups[group].send = send
         if self.engine:
             self.engine.set_group_send(group, send)
 
     def _gui_group_mute(self, group: int, mute: bool):
+        if not (0 <= group < NUM_GROUPS):
+            return
         self.config.groups[group].mute = mute
         if self.engine:
             self.engine.set_group_mute(group, mute)
@@ -1738,6 +1753,8 @@ class AppController:
 
     def _gui_group_fx_route(self, group: int, route: int):
         """Set FX routing for a group: 0=OFF/M, 1=FX1, 2=FX2."""
+        if not (0 <= group < NUM_GROUPS):
+            return
         self.config.groups[group].fx_route = route
         if self.engine:
             self.engine.mixer.groups[group].fx_route = route
@@ -2156,8 +2173,6 @@ class AppController:
         setattr(self.config, key, value)
         if self.window:
             self.window.set_status(f"Audio: {key} = {value} (restart to apply)")
-            if key == "output_device":
-                self.window.tools_view.slice_panel.set_output_device(int(value))
 
     def _gui_grid_setting(self, key: str, value):
         if key == "row_count":
@@ -2263,8 +2278,22 @@ class AppController:
             in_names = [d["name"] for d in in_devs]
             self.window.tools_view.recorder_panel.set_input_devices(in_names)
 
-            # Sync slicer preview to the configured output device
-            self.window.tools_view.slice_panel.set_output_device(self.config.output_device)
+            # Populate slicer cue device combo from output device list
+            cue_devs = [(d["index"], d["name"]) for d in out_devs]
+            sp = self.window.tools_view.slice_panel
+            sp.populate_cue_devices(cue_devs)
+            # Sync slicer preview to the configured main output device
+            sp.set_output_device(self.config.output_device)
+            # Apply persisted slicer tool state (volume, mode, loop, etc.)
+            sp.set_slicer_state(self.config.slicer)
+            # Select the persisted cue device in the combo
+            sp.select_cue_device(self.config.slicer.cue_device)
+            # Configure preview service device + volume
+            self.slicer_preview.set_volume(self.config.slicer.cue_volume)
+            self.slicer_preview.set_device(
+                self.config.slicer.cue_device,
+                self.config.slicer.cue_channel_offset,
+            )
         except Exception as e:
             log.warning("Could not enumerate audio devices: %s", e)
 

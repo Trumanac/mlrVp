@@ -2101,7 +2101,7 @@ class _AllpassFilter:
     the buffer is split into delay-sized chunks (typically 1-3 iterations
     instead of 512 per-sample iterations).
     """
-    __slots__ = ('_buf', '_size', '_idx', '_fb', '_rd_buf')
+    __slots__ = ('_buf', '_size', '_idx', '_fb', '_rd_buf', '_flush_count')
 
     def __init__(self, delay_samples: int, feedback: float = 0.5):
         self._size = delay_samples
@@ -2109,6 +2109,7 @@ class _AllpassFilter:
         self._idx = 0
         self._fb = np.float32(feedback)
         self._rd_buf = np.empty((delay_samples, 2), dtype=np.float32)
+        self._flush_count = 0
 
     def process(self, inp: np.ndarray) -> np.ndarray:
         n = len(inp)
@@ -2121,6 +2122,7 @@ class _AllpassFilter:
             delayed = _circ_read(self._buf, idx, n, sz, out=self._rd_buf)
             _circ_write(self._buf, idx, inp + delayed * fb, sz)
             self._idx = (idx + n) % sz
+            self._maybe_flush()
             return delayed - inp * fb
 
         # Chunked path for small delays
@@ -2135,7 +2137,17 @@ class _AllpassFilter:
             idx = (idx + cn) % sz
             pos += cn
         self._idx = idx
+        self._maybe_flush()
         return out
+
+    def _maybe_flush(self):
+        self._flush_count += 1
+        if self._flush_count >= 100:
+            self._flush_count = 0
+            self._buf[np.abs(self._buf) < 1e-18] = 0.0
+
+    def flush_denormals(self):
+        self._buf[np.abs(self._buf) < 1e-18] = 0.0
 
     def reset(self):
         self._buf[:] = 0.0
@@ -4220,6 +4232,7 @@ class ShimmerReverbProcessor:
         self._lp_zi_buf = np.zeros((1, 2), dtype=np.float64)
         self._delayed_f64 = np.zeros((buffer_size, 2), dtype=np.float64)
         self._lp_out_f32 = np.zeros((buffer_size, 2), dtype=np.float32)
+        self._lp_buf_size = buffer_size
         # Pre-allocated circ-read buffer for predelay, combs, allpass
         self._circ_rd_buf = np.empty((buffer_size, 2), dtype=np.float32)
         self._circ_rd_size = buffer_size
@@ -4271,6 +4284,11 @@ class ShimmerReverbProcessor:
         fb_f32 = np.float32(fb)
         lp_b = np.array([lp_c], dtype=np.float64)
         lp_a = np.array([1.0, -(1.0 - lp_c)], dtype=np.float64)
+
+        if n > self._lp_buf_size:
+            self._delayed_f64 = np.zeros((n, 2), dtype=np.float64)
+            self._lp_out_f32 = np.zeros((n, 2), dtype=np.float32)
+            self._lp_buf_size = n
 
         for c in range(4):
             wp = self._comb_wp[c]
@@ -4767,6 +4785,9 @@ class GranularFreezeProcessor:
         # Pre-allocated wet output buffer
         self._gf_wet = np.zeros((max(buffer_size, 4096), 2), dtype=np.float32)
         self._gf_wet_size = max(buffer_size, 4096)
+        # Pre-allocated mono→stereo buffer
+        self._mono_stereo = np.zeros((max(buffer_size, 4096), 2), dtype=np.float32)
+        self._mono_stereo_size = max(buffer_size, 4096)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
@@ -4786,7 +4807,12 @@ class GranularFreezeProcessor:
             if stereo:
                 src = data[:, :2]
             else:
-                src = np.column_stack((data, data))
+                if n > self._mono_stereo_size:
+                    self._mono_stereo = np.zeros((n, 2), dtype=np.float32)
+                    self._mono_stereo_size = n
+                self._mono_stereo[:n, 0] = data[:n].ravel()[:n]
+                self._mono_stereo[:n, 1] = data[:n].ravel()[:n]
+                src = self._mono_stereo[:n]
             if end <= self._buf_len:
                 self._buf[wp:end] = src
             else:
