@@ -228,7 +228,22 @@ class ChannelStrip(QFrame):
         )
         self._rev_btn.toggled.connect(self._on_reverse_toggled)
         self._rev_btn.setVisible(False)  # shown only in SHOT mode
-        top_row.addWidget(_section("MODE", self._mode_combo, self._rev_btn))
+
+        self._hold_btn = QPushButton("HOLD")
+        self._hold_btn.setCheckable(True)
+        self._hold_btn.setChecked(False)
+        self._hold_btn.setFixedSize(34, 20)
+        self._hold_btn.setToolTip("Hold — loop one-shot while grid button is held")
+        self._hold_btn.setStyleSheet(
+            f"QPushButton {{ background: #1a1a1a; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; font-weight: bold; border: 1px solid {SEPARATOR}; "
+            f"padding: 0px; }}"
+            f"QPushButton:checked {{ background: {ACCENT_GOLD}; color: #111; "
+            f"border: 1px solid {ACCENT_GOLD}; }}"
+        )
+        self._hold_btn.toggled.connect(self._on_hold_toggled)
+        self._hold_btn.setVisible(False)  # shown only in SHOT mode
+        top_row.addWidget(_section("MODE", self._mode_combo, self._rev_btn, self._hold_btn))
         top_row.addWidget(_vdiv())
 
         # Group buttons — 4 colored squares matching mlrv GRP layout
@@ -376,21 +391,21 @@ class ChannelStrip(QFrame):
         self._pitch_scale_combo.currentIndexChanged.connect(
             lambda idx: self.param_changed.emit(self._row, "pitch_scale", idx)
         )
-        self._pitch_hold_btn = QPushButton("HOLD")
-        self._pitch_hold_btn.setFixedSize(38, 20)
-        self._pitch_hold_btn.setCheckable(True)
-        self._pitch_hold_btn.setToolTip("Loop sample continuously on each pitch trigger")
-        self._pitch_hold_btn.setStyleSheet(
+        self._pitch_loop_btn = QPushButton("LOOP")
+        self._pitch_loop_btn.setFixedSize(38, 20)
+        self._pitch_loop_btn.setCheckable(True)
+        self._pitch_loop_btn.setToolTip("Loop sample continuously on each pitch trigger")
+        self._pitch_loop_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {SEPARATOR}; "
             f"border: 1px solid {SEPARATOR}; font-size: 8px; font-weight: bold; "
             f"padding: 0px 2px; }}"
             f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
             f"QPushButton:checked {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
         )
-        self._pitch_hold_btn.toggled.connect(
-            lambda v: self.param_changed.emit(self._row, "pitch_hold", v)
+        self._pitch_loop_btn.toggled.connect(
+            lambda v: self.param_changed.emit(self._row, "pitch_loop", v)
         )
-        self._scale_section = _section("SCALE", self._pitch_scale_combo, self._pitch_hold_btn)
+        self._scale_section = _section("SCALE", self._pitch_scale_combo, self._pitch_loop_btn)
         self._scale_section.setVisible(False)
         top_row.addWidget(self._scale_section)
 
@@ -516,15 +531,23 @@ class ChannelStrip(QFrame):
         self._steps_section.setVisible(not is_pitch)
         # REV toggle only in SHOT mode
         self._rev_btn.setVisible(is_shot)
+        self._hold_btn.setVisible(is_shot)
         if not is_shot:
             self._rev_btn.blockSignals(True)
             self._rev_btn.setChecked(False)
             self._rev_btn.blockSignals(False)
+            self._hold_btn.blockSignals(True)
+            self._hold_btn.setChecked(False)
+            self._hold_btn.blockSignals(False)
             self.param_changed.emit(self._row, "reverse", False)
+            self.param_changed.emit(self._row, "shot_hold", False)
         self.param_changed.emit(self._row, "mode", mode)
 
     def _on_reverse_toggled(self, checked: bool):
         self.param_changed.emit(self._row, "reverse", checked)
+
+    def _on_hold_toggled(self, checked: bool):
+        self.param_changed.emit(self._row, "shot_hold", checked)
 
     def _select_group(self, idx: int):
         for i, btn in enumerate(self._group_btns):
@@ -607,6 +630,12 @@ class ChannelStrip(QFrame):
         self._rev_btn.blockSignals(False)
         self._rev_btn.setVisible(is_shot)
 
+        # HOLD toggle — visible only in SHOT mode
+        self._hold_btn.blockSignals(True)
+        self._hold_btn.setChecked(state.shot_hold and is_shot)
+        self._hold_btn.blockSignals(False)
+        self._hold_btn.setVisible(is_shot)
+
         for i, btn in enumerate(self._group_btns):
             btn.setChecked(i == state.group)
 
@@ -636,9 +665,9 @@ class ChannelStrip(QFrame):
         self._pitch_root_spin.blockSignals(True)
         self._pitch_root_spin.setValue(state.pitch_root)
         self._pitch_root_spin.blockSignals(False)
-        self._pitch_hold_btn.blockSignals(True)
-        self._pitch_hold_btn.setChecked(state.pitch_hold)
-        self._pitch_hold_btn.blockSignals(False)
+        self._pitch_loop_btn.blockSignals(True)
+        self._pitch_loop_btn.setChecked(state.pitch_loop)
+        self._pitch_loop_btn.blockSignals(False)
         is_pitch = state.mode == PlaybackMode.PITCH
         self._scale_section.setVisible(is_pitch)
         self._pitch_mode_root.setVisible(is_pitch)
@@ -672,7 +701,7 @@ class ChannelStrip(QFrame):
             self._gain_fader, self._speed_spin, self._pitch_spin, self._steps_spin,
             self._half_btn, self._double_btn, self._mute_btn, self._stop_btn,
             self._waveform, self._pitch_scale_combo, self._pitch_root_spin,
-            self._pitch_hold_btn, self._rev_btn,
+            self._pitch_loop_btn, self._rev_btn,
         ):
             w.setEnabled(enabled)
         for btn in self._group_btns:

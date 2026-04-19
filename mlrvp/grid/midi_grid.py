@@ -128,6 +128,8 @@ class MidiGridAdapter:
         self._control_cc_map: dict[int, int] = {}   # CC number → button index
         self._control_cc_out: dict[int, int] = {}   # button index → CC number
         self._midi_forward: Optional[Callable] = None
+        # Per-cell LED state cache: (y, x) → (velocity, color) to skip unchanged sends
+        self._led_cache: dict[tuple[int, int], tuple[int, int]] = {}
 
     @property
     def connected(self) -> bool:
@@ -259,6 +261,7 @@ class MidiGridAdapter:
         self._connected = False
         self._in_port = -1
         self._out_port = -1
+        self._led_cache.clear()
         log.info("MIDI grid disconnected")
 
     def _on_midi_message(self, event, data=None):
@@ -344,13 +347,37 @@ class MidiGridAdapter:
             pass
 
     def set_row(self, y: int, values: list[int], color: int = 0):
-        """Set an entire row of LEDs."""
+        """Set an entire row of LEDs, skipping cells that haven't changed."""
+        if self._midi_out is None or not self._connected:
+            return
+        cache = self._led_cache
+        cmap = self._group_color_maps[color % len(self._group_color_maps)]
+        cols = self.columns
+        xy_to_note = self._xy_to_note
+        midi_out = self._midi_out
         for x, val in enumerate(values):
-            if x < self.columns:
-                self.set_led(x, y, val, color)
+            if x >= cols:
+                break
+            key = (y, x)
+            entry = (val, color)
+            if cache.get(key) == entry:
+                continue
+            cache[key] = entry
+            note = xy_to_note.get((x, y))
+            if note is None:
+                continue
+            velocity = cmap.get(val, 0)
+            try:
+                if velocity > 0:
+                    midi_out.send_message([0x90, note, velocity])
+                else:
+                    midi_out.send_message([0x80, note, 0])
+            except Exception:
+                pass
 
     def clear_all(self):
         """Turn off all LEDs."""
+        self._led_cache.clear()
         self._clear_all_leds()
 
     def _clear_all_leds(self):
@@ -425,29 +452,30 @@ def scan_midi_grid_devices() -> list[dict]:
     devices = []
     midi_in = rtmidi.MidiIn()
     midi_out = rtmidi.MidiOut()
-    in_ports = midi_in.get_ports()
-    out_ports = midi_out.get_ports()
+    try:
+        in_ports = midi_in.get_ports()
+        out_ports = midi_out.get_ports()
 
-    for i, name in enumerate(in_ports):
-        if not is_grid_controller(name):
-            continue
-        # Find matching output port
-        out_idx = -1
-        for j, out_name in enumerate(out_ports):
-            if _ports_match(name, out_name):
-                out_idx = j
-                break
+        for i, name in enumerate(in_ports):
+            if not is_grid_controller(name):
+                continue
+            # Find matching output port
+            out_idx = -1
+            for j, out_name in enumerate(out_ports):
+                if _ports_match(name, out_name):
+                    out_idx = j
+                    break
 
-        model = detect_launchpad_model(name)
-        devices.append({
-            "name": name,
-            "in_port": i,
-            "out_port": out_idx,
-            "model": model.value,
-        })
-
-    midi_in.delete()
-    midi_out.delete()
+            model = detect_launchpad_model(name)
+            devices.append({
+                "name": name,
+                "in_port": i,
+                "out_port": out_idx,
+                "model": model.value,
+            })
+    finally:
+        midi_in.delete()
+        midi_out.delete()
     return devices
 
 

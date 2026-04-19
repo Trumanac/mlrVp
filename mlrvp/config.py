@@ -70,6 +70,7 @@ class ChannelState:
     gain: float = 1.0
     group: int = 0
     reverse: bool = False
+    shot_hold: bool = False   # ONESHOT hold — loop while grid button held
     steps: int = 8
     transpose: int = 0
     octave: int = 0
@@ -83,7 +84,7 @@ class ChannelState:
     filter_val: float = 0.0  # -1 to 1, 0 = bypass, <0 = LP, >0 = HP
     pitch_scale: int = 0     # index into PITCH_SCALE_MAPS (0=MAJOR .. 4=CHROM)
     pitch_root: int = 0      # semitone offset for PITCH mode base note (-24 to +24)
-    pitch_hold: bool = False  # True = loop in PITCH mode, False = one-shot
+    pitch_loop: bool = False  # True = loop in PITCH mode, False = one-shot
     playing: bool = False
     playback_pos: float = 0.0
 
@@ -958,7 +959,8 @@ def get_ui_scale() -> float:
     p = get_config_dir() / "ui_scale.txt"
     if p.exists():
         try:
-            return float(p.read_text().strip())
+            val = float(p.read_text().strip())
+            return max(0.5, min(3.0, val))
         except (ValueError, OSError):
             pass
     return 1.0

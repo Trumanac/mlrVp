@@ -7,7 +7,9 @@ mixer state, effect parameters, MIDI mappings, and setlist.
 import json
 import logging
 import math
+import os
 import re
+import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
@@ -63,6 +65,40 @@ def _sanitize_name(name: str) -> str:
     return s or "untitled"
 
 
+def _atomic_write_json(fp: Path, data: dict, cls=None):
+    """Write JSON atomically via temp-file-then-rename.
+
+    Writes to a temporary file in the same directory, then uses
+    ``os.replace`` (atomic on the same filesystem) so a crash
+    mid-write can never leave a truncated target file.
+
+    On Windows, os.replace can fail with WinError 5 (Access Denied)
+    when antivirus or another process briefly holds the target file
+    open.  We retry a few times with a short sleep before giving up.
+    """
+    import time
+    dir_ = fp.parent
+    fd, tmp = tempfile.mkstemp(dir=str(dir_), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, indent=2, cls=cls)
+        last_err = None
+        for attempt in range(5):
+            try:
+                os.replace(tmp, fp)
+                return
+            except PermissionError as e:
+                last_err = e
+                time.sleep(0.05 * (attempt + 1))
+        raise last_err
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 class PresetManager:
     """Manages a global preset library and ordered setlists.
 
@@ -111,11 +147,12 @@ class PresetManager:
         return result
 
     def save_preset(self, name: str, config: AppConfig,
-                    midi_mappings: Optional[list] = None) -> bool:
+                    midi_mappings: Optional[list] = None) -> None:
         """Save current state to the preset library under the given name.
 
         The actual file write happens on a background thread so slow
         storage doesn't block the main thread during playback.
+        Errors are logged but not propagated.
         """
         fp = get_presets_dir() / f"{_sanitize_name(name)}.json"
         data = {
@@ -128,13 +165,11 @@ class PresetManager:
         def _write():
             try:
                 with self._io_lock:
-                    with open(fp, 'w') as f:
-                        json.dump(data, f, indent=2, cls=_SafeFloatEncoder)
+                    _atomic_write_json(fp, data, cls=_SafeFloatEncoder)
             except Exception as e:
                 log.error("Preset save error: %s", e)
 
-        threading.Thread(target=_write, daemon=True).start()
-        return True
+        threading.Thread(target=_write, daemon=False).start()
 
     def load_preset(self, name: str) -> Optional[dict]:
         """Load a preset from the library by name."""
@@ -167,8 +202,7 @@ class PresetManager:
                 with open(old_fp) as f:
                     data = json.load(f)
                 data["name"] = new_name
-                with open(new_fp, 'w') as f:
-                    json.dump(data, f, indent=2, cls=_SafeFloatEncoder)
+                _atomic_write_json(new_fp, data, cls=_SafeFloatEncoder)
                 old_fp.unlink()
                 # Update references in current setlist
                 for i, p in enumerate(self.setlist_presets):
@@ -200,6 +234,8 @@ class PresetManager:
             except Exception:
                 result.append(fp.stem)
         result = result or ["Default"]
+        # Hide the system Default setlist from user-facing lists
+        result = [n for n in result if n != "Default"]
         self._setlist_names_cache = result
         return list(result)
 
@@ -227,34 +263,32 @@ class PresetManager:
     def save_setlist(self):
         """Persist the current setlist on a background thread."""
         self._invalidate_setlist_cache()
+        # Snapshot values on the calling thread to avoid reading live state
+        # from the background thread (race with concurrent modifications).
+        _name = self.setlist_name
+        _presets = list(self.setlist_presets)
 
         def _write():
             try:
                 with self._io_lock:
-                    fp = get_setlists_dir() / f"{_sanitize_name(self.setlist_name)}.json"
-                    data = {"name": self.setlist_name, "presets": list(self.setlist_presets)}
-                    with open(fp, 'w') as f:
-                        json.dump(data, f, indent=2)
+                    fp = get_setlists_dir() / f"{_sanitize_name(_name)}.json"
+                    data = {"name": _name, "presets": _presets}
+                    _atomic_write_json(fp, data)
             except Exception as e:
                 log.error("Setlist save error: %s", e)
 
-        threading.Thread(target=_write, daemon=True).start()
+        threading.Thread(target=_write, daemon=False).start()
 
     def create_setlist(self, name: str):
-        """Create a new empty setlist (background write)."""
+        """Create a new empty setlist (synchronous so it's safe to load immediately)."""
         fp = get_setlists_dir() / f"{_sanitize_name(name)}.json"
         data = {"name": name, "presets": []}
         self._invalidate_setlist_cache()
-
-        def _write():
-            try:
-                with self._io_lock:
-                    with open(fp, 'w') as f:
-                        json.dump(data, f, indent=2)
-            except Exception as e:
-                log.error("Create setlist error: %s", e)
-
-        threading.Thread(target=_write, daemon=True).start()
+        try:
+            with self._io_lock:
+                _atomic_write_json(fp, data)
+        except Exception as e:
+            log.error("Create setlist error: %s", e)
 
     def rename_setlist(self, old_name: str, new_name: str):
         """Rename a setlist (background I/O)."""
@@ -262,7 +296,9 @@ class PresetManager:
         new_fp = get_setlists_dir() / f"{_sanitize_name(new_name)}.json"
         if old_fp.exists() and not new_fp.exists():
             self._invalidate_setlist_cache()
-            current_name = self.setlist_name
+            # Update in-memory name on the main thread before bg I/O
+            if self.setlist_name == old_name:
+                self.setlist_name = new_name
 
             def _io():
                 try:
@@ -270,15 +306,12 @@ class PresetManager:
                         with open(old_fp) as f:
                             data = json.load(f)
                         data["name"] = new_name
-                        with open(new_fp, 'w') as f:
-                            json.dump(data, f, indent=2)
+                        _atomic_write_json(new_fp, data)
                         old_fp.unlink()
-                        if current_name == old_name:
-                            self.setlist_name = new_name
                 except Exception:
                     pass
 
-            threading.Thread(target=_io, daemon=True).start()
+            threading.Thread(target=_io, daemon=False).start()
 
     def delete_setlist(self, name: str):
         """Delete a setlist (does not delete the presets it references)."""
@@ -308,13 +341,18 @@ class PresetManager:
         self.save_setlist()
         return idx
 
-    def remove_from_setlist(self, index: int):
-        """Remove a preset reference from the setlist (doesn't delete preset)."""
+    def remove_from_setlist(self, index: int, auto_save: bool = True):
+        """Remove a preset reference from the setlist (doesn't delete preset).
+
+        Set *auto_save* to False when doing bulk removals and call
+        save_setlist() once after all mutations are done.
+        """
         if 0 <= index < len(self.setlist_presets):
             self.setlist_presets.pop(index)
             if self.active_index >= len(self.setlist_presets):
                 self.active_index = max(-1, len(self.setlist_presets) - 1)
-            self.save_setlist()
+            if auto_save:
+                self.save_setlist()
 
     def reorder_setlist(self, new_order: list[int]):
         """Reorder setlist by a list of old indices."""
@@ -360,11 +398,11 @@ class PresetManager:
         except (ValueError, TypeError):
             pass
         try:
-            config.master_hp = max(20.0, min(500.0, float(cfg_data.get("master_hp", config.master_hp))))
+            config.master_hp = max(20.0, min(500.0, float(cfg_data.get("master_hp", 20.0))))
         except (ValueError, TypeError):
             pass
         try:
-            config.master_lp = max(200.0, min(20000.0, float(cfg_data.get("master_lp", config.master_lp))))
+            config.master_lp = max(200.0, min(20000.0, float(cfg_data.get("master_lp", 20000.0))))
         except (ValueError, TypeError):
             pass
         try:
@@ -394,6 +432,7 @@ class PresetManager:
                 except (ValueError, TypeError):
                     pass
                 ch.reverse = ch_data.get("reverse", ch.reverse)
+                ch.shot_hold = ch_data.get("shot_hold", ch.shot_hold)
                 try:
                     ch.steps = max(1, min(64, int(ch_data.get("steps", ch.steps))))
                     ch.transpose = max(-24, min(24, int(ch_data.get("transpose", ch.transpose))))
@@ -415,7 +454,7 @@ class PresetManager:
                     ch.pitch_root = max(-24, min(24, int(ch_data.get("pitch_root", ch.pitch_root))))
                 except (ValueError, TypeError):
                     pass
-                ch.pitch_hold = bool(ch_data.get("pitch_hold", ch.pitch_hold))
+                ch.pitch_loop = bool(ch_data.get("pitch_loop", ch_data.get("pitch_hold", ch.pitch_loop)))
 
         # Groups
         groups_data = cfg_data.get("groups", [])
@@ -665,6 +704,7 @@ class PresetManager:
                     "gain": ch.gain,
                     "group": ch.group,
                     "reverse": ch.reverse,
+                    "shot_hold": ch.shot_hold,
                     "steps": ch.steps,
                     "transpose": ch.transpose,
                     "octave": ch.octave,
@@ -678,7 +718,7 @@ class PresetManager:
                     "filter_val": ch.filter_val,
                     "pitch_scale": ch.pitch_scale,
                     "pitch_root": ch.pitch_root,
-                    "pitch_hold": ch.pitch_hold,
+                    "pitch_loop": ch.pitch_loop,
                 }
                 for ch in config.channels
             ],

@@ -67,7 +67,6 @@ class Recorder:
         Returns:
             Thru audio if monitoring is enabled, else None
         """
-        # Snapshot state under lock
         with self._lock:
             if not self._recording or self._buffer is None:
                 if self.state.thru:
@@ -78,34 +77,35 @@ class Recorder:
                     out[:] = input_data
                     return out
                 return None
+
             buffer = self._buffer
             write_pos = self._write_pos
             target_frames = self._target_frames
             do_thru = self.state.thru
             do_loop = self.state.loop
 
-        if do_thru:
-            n = len(input_data)
-            if n > len(self._thru_buf):
-                self._thru_buf = np.zeros((n, 2), dtype=np.float32)
-            thru_output = self._thru_buf[:n]
-            thru_output[:] = input_data
-        else:
-            thru_output = None
-        frames_to_write = min(len(input_data), target_frames - write_pos)
-
-        # Bulk copy outside the lock — this is the expensive op
-        if frames_to_write > 0:
-            buf = buffer.data
-            if input_data.shape[1] >= 2:
-                buf[write_pos:write_pos + frames_to_write] = input_data[:frames_to_write, :2]
+            if do_thru:
+                n = len(input_data)
+                if n > len(self._thru_buf):
+                    self._thru_buf = np.zeros((n, 2), dtype=np.float32)
+                thru_output = self._thru_buf[:n]
+                thru_output[:] = input_data
             else:
-                buf[write_pos:write_pos + frames_to_write, 0] = input_data[:frames_to_write, 0]
-                buf[write_pos:write_pos + frames_to_write, 1] = input_data[:frames_to_write, 0]
-            write_pos += frames_to_write
+                thru_output = None
 
-        # Update position under lock
-        with self._lock:
+            frames_to_write = min(len(input_data), target_frames - write_pos)
+
+            # Bulk copy under the lock to prevent arm()/stop() from replacing
+            # the buffer while the copy is in flight.
+            if frames_to_write > 0:
+                buf = buffer.data
+                if input_data.shape[1] >= 2:
+                    buf[write_pos:write_pos + frames_to_write] = input_data[:frames_to_write, :2]
+                else:
+                    buf[write_pos:write_pos + frames_to_write, 0] = input_data[:frames_to_write, 0]
+                    buf[write_pos:write_pos + frames_to_write, 1] = input_data[:frames_to_write, 0]
+                write_pos += frames_to_write
+
             self._write_pos = write_pos
             if write_pos >= target_frames:
                 if do_loop:
@@ -123,9 +123,12 @@ class Recorder:
     @property
     def progress(self) -> float:
         """Recording progress 0.0 - 1.0."""
-        if self._target_frames == 0:
+        with self._lock:
+            tf = self._target_frames
+            wp = self._write_pos
+        if tf == 0:
             return 0.0
-        return self._write_pos / self._target_frames
+        return wp / tf
 
     @property
     def buffer(self) -> Optional[SampleBuffer]:

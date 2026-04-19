@@ -61,6 +61,15 @@ def _set_highlight(ctrl, level: int):
         w.setStyleSheet(ctrl._original_style + _highlight_suffix(w, level))
 
 
+def _widget_alive(widget: QWidget) -> bool:
+    """Return True if the underlying C++ QWidget is still alive."""
+    try:
+        widget.objectName()
+        return True
+    except RuntimeError:
+        return False
+
+
 class MappableControl:
     """Metadata about a mappable GUI control."""
 
@@ -94,6 +103,8 @@ class MidiMapManager(QObject):
             widget.objectName()  # probe C++ object liveness
         except RuntimeError:
             return
+        # Prune dead widget refs while iterating
+        self._controls = [c for c in self._controls if _widget_alive(c.widget)]
         for c in self._controls:
             if c.widget is widget and c.param_path == param_path:
                 return

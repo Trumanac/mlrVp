@@ -131,11 +131,11 @@ Click the tab buttons to switch between them. Each group can hold up to 8 module
 <li><b>Ether Drift</b> — bipolar infinite phaser. RATE sets sweep speed, DEPTH sets sweep range, FDBK adds resonance, SPREAD widens the stereo image, MIX blends dry/wet. SYNC locks both sweep directions to the same rate; ROUTE selects BOTH chains, RISE ↑ only, or FALL ↓ only.</li>
 <li><b>The Velvet Rope</b> — noise gate with THRESH sets threshold, ATK attack time, HOLD hold time, REL release time, RANGE sets depth of gating, KEY sets sidechain filter frequency</li>
 <li><b>Heartquake</b> — tremolo with RATE speed, DEPTH intensity, SPREAD stereo width, and MIX</li>
-<li><b>Auto Wah</b> — envelope auto-wah filter with SENS sensitivity, FREQ center frequency, DEPTH sweep range, SPEED envelope speed, and MIX</li>
+<li><b>Funk Doctor</b> — envelope auto-wah filter (Mutron III-style) with SENS sensitivity, FREQ center frequency, DEPTH sweep range, SPEED envelope speed, and MIX</li>
 <li><b>All Buttons In</b> — FET limiter with INPUT drive, OUTPUT level, ATK attack, REL release, and MIX</li>
 <li><b>Vitamin E</b> — aural exciter with TUNE high-frequency harmonics, LO TUNE low-frequency enhancement, OUTPUT level, and MIX</li>
 <li><b>Punch Card</b> — transient shaper with ATK attack boost/cut, SUS sustain boost/cut, OUTPUT level, and MIX</li>
-<li><b>Freq Shifter</b> — frequency shifter with SHIFT amount in Hz, FDBK feedback, and MIX</li>
+<li><b>The Bode Plot</b> — single-sideband frequency shifter with SHIFT amount in Hz, FDBK feedback, and MIX</li>
 <li><b>Ring Leader</b> — ring modulator with FREQ carrier frequency, SHAPE waveform morph, and MIX</li>
 <li><b>Spin Cycle</b> — rotary speaker simulator with SPEED motor rate, DRIVE saturation, BAL horn/drum balance, and MIX</li>
 <li><b>Personal Space</b> — stereo widener with WIDTH stereo spread, CENTER mid-side balance, LO MONO low-frequency mono crossover, and MIX</li>
@@ -199,7 +199,15 @@ Click <b>ARM</b> and recording starts on the next beat, writing directly into th
 
 <h2>Setup (Right Panel → Setup Tab)</h2>
 <ul>
-<li><b>Audio tab</b> — select input/output devices, start/stop the engine.</li>
+<li><b>Audio tab</b> — configure your audio hardware:
+  <ul>
+    <li><b>Driver Type</b> — filter the device lists by host API (ASIO, WASAPI, CoreAudio, ALSA). Select a specific driver to see only its devices, or leave on <i>All Drivers</i>. On Windows, choose ASIO for lowest latency.</li>
+    <li><b>Output Device</b> — your main audio output (speakers / interface).</li>
+    <li><b>Input Device</b> — audio input for recording.</li>
+    <li><b>Sample Rate / Buffer Size</b> — lower buffer = lower latency, higher CPU load.</li>
+    <li>Click <b>Start Engine</b> to open the audio stream. Use <b>File → Restart</b> to reinitialize after changing settings.</li>
+  </ul>
+</li>
 <li><b>Grid tab</b> — connect Launchpad or monome, set active rows and columns, toggle virtual grid, enable tilt mapping.</li>
 <li><b>MIDI tab</b> — add MIDI input controllers, click <b>Learn</b> to enter mapping mode. Each mapping row has Min/Max range and a Toggle checkbox. Tilt axis assignments appear here when a monome with accelerometer is connected.</li>
 </ul>
@@ -211,6 +219,26 @@ Click <b>ARM</b> and recording starts on the next beat, writing directly into th
 <li><code>Ctrl+O</code> — open preset file</li>
 <li><code>Ctrl+S</code> — save preset file</li>
 <li><code>Ctrl+Q</code> — quit</li>
+</ul>
+<h3>Slicer Keyboard Shortcuts (while the Slice panel has focus)</h3>
+<ul>
+<li><code>Space</code> — audition the region under the cursor (or toggle play if no auto-chop regions)</li>
+<li><code>Enter</code> — play from current playhead position to end of selection</li>
+<li><code>← / →</code> — step through auto-chop regions and audition each one</li>
+<li><code>Shift+← / Shift+→</code> — nudge the active marker ±1 ms</li>
+<li><code>Ctrl+Shift+← / Ctrl+Shift+→</code> — nudge the active marker ±1 sample</li>
+<li><code>Ctrl+Z</code> — undo last marker move</li>
+<li><code>Ctrl+Shift+Z</code> — redo last undone marker move</li>
+</ul>
+<p>The <b>active marker</b> is whichever start or end handle was last dragged or edited via a spinbox.</p>
+
+<h2>File Menu</h2>
+<ul>
+<li><b>File → Open Preset File…</b> — load a preset from any location on disk.</li>
+<li><b>File → Save Preset File…</b> — export the current state as a standalone JSON preset file for sharing.</li>
+<li><b>File → Restart</b> — reinitialize the audio engine and reload all settings. Use this after changing audio device settings or to recover from an audio dropout.</li>
+<li><b>File → Stop All Audio</b> — immediately stop all playing channels and pattern recorders.</li>
+<li><b>File → Quit</b> — close mlrVp.</li>
 </ul>
 
 <h2>View Menu</h2>

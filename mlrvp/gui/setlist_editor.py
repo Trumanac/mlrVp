@@ -9,13 +9,62 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QListWidget, QListWidgetItem,
-    QFrame, QInputDialog, QMessageBox, QAbstractItemView
+    QFrame, QInputDialog, QMessageBox, QAbstractItemView, QMenu
 )
 
 from mlrvp.config import NUM_SETLIST_SLOTS
 from mlrvp.gui.styles import (
     ACCENT_GOLD, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY
 )
+
+
+class _ExclusiveList(QListWidget):
+    """QListWidget with toggle-click selection and mutual exclusion.
+
+    Left-click toggles the item (no Ctrl needed).  Ctrl+click adds/removes
+    from the selection.  Shift+click extends range.  When this list gains
+    a selection, the *partner* list is cleared.
+    """
+
+    def __init__(self, partner_getter, parent=None):
+        super().__init__(parent)
+        self._partner_getter = partner_getter
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    def mousePressEvent(self, event):
+        mods = event.modifiers()
+        item = self.itemAt(event.pos())
+        if event.button() == Qt.MouseButton.LeftButton and item is not None:
+            if mods & Qt.KeyboardModifier.ShiftModifier:
+                # Shift+click — let Qt handle range selection
+                super().mousePressEvent(event)
+            elif mods & Qt.KeyboardModifier.ControlModifier:
+                # Ctrl+click — toggle this item additively
+                item.setSelected(not item.isSelected())
+            else:
+                # Plain left click — toggle this single item
+                was_selected = item.isSelected()
+                self.clearSelection()
+                if not was_selected:
+                    item.setSelected(True)
+                    self.setCurrentItem(item)
+                    # Let Qt handle the press so drag-and-drop can initiate
+                    super().mousePressEvent(event)
+        elif event.button() == Qt.MouseButton.RightButton and item is not None:
+            # Right-click: select the item if not already selected
+            if not item.isSelected():
+                self.clearSelection()
+                item.setSelected(True)
+                self.setCurrentItem(item)
+            super().mousePressEvent(event)
+        else:
+            super().mousePressEvent(event)
+        # Clear partner selection whenever we select here
+        if self.selectedItems():
+            partner = self._partner_getter()
+            if partner is not None:
+                partner.clearSelection()
 
 
 class SetlistEditorDialog(QDialog):
@@ -78,6 +127,13 @@ class SetlistEditorDialog(QDialog):
         panels = QHBoxLayout()
         panels.setSpacing(8)
 
+        _list_style = (
+            f"QListWidget {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"border: 1px solid {SEPARATOR}; font-size: 12px; }}"
+            f"QListWidget::item {{ padding: 4px 8px; }}"
+            f"QListWidget::item:selected {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
+        )
+
         # -- Left panel: current setlist order --
         left = QVBoxLayout()
         left.setSpacing(4)
@@ -85,16 +141,12 @@ class SetlistEditorDialog(QDialog):
         left_label.setStyleSheet(f"font-weight: bold; color: {TEXT_SECONDARY};")
         left.addWidget(left_label)
 
-        self._setlist_list = QListWidget()
+        self._setlist_list = _ExclusiveList(lambda: self._library_list)
         self._setlist_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self._setlist_list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self._setlist_list.setStyleSheet(
-            f"QListWidget {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
-            f"border: 1px solid {SEPARATOR}; font-size: 12px; }}"
-            f"QListWidget::item {{ padding: 4px 8px; }}"
-            f"QListWidget::item:selected {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
-        )
+        self._setlist_list.setStyleSheet(_list_style)
         self._setlist_list.model().rowsMoved.connect(self._on_rows_moved)
+        self._setlist_list.customContextMenuRequested.connect(self._setlist_context_menu)
         left.addWidget(self._setlist_list, stretch=1)
 
         left_btns = QHBoxLayout()
@@ -126,14 +178,9 @@ class SetlistEditorDialog(QDialog):
         right_label.setStyleSheet(f"font-weight: bold; color: {TEXT_SECONDARY};")
         right.addWidget(right_label)
 
-        self._library_list = QListWidget()
-        self._library_list.setStyleSheet(
-            f"QListWidget {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
-            f"border: 1px solid {SEPARATOR}; font-size: 12px; }}"
-            f"QListWidget::item {{ padding: 4px 8px; }}"
-            f"QListWidget::item:selected {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
-        )
-        self._library_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._library_list = _ExclusiveList(lambda: self._setlist_list)
+        self._library_list.setStyleSheet(_list_style)
+        self._library_list.customContextMenuRequested.connect(self._library_context_menu)
         right.addWidget(self._library_list, stretch=1)
 
         lib_btns = QHBoxLayout()
@@ -183,6 +230,11 @@ class SetlistEditorDialog(QDialog):
         idx = self._sl_combo.findText(self._pm.setlist_name)
         if idx >= 0:
             self._sl_combo.setCurrentIndex(idx)
+        elif self._sl_combo.count() > 0:
+            # Current setlist (e.g. Default) is hidden — switch to first visible
+            self._sl_combo.setCurrentIndex(0)
+            self._pm.load_setlist(self._sl_combo.itemText(0))
+            self.setlist_changed.emit()
         self._sl_combo.blockSignals(False)
         self._refresh_setlist_panel()
         self._refresh_library_panel()
@@ -211,6 +263,7 @@ class SetlistEditorDialog(QDialog):
         if name:
             self._pm.load_setlist(name)
             self._refresh_setlist_panel()
+            self.setlist_changed.emit()
 
     def _on_new_setlist(self):
         name, ok = QInputDialog.getText(self, "New Setlist", "Setlist name:")
@@ -230,9 +283,7 @@ class SetlistEditorDialog(QDialog):
 
     def _on_delete_setlist(self):
         name = self._sl_combo.currentText()
-        if name == "Default":
-            QMessageBox.warning(self, "Cannot Delete",
-                                "The Default setlist cannot be deleted.")
+        if not name:
             return
         reply = QMessageBox.question(
             self, "Delete Setlist",
@@ -249,23 +300,32 @@ class SetlistEditorDialog(QDialog):
     # ------------------------------------------------------------------ #
 
     def _on_add_to_setlist(self):
-        """Add the selected library preset to the setlist."""
-        item = self._library_list.currentItem()
-        if not item:
+        """Add selected library preset(s) to the setlist."""
+        items = self._library_list.selectedItems()
+        if not items:
             return
-        if len(self._pm.setlist_presets) >= NUM_SETLIST_SLOTS:
-            QMessageBox.warning(self, "Limit", "Maximum 32 presets per setlist.")
-            return
-        self._pm.add_to_setlist(item.text())
+        for item in items:
+            if len(self._pm.setlist_presets) >= NUM_SETLIST_SLOTS:
+                QMessageBox.warning(self, "Limit", "Maximum 32 presets per setlist.")
+                break
+            self._pm.add_to_setlist(item.text())
         self._refresh_setlist_panel()
         self.setlist_changed.emit()
 
     def _on_remove_from_setlist(self):
-        """Remove the selected preset from the setlist (not from library)."""
-        row = self._setlist_list.currentRow()
-        if row < 0 or row >= len(self._pm.setlist_presets):
+        """Remove selected preset(s) from the setlist (not from library)."""
+        items = self._setlist_list.selectedItems()
+        if not items:
             return
-        self._pm.remove_from_setlist(row)
+        # Collect indices in descending order so removal doesn't shift later indices
+        rows = sorted(
+            [item.data(Qt.ItemDataRole.UserRole) for item in items],
+            reverse=True
+        )
+        for row in rows:
+            if 0 <= row < len(self._pm.setlist_presets):
+                self._pm.remove_from_setlist(row, auto_save=False)
+        self._pm.save_setlist()
         self._refresh_setlist_panel()
         self.setlist_changed.emit()
 
@@ -286,11 +346,11 @@ class SetlistEditorDialog(QDialog):
     # ------------------------------------------------------------------ #
 
     def _on_rename_preset(self):
-        """Rename a preset in the global library."""
-        item = self._library_list.currentItem()
-        if not item:
+        """Rename a preset in the global library (single selection only)."""
+        items = self._library_list.selectedItems()
+        if len(items) != 1:
             return
-        old = item.text()
+        old = items[0].text()
         name, ok = QInputDialog.getText(self, "Rename Preset", "New name:", text=old)
         if ok and name.strip() and name.strip() != old:
             if self._pm.rename_preset(old, name.strip()):
@@ -298,32 +358,98 @@ class SetlistEditorDialog(QDialog):
                 self.setlist_changed.emit()
 
     def _on_delete_preset(self):
-        """Delete a preset from the global library."""
-        item = self._library_list.currentItem()
-        if not item:
+        """Delete selected preset(s) from the global library."""
+        items = self._library_list.selectedItems()
+        if not items:
             return
-        name = item.text()
+        names = [item.text() for item in items]
+        if len(names) == 1:
+            msg = (f"Delete preset '{names[0]}' from the library?\n"
+                   f"It will also be removed from any setlists that reference it.")
+        else:
+            msg = (f"Delete {len(names)} presets from the library?\n"
+                   f"They will also be removed from any setlists that reference them.")
         reply = QMessageBox.question(
             self, "Delete Preset",
-            f"Delete preset '{name}' from the library?\n"
-            f"It will also be removed from any setlists that reference it.",
+            msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._pm.delete_preset(name)
-            # Remove from current setlist too (under lock for thread safety)
-            with self._pm._io_lock:
-                old_list = self._pm.setlist_presets
+            # Track the active preset by name so we can find its new index
+            active_name = None
+            if 0 <= self._pm.active_index < len(self._pm.setlist_presets):
+                active_name = self._pm.setlist_presets[self._pm.active_index]
+            for name in names:
+                self._pm.delete_preset(name)
+                # Remove from current setlist too
                 self._pm.setlist_presets = [
-                    p for p in old_list if p != name
+                    p for p in self._pm.setlist_presets if p != name
                 ]
-                # Adjust active_index if it now points past the end
-                if self._pm.active_index >= len(self._pm.setlist_presets):
-                    self._pm.active_index = max(-1, len(self._pm.setlist_presets) - 1)
+            # Restore active_index by name, or clamp if the active preset was deleted
+            if active_name and active_name in self._pm.setlist_presets:
+                self._pm.active_index = self._pm.setlist_presets.index(active_name)
+            elif self._pm.active_index >= len(self._pm.setlist_presets):
+                self._pm.active_index = max(-1, len(self._pm.setlist_presets) - 1)
             self._pm.save_setlist()
             self._refresh()
             self.setlist_changed.emit()
 
+    # ------------------------------------------------------------------ #
+    #  Context menus                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _setlist_context_menu(self, pos):
+        """Right-click menu for the setlist (left) panel."""
+        items = self._setlist_list.selectedItems()
+        if not items:
+            return
+        menu = QMenu(self)
+        if len(items) == 1:
+            menu.addAction("Rename", self._on_rename_setlist_preset)
+        menu.addAction("Remove", self._on_remove_from_setlist)
+        menu.exec(self._setlist_list.viewport().mapToGlobal(pos))
+
+    def _library_context_menu(self, pos):
+        """Right-click menu for the library (right) panel."""
+        items = self._library_list.selectedItems()
+        if not items:
+            return
+        menu = QMenu(self)
+        if len(items) == 1:
+            menu.addAction("Rename", self._on_rename_preset)
+        menu.addAction("Delete", self._on_delete_preset)
+        menu.exec(self._library_list.viewport().mapToGlobal(pos))
+
+    def _on_rename_setlist_preset(self):
+        """Rename a preset from the setlist panel (single selection)."""
+        items = self._setlist_list.selectedItems()
+        if len(items) != 1:
+            return
+        idx = items[0].data(Qt.ItemDataRole.UserRole)
+        if idx < 0 or idx >= len(self._pm.setlist_presets):
+            return
+        old = self._pm.setlist_presets[idx]
+        name, ok = QInputDialog.getText(self, "Rename Preset", "New name:", text=old)
+        if ok and name.strip() and name.strip() != old:
+            if self._pm.rename_preset(old, name.strip()):
+                self._refresh()
+                self.setlist_changed.emit()
+
+    # ------------------------------------------------------------------ #
+    #  Save and new-setlist helper                                        #
+    # ------------------------------------------------------------------ #
+
     def _on_save(self):
         self._pm.save_setlist()
         self.setlist_changed.emit()
+
+    def open_for_new_setlist(self):
+        """Programmatically trigger the New Setlist input dialog.
+
+        Called by the save-button logic when the Default setlist is active.
+        Must be called *before* exec() so the input dialog appears on top
+        of the editor.  Returns the new setlist name, or 'Default' if
+        cancelled.
+        """
+        self._on_new_setlist()
+        return self._pm.setlist_name

@@ -540,13 +540,13 @@ class AudioEngine:
         # Stream
         self._stream: Optional[sd.OutputStream] = None
         self._input_stream: Optional[sd.InputStream] = None
-        self._lock = threading.Lock()
         self._running = False
 
         # Thread-safe event queue — all channel trigger/stop mutations are
         # deferred to the audio thread to avoid races with process().
         # deque.append / popleft are atomic in CPython.
-        self._event_queue: deque = deque()
+        # maxlen prevents unbounded growth under trigger spam (e.g. runaway MIDI).
+        self._event_queue: deque = deque(maxlen=256)
 
         # Callback for UI updates (called from audio thread, should be fast)
         self._meter_callback: Optional[Callable] = None
@@ -568,9 +568,6 @@ class AudioEngine:
         self._input_read_idx = -1  # -1 = nothing ready
         self._input_copy = np.zeros((self.buffer_size, 2), dtype=np.float32)
 
-        # Pre-allocated zero buffer for delay routing bypass
-        self._zero_buf = np.zeros((self.buffer_size, 2), dtype=np.float32)
-
         # Pre-allocated AUX scaling buffer (avoids per-block allocation)
         self._aux_buf = np.zeros((self.buffer_size, 2), dtype=np.float32)
 
@@ -583,6 +580,7 @@ class AudioEngine:
 
         # Pre-allocated temp buffer for peak metering (avoids allocation in callback)
         self._peak_tmp = np.zeros(self.buffer_size, dtype=np.float32)
+        self._peak_tmp2 = np.zeros((self.buffer_size, 2), dtype=np.float32)
 
         # Meter callback decimation — send every Nth callback (~30 fps)
         self._meter_skip = max(1, int(self.sample_rate / self.buffer_size / 30))
@@ -615,13 +613,14 @@ class AudioEngine:
 
         # Pre-allocated channel output list to avoid per-callback allocation
         self._channel_outputs: list[tuple[int, np.ndarray]] = []
+        self._co_count = 0
 
         # ── Ring buffer for decoupled audio output ──
         # The DSP worker fills this ahead of time; the sounddevice callback
-        # just copies the next block out.  16 blocks ≈ 186 ms of lookahead.
-        # Extra headroom absorbs BLAS thread-pool warm-up spikes and OS
-        # scheduler jitter that are more pronounced in a frozen exe.
-        self._ring_blocks = 16
+        # just copies the next block out.  4 blocks ≈ 46 ms of lookahead.
+        # Keeps trigger latency and visual-playback-head offset low while
+        # still absorbing short GC pauses and DSP spikes.
+        self._ring_blocks = 4
         self._ring_buf = np.zeros(
             (self._ring_blocks, self.buffer_size, 2), dtype=np.float32
         )
@@ -685,6 +684,45 @@ class AudioEngine:
             "fet_limiter_gr_d": 0.0,
             "fet_limiter_gr_m": 0.0,
         }
+        # Double-buffered meter snapshots — avoids dict()/list() copies
+        # on the DSP thread.  DSP writes into _meter_snap[_meter_snap_idx],
+        # then enqueues a reference and flips the index.
+        def _make_snap():
+            return {
+                "master": [0.0, 0.0],
+                "groups": [0.0] * NUM_GROUPS,
+                "fx1": [0.0, 0.0],
+                "fx2": [0.0, 0.0],
+                "fx3": [0.0, 0.0],
+                "fx4": [0.0, 0.0],
+                "waveform_l": [],
+                "waveform_r": [],
+                "waveform_fx1_l": [],
+                "waveform_fx1_r": [],
+                "waveform_fx2_l": [],
+                "waveform_fx2_r": [],
+                "waveform_fx3_l": [],
+                "waveform_fx3_r": [],
+                "waveform_fx4_l": [],
+                "waveform_fx4_r": [],
+                "compressor_gr_a": 0.0,
+                "compressor_gr_b": 0.0,
+                "compressor_gr_c": 0.0,
+                "compressor_gr_d": 0.0,
+                "compressor_gr_m": 0.0,
+                "glue_compressor_gr_a": 0.0,
+                "glue_compressor_gr_b": 0.0,
+                "glue_compressor_gr_c": 0.0,
+                "glue_compressor_gr_d": 0.0,
+                "glue_compressor_gr_m": 0.0,
+                "fet_limiter_gr_a": 0.0,
+                "fet_limiter_gr_b": 0.0,
+                "fet_limiter_gr_c": 0.0,
+                "fet_limiter_gr_d": 0.0,
+                "fet_limiter_gr_m": 0.0,
+            }
+        self._meter_snap = [_make_snap(), _make_snap()]
+        self._meter_snap_idx = 0
 
     def set_meter_callback(self, callback: Callable):
         self._meter_callback = callback
@@ -851,14 +889,22 @@ class AudioEngine:
         gc.collect()
 
     def _gc_loop(self):
-        """Background thread that runs gen-0 GC collection once per second.
+        """Background thread that runs gen-0 GC collection every 2 seconds.
 
         Uses a simple loop instead of threading.Timer to avoid creating
         a new Thread object every second — those objects can't be collected
         while the cyclic GC is disabled, causing a slow memory leak.
+
+        Gen-1/gen-2 thresholds are raised to prevent gen-0 from escalating
+        into a full collection that can stall the DSP thread for 50-200ms.
         """
+        # Prevent gen-0 from cascading into expensive gen-1/gen-2 sweeps.
+        # Default thresholds are (700, 10, 10) — after 10 gen-0 runs,
+        # Python auto-promotes to gen-1, which can take 10-100ms.
+        # Set gen-1/gen-2 very high so only cheap gen-0 runs automatically.
+        gc.set_threshold(700, 50, 50)
         while self._gc_running:
-            time.sleep(1.0)
+            time.sleep(2.0)
             if self._gc_running:
                 gc.collect(0)
 
@@ -909,12 +955,14 @@ class AudioEngine:
             _t0 = time.perf_counter()
 
         # ── Process pending trigger/stop events (thread-safe) ──
+        # Cap to 16 events per block to prevent trigger-spam storms from
+        # consuming the entire block budget.  Remaining events spill to the
+        # next block (~5.8 ms later — inaudible delay).
         eq = self._event_queue
-        while eq:
-            try:
-                event = eq.popleft()
-            except IndexError:
-                break
+        _ev_budget = 16
+        while eq and _ev_budget > 0:
+            _ev_budget -= 1
+            event = eq.popleft()
             cmd = event[0]
             if cmd == 'trigger':
                 self.channels[event[1]].trigger(event[2], event[3])
@@ -924,6 +972,10 @@ class AudioEngine:
                 self.channels[event[1]].force_stop()
             elif cmd == 'set_pos':
                 self.channels[event[1]]._position = event[2]
+            elif cmd == 'load_sample':
+                self.channels[event[1]].load_sample(event[2])
+            elif cmd == 'reset_fx':
+                self._do_reset_all_fx()
 
         # Capture input audio only when needed (recording or AUX monitoring)
         _need_input = self.recorder.recording or not self.mixer.aux_mute
@@ -945,26 +997,36 @@ class AudioEngine:
         else:
             thru = None
 
-        # Process all active channels
+        # Process all active channels — reuse pre-allocated output slot list
+        # to avoid creating (group, audio) tuples every block.
         channel_outputs = self._channel_outputs
-        channel_outputs.clear()
+        co_count = 0
         active_count = min(self.config.row_count, MAX_ROWS)
 
         for i in range(active_count):
             ch = self.channels[i]
-            if ch.playing or ch.state.playing:
+            if ch._playing or ch.state.playing:
                 audio = ch.process(frames)
                 # Apply per-channel filter
-                if abs(ch.state.filter_val) > 0.01:
-                    self.channel_filters[i].set_filter(ch.state.filter_val)
+                fv = ch.state.filter_val
+                if fv > 0.01 or fv < -0.01:
+                    self.channel_filters[i].set_filter(fv)
                     audio = self.channel_filters[i].process(audio)
-                channel_outputs.append((ch.state.group, audio))
+                if co_count < len(channel_outputs):
+                    channel_outputs[co_count][0] = ch.state.group
+                    channel_outputs[co_count][1] = audio
+                else:
+                    channel_outputs.append([ch.state.group, audio])
+                co_count += 1
+        self._co_count = co_count
 
         if _prof:
             _t1 = time.perf_counter()
 
         # Mix through groups (now returns FX bus outputs too)
-        main_bus, aux_send, fx1_bus, fx2_bus, fx3_bus, fx4_bus = self.mixer.process_groups(channel_outputs, frames)
+        _r = self.mixer.process_groups(channel_outputs[:co_count], frames)
+        main_bus = _r[0]; aux_send = _r[1]
+        fx1_bus = _r[2]; fx2_bus = _r[3]; fx3_bus = _r[4]; fx4_bus = _r[5]
 
         # Add recorder thru to main bus if active
         if thru is not None:
@@ -1355,31 +1417,24 @@ class AudioEngine:
             fx4_bus = self.stutter_d.process(fx4_bus)
 
         # Track FX bus peaks before summing (for per-rack metering)
-        tmp = self._peak_tmp[:frames]
-        np.abs(fx1_bus[:, 0], out=tmp)
-        _p = float(tmp.max())
-        self._fx1_peak[0] = max(self._fx1_peak[0] * 0.95, 0.0 if _p != _p else _p)
-        np.abs(fx1_bus[:, 1], out=tmp)
-        _p = float(tmp.max())
-        self._fx1_peak[1] = max(self._fx1_peak[1] * 0.95, 0.0 if _p != _p else _p)
-        np.abs(fx2_bus[:, 0], out=tmp)
-        _p = float(tmp.max())
-        self._fx2_peak[0] = max(self._fx2_peak[0] * 0.95, 0.0 if _p != _p else _p)
-        np.abs(fx2_bus[:, 1], out=tmp)
-        _p = float(tmp.max())
-        self._fx2_peak[1] = max(self._fx2_peak[1] * 0.95, 0.0 if _p != _p else _p)
-        np.abs(fx3_bus[:, 0], out=tmp)
-        _p = float(tmp.max())
-        self._fx3_peak[0] = max(self._fx3_peak[0] * 0.95, 0.0 if _p != _p else _p)
-        np.abs(fx3_bus[:, 1], out=tmp)
-        _p = float(tmp.max())
-        self._fx3_peak[1] = max(self._fx3_peak[1] * 0.95, 0.0 if _p != _p else _p)
-        np.abs(fx4_bus[:, 0], out=tmp)
-        _p = float(tmp.max())
-        self._fx4_peak[0] = max(self._fx4_peak[0] * 0.95, 0.0 if _p != _p else _p)
-        np.abs(fx4_bus[:, 1], out=tmp)
-        _p = float(tmp.max())
-        self._fx4_peak[1] = max(self._fx4_peak[1] * 0.95, 0.0 if _p != _p else _p)
+        # Use pre-allocated stereo abs buffer to avoid per-column view allocs
+        _pt = self._peak_tmp2[:frames]
+        np.abs(fx1_bus[:frames], out=_pt)
+        _p0 = _pt[:, 0].max(); _p1 = _pt[:, 1].max()
+        self._fx1_peak[0] = max(self._fx1_peak[0] * 0.95, float(_p0))
+        self._fx1_peak[1] = max(self._fx1_peak[1] * 0.95, float(_p1))
+        np.abs(fx2_bus[:frames], out=_pt)
+        _p0 = _pt[:, 0].max(); _p1 = _pt[:, 1].max()
+        self._fx2_peak[0] = max(self._fx2_peak[0] * 0.95, float(_p0))
+        self._fx2_peak[1] = max(self._fx2_peak[1] * 0.95, float(_p1))
+        np.abs(fx3_bus[:frames], out=_pt)
+        _p0 = _pt[:, 0].max(); _p1 = _pt[:, 1].max()
+        self._fx3_peak[0] = max(self._fx3_peak[0] * 0.95, float(_p0))
+        self._fx3_peak[1] = max(self._fx3_peak[1] * 0.95, float(_p1))
+        np.abs(fx4_bus[:frames], out=_pt)
+        _p0 = _pt[:, 0].max(); _p1 = _pt[:, 1].max()
+        self._fx4_peak[0] = max(self._fx4_peak[0] * 0.95, float(_p0))
+        self._fx4_peak[1] = max(self._fx4_peak[1] * 0.95, float(_p1))
 
         # Capture per-bus waveform for oscilloscopes (before summing)
         # Only compute waveform data when we'll actually send it
@@ -1404,6 +1459,10 @@ class AudioEngine:
         main_bus += fx2_bus
         main_bus += fx3_bus
         main_bus += fx4_bus
+
+        # Early NaN flush — prevent corrupted per-bus FX output from poisoning
+        # the master chain's internal state (delay lines, filter histories).
+        np.nan_to_num(main_bus, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
         if _prof:
             _t3 = time.perf_counter()
@@ -1460,7 +1519,8 @@ class AudioEngine:
         if self.plate_reverb_in_rack_m:
             dsp_output = self.plate_reverb_m.process(dsp_output)
         if self.compressor_in_rack_m:
-            dsp_output = self.compressor_m.process(dsp_output)
+            sc_m = self._get_compressor_sidechain(self.compressor_m, dsp_output, frames)
+            dsp_output = self.compressor_m.process(dsp_output, sc_m)
         if self.glue_compressor_in_rack_m:
             dsp_output = self.glue_compressor_m.process(dsp_output)
         if self.bit_crusher_in_rack_m:
@@ -1509,12 +1569,11 @@ class AudioEngine:
         # Cheaper than checking every effect — one pass at the end.
         np.nan_to_num(dsp_output, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Peak metering
-        tmp = self._peak_tmp[:len(dsp_output)]
-        np.abs(dsp_output[:, 0], out=tmp)
-        self.output_peak[0] = max(self.output_peak[0] * 0.95, float(tmp.max()))
-        np.abs(dsp_output[:, 1], out=tmp)
-        self.output_peak[1] = max(self.output_peak[1] * 0.95, float(tmp.max()))
+        # Peak metering — use stereo abs buffer to avoid column view allocs
+        _pt = self._peak_tmp2[:len(dsp_output)]
+        np.abs(dsp_output, out=_pt)
+        self.output_peak[0] = max(self.output_peak[0] * 0.95, float(_pt[:, 0].max()))
+        self.output_peak[1] = max(self.output_peak[1] * 0.95, float(_pt[:, 1].max()))
 
         outbuf[:] = dsp_output
 
@@ -1524,6 +1583,7 @@ class AudioEngine:
             _wn = len(dsp_output[::step, 0])
             self._wf_master_l[:_wn] = dsp_output[::step, 0]
             self._wf_master_r[:_wn] = dsp_output[::step, 1]
+            # Write into pre-allocated working dict (no allocations)
             md = self._meter_dict
             md["master"][0] = float(self.output_peak[0])
             md["master"][1] = float(self.output_peak[1])
@@ -1549,16 +1609,6 @@ class AudioEngine:
             self._wf_snap_fx3_r[:_wn] = self._wf_fx3_r[:_wn]
             self._wf_snap_fx4_l[:_wn] = self._wf_fx4_l[:_wn]
             self._wf_snap_fx4_r[:_wn] = self._wf_fx4_r[:_wn]
-            md["waveform_l"] = self._wf_snap_master_l[:_wn]
-            md["waveform_r"] = self._wf_snap_master_r[:_wn]
-            md["waveform_fx1_l"] = self._wf_snap_fx1_l[:_wn]
-            md["waveform_fx1_r"] = self._wf_snap_fx1_r[:_wn]
-            md["waveform_fx2_l"] = self._wf_snap_fx2_l[:_wn]
-            md["waveform_fx2_r"] = self._wf_snap_fx2_r[:_wn]
-            md["waveform_fx3_l"] = self._wf_snap_fx3_l[:_wn]
-            md["waveform_fx3_r"] = self._wf_snap_fx3_r[:_wn]
-            md["waveform_fx4_l"] = self._wf_snap_fx4_l[:_wn]
-            md["waveform_fx4_r"] = self._wf_snap_fx4_r[:_wn]
             md["compressor_gr_a"] = self.compressor.gr_db
             md["compressor_gr_b"] = self.compressor_b.gr_db
             md["compressor_gr_c"] = self.compressor_c.gr_db
@@ -1574,18 +1624,46 @@ class AudioEngine:
             md["fet_limiter_gr_c"] = self.fet_limiter_c.gr_db
             md["fet_limiter_gr_d"] = self.fet_limiter_d.gr_db
             md["fet_limiter_gr_m"] = self.fet_limiter_m.gr_db
-            # Push meter snapshot to queue — GUI thread polls via
-            # poll_meters() instead of running Python on the DSP thread.
-            # Shallow copy so the GUI gets an independent snapshot; list
-            # values (master/groups/fx peaks) are copied to avoid aliasing.
-            snap = dict(md)
-            snap["master"] = list(md["master"])
-            snap["groups"] = list(md["groups"])
-            snap["fx1"] = list(md["fx1"])
-            snap["fx2"] = list(md["fx2"])
-            snap["fx3"] = list(md["fx3"])
-            snap["fx4"] = list(md["fx4"])
+            # Copy scalar/float values into the double-buffered snapshot dict
+            # instead of dict(md) + list() copies — zero heap allocations.
+            snap_idx = self._meter_snap_idx
+            snap = self._meter_snap[snap_idx]
+            snap["master"][0] = md["master"][0]
+            snap["master"][1] = md["master"][1]
+            s_groups = snap["groups"]
+            for gi in range(NUM_GROUPS):
+                s_groups[gi] = md_groups[gi]
+            snap["fx1"][0] = md["fx1"][0]; snap["fx1"][1] = md["fx1"][1]
+            snap["fx2"][0] = md["fx2"][0]; snap["fx2"][1] = md["fx2"][1]
+            snap["fx3"][0] = md["fx3"][0]; snap["fx3"][1] = md["fx3"][1]
+            snap["fx4"][0] = md["fx4"][0]; snap["fx4"][1] = md["fx4"][1]
+            snap["waveform_l"] = self._wf_snap_master_l[:_wn]
+            snap["waveform_r"] = self._wf_snap_master_r[:_wn]
+            snap["waveform_fx1_l"] = self._wf_snap_fx1_l[:_wn]
+            snap["waveform_fx1_r"] = self._wf_snap_fx1_r[:_wn]
+            snap["waveform_fx2_l"] = self._wf_snap_fx2_l[:_wn]
+            snap["waveform_fx2_r"] = self._wf_snap_fx2_r[:_wn]
+            snap["waveform_fx3_l"] = self._wf_snap_fx3_l[:_wn]
+            snap["waveform_fx3_r"] = self._wf_snap_fx3_r[:_wn]
+            snap["waveform_fx4_l"] = self._wf_snap_fx4_l[:_wn]
+            snap["waveform_fx4_r"] = self._wf_snap_fx4_r[:_wn]
+            snap["compressor_gr_a"] = md["compressor_gr_a"]
+            snap["compressor_gr_b"] = md["compressor_gr_b"]
+            snap["compressor_gr_c"] = md["compressor_gr_c"]
+            snap["compressor_gr_d"] = md["compressor_gr_d"]
+            snap["compressor_gr_m"] = md["compressor_gr_m"]
+            snap["glue_compressor_gr_a"] = md["glue_compressor_gr_a"]
+            snap["glue_compressor_gr_b"] = md["glue_compressor_gr_b"]
+            snap["glue_compressor_gr_c"] = md["glue_compressor_gr_c"]
+            snap["glue_compressor_gr_d"] = md["glue_compressor_gr_d"]
+            snap["glue_compressor_gr_m"] = md["glue_compressor_gr_m"]
+            snap["fet_limiter_gr_a"] = md["fet_limiter_gr_a"]
+            snap["fet_limiter_gr_b"] = md["fet_limiter_gr_b"]
+            snap["fet_limiter_gr_c"] = md["fet_limiter_gr_c"]
+            snap["fet_limiter_gr_d"] = md["fet_limiter_gr_d"]
+            snap["fet_limiter_gr_m"] = md["fet_limiter_gr_m"]
             self._meter_queue.append(snap)
+            self._meter_snap_idx = 1 - snap_idx
 
         # ── Profiling accumulation ──
         if _prof:
@@ -1605,20 +1683,21 @@ class AudioEngine:
             if self._prof_count >= self._prof_interval:
                 n = self._prof_count
                 budget_ms = self._prof_budget * 1000
+                pt = self._prof_total if self._prof_total > 0 else 1e-9
                 print(f"\n[DSP PROFILE] {n} blocks, budget={budget_ms:.2f}ms")
-                print(f"  avg total:   {self._prof_total/n*1000:.2f}ms  "
+                print(f"  avg total:   {pt/n*1000:.2f}ms  "
                       f"max: {self._prof_max*1000:.2f}ms  "
                       f"overruns: {self._prof_overruns} ({self._prof_overruns/n*100:.1f}%)")
                 print(f"  channels:    {self._prof_channels/n*1000:.2f}ms  "
-                      f"({self._prof_channels/self._prof_total*100:.0f}%)")
+                      f"({self._prof_channels/pt*100:.0f}%)")
                 print(f"  mixer:       {self._prof_mixer/n*1000:.2f}ms  "
-                      f"({self._prof_mixer/self._prof_total*100:.0f}%)")
+                      f"({self._prof_mixer/pt*100:.0f}%)")
                 print(f"  fx_buses:    {self._prof_fx/n*1000:.2f}ms  "
-                      f"({self._prof_fx/self._prof_total*100:.0f}%)")
+                      f"({self._prof_fx/pt*100:.0f}%)")
                 print(f"  master:      {self._prof_master/n*1000:.2f}ms  "
-                      f"({self._prof_master/self._prof_total*100:.0f}%)")
+                      f"({self._prof_master/pt*100:.0f}%)")
                 print(f"  metering:    {self._prof_meter/n*1000:.2f}ms  "
-                      f"({self._prof_meter/self._prof_total*100:.0f}%)")
+                      f"({self._prof_meter/pt*100:.0f}%)")
                 active = len(channel_outputs)
                 ring_avg = self._prof_ring_sum / max(n, 1)
                 print(f"  active_ch:   {active}  numba: {_HAS_NUMBA}  "
@@ -1785,19 +1864,78 @@ class AudioEngine:
             self._event_queue.append(('set_pos', row, position))
 
     def load_sample(self, row: int, sample: SampleBuffer):
-        """Load a sample into a channel."""
+        """Queue a sample load — processed on the audio thread."""
         if 0 <= row < MAX_ROWS:
-            self.channels[row].load_sample(sample)
+            self._event_queue.append(('load_sample', row, sample))
 
-    def set_channel_speed(self, row: int, tempo: float):
-        """Set channel playback speed based on tempo and sample length."""
+    def reset_all_fx(self):
+        """Queue a full FX buffer reset — processed on the audio thread."""
+        self._event_queue.append(('reset_fx',))
+
+    def flush_ring_buffer(self):
+        """Zero all ring buffer slots and reset pointers.
+
+        Must be called from the main thread AFTER queuing force_stop /
+        reset_fx events.  The DSP worker will refill with silence (or
+        whatever the next _process_block produces) before the callback
+        plays them out.
+        """
+        self._ring_buf[:] = 0
+        self._ring_write = 0
+        self._ring_read = 0
+        self._ring_buf_full = False
+        self._ring_event.set()  # wake worker to start refilling
+
+    def _do_reset_all_fx(self):
+        """Clear all internal FX buffers (delay lines, reverb tails, filter
+        histories, compressor envelopes, etc.).
+
+        Called on the audio thread via the event queue so no buffers are
+        accessed mid-process.
+        """
+        _suffixes = ('', '_b', '_c', '_d', '_m')
+        _fx_names = (
+            'delay', 'tape_delay', 'filter_a', 'filter_b',
+            'reel_to_reel', 'cassette_tape', 'vhs', 'vinyl',
+            'compressor', 'glue_compressor', 'hall_reverb', 'plate_reverb',
+            'bit_crusher', 'tube_overdrive', 'ether_drift', 'noise_gate',
+            'tremolo', 'auto_wah', 'fet_limiter', 'rotary', 'exciter',
+            'transient_shaper', 'harmonizer', 'stereo_widener',
+            'freq_shifter', 'ring_mod', 'simple_eq', 'ping_pong_delay',
+            'shimmer_reverb', 'lofi_radio', 'auto_pan', 'fuzz',
+            'granular_freeze', 'gate_reverb', 'stutter',
+        )
+        for sfx in _suffixes:
+            for name in _fx_names:
+                fx = getattr(self, name + sfx, None)
+                if fx is not None and hasattr(fx, 'reset'):
+                    fx.reset()
+        # FXBus instances have irregular names
+        for bus in (self.fx_bus_1, self.fx_bus_2, self.fx_bus_c,
+                    self.fx_bus_d, self.fx_bus_m):
+            bus.reset()
+        # Master HP/LP biquads
+        self._master_hp.reset()
+        self._master_lp.reset()
+        # Per-channel filters
+        for cf in self.channel_filters:
+            cf.reset()
+
+    def set_channel_speed(self, row: int, tempo: float, sample=None):
+        """Set channel playback speed based on tempo and sample length.
+
+        If *sample* is provided, use it for the duration calculation instead
+        of reading from the channel (which may not be loaded yet when the
+        load is queued via the event queue).
+        """
         if 0 <= row < MAX_ROWS and tempo > 0:
             ch = self.channels[row]
-            if ch.sample is not None and ch.sample.duration_sec > 0:
+            s = sample if sample is not None else ch.sample
+            if s is not None and s.duration_sec > 0:
                 # Calculate speed to fit sample into the step grid
                 beats = ch.state.steps
                 bar_duration = beats * (60.0 / tempo)
-                sample_duration = ch.sample.duration_sec * (ch.state.sel_end - ch.state.sel_start)
+                sample_duration = s.duration_sec * (ch.state.sel_end - ch.state.sel_start)
                 if sample_duration > 0 and bar_duration > 0:
                     ch.state.speed = sample_duration / bar_duration
 

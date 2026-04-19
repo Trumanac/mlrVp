@@ -36,8 +36,8 @@ log = logging.getLogger("mlrvp")
 
 class _SampleLoadWorker(QObject):
     """Delivers background-loaded samples to the main Qt thread via Signal."""
-    # row, filepath, SampleBuffer-or-None, preserve_speed flag
-    _loaded = Signal(int, str, object, bool)
+    # row, filepath, SampleBuffer-or-None, preserve_speed flag, load_gen
+    _loaded = Signal(int, str, object, bool, int)
 
     def __init__(self):
         super().__init__()
@@ -104,6 +104,9 @@ class AppController:
         # call doesn't stall on a cold import (librosa → numba JIT is slow).
         threading.Thread(target=self._preload_librosa, daemon=True).start()
 
+        # Track physical grid button hold state per row (for ONESHOT HOLD)
+        self._grid_row_held: set[int] = set()
+
         # Subsystems
         self.engine: Optional[AudioEngine] = None
         self.clock: Optional[MasterClock] = None
@@ -150,6 +153,8 @@ class AppController:
 
         # Track per-row playing state for LED cleanup
         self._row_was_playing: list[bool] = [False] * MAX_ROWS
+        # Cache last LED column per row — skip grid I/O when column unchanged
+        self._row_last_led_col: list[int] = [-1] * MAX_ROWS
 
         # Control-row pattern buttons: hold-to-clear with immediate LED feedback.
         self._pattern_hold_timers: dict[int, QTimer] = {}
@@ -342,10 +347,10 @@ class AppController:
             self.window.mixer_view.set_audio_enabled(self.engine._running)
             self.window.channel_view.set_audio_enabled(self.engine._running)
 
-        # UI update timer (~30fps)
+        # UI update timer (~60fps for responsive playback position LEDs)
         self._ui_timer = QTimer()
         self._ui_timer.timeout.connect(self._update_ui)
-        self._ui_timer.start(33)
+        self._ui_timer.start(16)
 
         log.info("All subsystems started")
 
@@ -388,6 +393,11 @@ class AppController:
         for i, ch in enumerate(self.engine.channels[:self.config.row_count]):
             if i != row and ch.state.group == group:
                 self.engine.force_stop_channel(i)
+                # Pause SEQ siblings — keep step pattern, stop advancing
+                if ch.state.mode == PlaybackMode.SEQ:
+                    ch._seq_stopped = True
+                    ch._seq_playing_step = False
+                    ch._seq_column = -1
                 # Reset any SLICE state on the stopped channel
                 if ch.state.mode == PlaybackMode.SLICE:
                     ch._slice_btn1 = None
@@ -398,7 +408,10 @@ class AppController:
                     ch._slice_held = set()
                     ch._slice_col_start = -1
                     ch._slice_col_end = -1
-                self.grid.clear_row_leds(i, columns)
+                if ch.state.mode == PlaybackMode.SEQ and ch._seq_steps:
+                    self._update_seq_leds(i)
+                else:
+                    self.grid.clear_row_leds(i, columns)
 
     # ------------------------------------------------------------------ #
     #  Audio / Transport callbacks                                        #
@@ -435,6 +448,8 @@ class AppController:
                     continue
                 if ch.sample is None:
                     continue
+                if ch._seq_stopped:
+                    continue
                 # If a new sample was staged while SEQ was running, load it now
                 pending = getattr(ch, '_pending_sample_path', None)
                 if pending:
@@ -448,6 +463,7 @@ class AppController:
                         self._apply_loaded_sample(i, pending, buf)
                     else:
                         self.load_sample_to_channel(i, pending)
+                        continue  # don't trigger old sample while new one loads
                 col = beat_int % columns if columns > 0 else 0
                 ch._seq_column = col
                 if col in ch._seq_steps:
@@ -510,9 +526,14 @@ class AppController:
             return
 
         if state == 0:
+            # Track physical button release
+            self._grid_row_held.discard(row)
             # Release handling — bounce to Qt main thread via scheduler
             self._trigger_scheduler.release(row, column, columns)
             return
+
+        # Track physical button press
+        self._grid_row_held.add(row)
 
         # Check if channel has a sample — if not, ignore the press
         if self.engine and self.engine.channels[row].sample is None:
@@ -527,6 +548,9 @@ class AppController:
                 else:
                     ch._seq_steps.add(column)
                 ch._seq_columns = columns
+                # Re-arm stopped SEQ row so it resumes on the next beat
+                if ch._seq_stopped:
+                    ch._seq_stopped = False
                 # Update grid LEDs to show step pattern
                 self._update_seq_leds(row)
                 return
@@ -535,6 +559,11 @@ class AppController:
         delay = 0.0
         if self.clock:
             delay = self.clock.get_quantize_delay()
+
+        # Immediate LED feedback on press — don't wait for trigger execution
+        # or the next _update_ui cycle.  This eliminates ~16-33ms of visual lag.
+        grp = self.config.channels[row].group if row < len(self.config.channels) else 0
+        self.grid.update_playback_leds(row, column, columns, color=grp)
 
         if delay <= 0.001:
             # Fire immediately (no quantize, or already on boundary)
@@ -549,7 +578,14 @@ class AppController:
         if not self.engine or row >= len(self.engine.channels):
             return
         ch = self.engine.channels[row]
-        if ch.state.mode == PlaybackMode.SLICE:
+        if ch.state.mode == PlaybackMode.ONESHOT and ch.state.shot_hold:
+            if ch._shot_held:
+                ch._shot_held = False
+                self.engine.stop_channel(row)
+                self.grid.clear_row_leds(row, columns)
+            # Also clear the held flag even if trigger hasn't fired yet
+            # (quantized trigger will see _grid_row_held is empty)
+        elif ch.state.mode == PlaybackMode.SLICE:
             if not hasattr(ch, '_slice_held'):
                 ch._slice_held = set()
             ch._slice_held.discard(column)
@@ -584,7 +620,13 @@ class AppController:
             if buf is not None:
                 self._apply_loaded_sample(row, pending, buf)
             else:
+                # BG load still in flight — kick a fresh load.
+                # Don't fall through to the trigger below because the
+                # old sample is still loaded; triggering it would play
+                # stale audio.  The user will need to press again once
+                # the new sample appears in the waveform.
                 self.load_sample_to_channel(row, pending)
+                return
 
         # SLICE mode logic
         if ch.state.mode == PlaybackMode.SLICE:
@@ -649,6 +691,16 @@ class AppController:
             # Normal trigger (non-SLICE modes)
             self._stop_group_siblings(row, columns)
             self.engine.trigger_channel(row, column, columns)
+            # ONESHOT HOLD: mark button as held so sample loops until release.
+            # Check _grid_row_held to handle quantized triggers that arrive
+            # after the physical button was already released.
+            if ch.state.mode == PlaybackMode.ONESHOT and ch.state.shot_hold:
+                if row in self._grid_row_held:
+                    ch._shot_held = True
+                else:
+                    # Button was released before the quantized trigger fired —
+                    # don't loop; let it play as a normal one-shot.
+                    ch._shot_held = False
 
         # Record to active pattern recorders
         if self.clock:
@@ -711,8 +763,10 @@ class AppController:
         for axis, val in [("x", x), ("y", y), ("z", z)]:
             src = f"tilt.{sensor}.{axis}"
             target = self._tilt_mappings.get(src)
-            if target and target in self.midi._param_callbacks:
-                self.midi._param_callbacks[target](val)
+            if target:
+                cb = self.midi.get_param_callback(target)
+                if cb:
+                    cb(val)
 
     # ------------------------------------------------------------------ #
     #  Control row (monome top row / Launchpad CC buttons)                #
@@ -779,17 +833,20 @@ class AppController:
         beat = self.clock.beat_position if self.clock else 0.0
 
         if pr.recording:
-            pr._recording = False
-            if pr.has_events:
-                pr._playing = True
-                pr._start_beat = beat
-                gui_state = "playing"
-            else:
-                gui_state = "idle"
+            with pr._lock:
+                pr._recording = False
+                if pr.has_events:
+                    pr._playing = True
+                    pr._start_beat = beat
+                    pr._last_playback_pos = -1.0
+                    gui_state = "playing"
+                else:
+                    gui_state = "idle"
         elif pr.playing:
             # Stop playing — also stop channels the pattern triggered
             if self.engine:
-                triggered_rows = set(e.row for e in pr.events if e.event_type == 'trigger')
+                with pr._lock:
+                    triggered_rows = set(e.row for e in pr.events if e.event_type == 'trigger')
                 for r in triggered_rows:
                     if r >= len(self.engine.channels):
                         continue
@@ -797,7 +854,8 @@ class AppController:
                     if ch.playing:
                         self.engine.stop_channel(r)
                         self.grid.clear_row_leds(r, self.config.grid_columns)
-            pr._playing = False
+            with pr._lock:
+                pr._playing = False
             gui_state = "idle"
         else:
             if pr.has_events:
@@ -906,6 +964,7 @@ class AppController:
             return
 
         ch = self.engine.channels[row]
+        ch._load_gen += 1  # invalidate any prior in-flight loads
 
         if ch._playing:
             # Playing row: stage the filepath now so trigger picks it up.
@@ -925,6 +984,9 @@ class AppController:
             self.engine.stop_channel(row)
             ch.sample = None
             ch._position = 0.0
+            ch._pending_sample_path = None
+            ch._pending_sample_buffer = None
+            ch._load_gen += 1  # invalidate in-flight background loads
             self.config.channels[row].filename = ""
             self.grid.clear_row_leds(row, self.config.grid_columns)
             if self.window:
@@ -955,6 +1017,7 @@ class AppController:
         w.transport.preset_recall_requested.connect(self._gui_live_recall_preset)
         w.transport.preset_prev_requested.connect(self._gui_preset_prev)
         w.transport.preset_next_requested.connect(self._gui_preset_next)
+        w.transport.preset_reload_requested.connect(self._gui_preset_reload)
         w.transport.setlist_changed.connect(self._gui_setlist_changed)
         w.transport.setlist_edit_requested.connect(self._gui_setlist_edit)
         w.transport.sync_bpm_requested.connect(self._gui_sync_bpm)
@@ -1212,10 +1275,16 @@ class AppController:
 
     def _gui_new_preset(self):
         """Clear all channels and reset to a fresh default state."""
-        # Stop all playback
+        # Hard-stop all playback — force_stop sets _playing=False immediately
+        # so no release tails re-seed the FX buffers after reset.
         if self.engine:
             for i in range(self.config.row_count):
-                self.engine.stop_channel(i)
+                self.engine.force_stop_channel(i)
+            # Flush all FX internal buffers (delay lines, reverb tails, etc.)
+            # so stale audio doesn't bleed into the fresh preset.
+            self.engine.reset_all_fx()
+            # Zero the ring buffer so stale pre-computed blocks don't play out.
+            self.engine.flush_ring_buffer()
 
         # Clear all grid LEDs
         for i in range(self.config.row_count):
@@ -1250,7 +1319,7 @@ class AppController:
         # Reset channel assignments
         for i in range(MAX_ROWS):
             if i < len(self.config.channels):
-                self.config.channels[i] = ChannelState(group=i % NUM_GROUPS)
+                self.config.channels[i] = ChannelState(group=0)
 
         # Reset engine channel state
         if self.engine:
@@ -1262,17 +1331,19 @@ class AppController:
                 ech.state.speed = 1.0
                 ech.state.mode = PlaybackMode.LOOP
                 ech.state.gain = 1.0
-                ech.state.group = i % NUM_GROUPS
+                ech.state.group = 0
                 ech.state.mute = False
                 ech.state.sel_start = 0.0
                 ech.state.sel_end = 1.0
                 ech.state.reverse = False
                 ech._pending_sample_path = None
                 ech._pending_sample_buffer = None
+                ech._load_gen += 1  # invalidate any in-flight background loads
                 # Clear mode-specific state
                 ech._seq_steps.clear()
                 ech._seq_column = -1
                 ech._seq_playing_step = False
+                ech._seq_stopped = False
                 ech._slice_btn1 = None
                 ech._slice_btn2 = None
                 ech._slice_loop_start = None
@@ -1304,25 +1375,55 @@ class AppController:
             self.window.set_status("New preset — all channels cleared")
 
     def _gui_save_preset(self, name: str):
-        """Save current state to the preset library and add to setlist."""
-        # Save to library
-        ok = self.presets.save_preset(
+        """Save current state to the preset library and add to setlist.
+
+        Flow:
+        - If current setlist is Default → open setlist editor for New Setlist,
+          then prompt the user to name the preset before saving.
+        - If name is '<new>' or empty → prompt the user to name the preset.
+        - Otherwise save directly with the given name.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        # If on Default setlist, force the user to create a real setlist first
+        if self.presets.setlist_name == "Default":
+            from mlrvp.gui.setlist_editor import SetlistEditorDialog
+            dlg = SetlistEditorDialog(self.presets, self.window)
+            dlg.setlist_changed.connect(self._refresh_setlist_ui)
+            # Trigger the "New Setlist" input dialog before showing the editor
+            sl_name = dlg.open_for_new_setlist()
+            if sl_name == "Default":
+                # User cancelled the new-setlist prompt — don't save
+                return
+            # Let user manage the editor (add presets, reorder, etc.)
+            dlg.exec()
+            # Re-check in case user navigated back to Default inside the editor
+            if self.presets.setlist_name == "Default":
+                return
+
+        # If no preset name or placeholder, prompt for one
+        if not name or name == "<new>":
+            name, ok = QInputDialog.getText(
+                self.window, "Save Preset", "Preset name:")
+            if not ok or not name.strip():
+                return
+            name = name.strip()
+
+        # Save to library (async write — errors logged in bg thread)
+        self.presets.save_preset(
             name, self.config,
             midi_mappings=self.midi.get_mappings_serializable())
-        if not ok:
-            if self.window:
-                self.window.set_status(f"Failed to save preset: {name}")
-            return
 
         # If this name isn't already the currently-active entry in the
         # setlist, add it (avoids duplicates when overwriting).
         sp = self.presets.setlist_presets
         idx = self.presets.active_index
         if 0 <= idx < len(sp) and sp[idx] == name:
-            # Overwriting the currently-active slot — nothing to add
-            pass
+            # Overwriting the currently-active slot — just persist
+            self.presets.save_setlist()
         else:
             # New preset or name changed — add to end of setlist
+            # (add_to_setlist calls save_setlist internally)
             new_idx = self.presets.add_to_setlist(name)
             if new_idx >= 0:
                 self.presets.active_index = new_idx
@@ -1333,53 +1434,61 @@ class AppController:
             self.window.transport.flash_save_button()
 
     def _gui_live_recall_preset(self, idx: int):
-        """Recall a preset from the setlist with live transition.
+        """Recall a preset from the setlist.
 
-        - Effects, mixer, transport update immediately.
-        - Waveform displays update for ALL channels (visual preview).
-        - Playing channels keep their current audio looping;
-          speed/group/selection are NOT overwritten mid-playback.
-        - New samples are staged (_pending_sample_path) and loaded
-          on the next grid trigger for that row.
+        - Stops all current playback immediately (no release tail).
+        - Resets FX buffers so old delay/reverb tails don't bleed through.
+        - Applies effects, mixer, transport, channel params from the preset.
+        - Loads new samples via background threads.
         """
         data = self.presets.load_setlist_preset(idx)
         if not data:
             return
 
-        # Remember which engine channels are currently playing
-        playing_rows: set[int] = set()
+        # ── 1. Hard-stop everything ──
         if self.engine:
             for i in range(self.config.row_count):
-                if self.engine.channels[i]._playing:
-                    playing_rows.add(i)
+                self.engine.force_stop_channel(i)
+            self.engine.reset_all_fx()
+            self.engine.flush_ring_buffer()
 
-        # Apply config (effects, mixer, transport, channel params)
+        # Clear all grid LEDs
+        for i in range(self.config.row_count):
+            self.grid.clear_row_leds(i, self.config.grid_columns)
+
+        # ── 2. Apply config (effects, mixer, transport, channel params) ──
         self.config = self.presets.apply_preset(data, self.config)
 
-        # Push to engine — but protect playing channels from state clobber
-        self._apply_config_to_engine_live(playing_rows)
+        # Push ALL params to engine (no playing rows to protect)
+        self._apply_config_to_engine()
         self._apply_config_to_gui()
 
-        # Load samples — all disk I/O in background threads
+        # ── 3. Clear waveform displays while bg loads run ──
+        if self.window:
+            for i in range(self.config.row_count):
+                strip = self.window.channel_view.get_strip(i)
+                strip._waveform.set_waveform(None, "")
+                strip._waveform.set_playing(False)
+                strip._sample_name.setText("(loading...)")
+
+        # ── 4. Load samples — all disk I/O in background threads ──
         if self.engine:
             import os
             for i, ch_cfg in enumerate(self.config.channels[:self.config.row_count]):
                 ech = self.engine.channels[i]
+                ech._load_gen += 1
+                ech._pending_sample_path = None
+                ech._pending_sample_buffer = None
                 if ch_cfg.filename and os.path.isfile(ch_cfg.filename):
-                    if i in playing_rows:
-                        # Stage sample for next trigger — current audio keeps looping.
-                        # Background thread pre-loads the sample and updates the
-                        # waveform display when ready.
-                        ech._pending_sample_path = ch_cfg.filename
-                        ech._pending_sample_buffer = None  # cleared until bg finishes
-                        self._load_sample_bg(i, ch_cfg.filename, preserve_speed=True)
-                    else:
-                        # Idle channel — load in background, apply on main thread
-                        self._load_sample_bg(i, ch_cfg.filename, preserve_speed=True)
-                elif not ch_cfg.filename and i not in playing_rows:
-                    self.clear_channel_sample(i)
+                    self._load_sample_bg(i, ch_cfg.filename, preserve_speed=True)
+                elif not ch_cfg.filename:
+                    # Ensure the row is fully cleared
+                    ech.sample = None
+                    if self.window:
+                        strip = self.window.channel_view.get_strip(i)
+                        strip._sample_name.setText("(no sample)")
 
-        # Restore MIDI mappings
+        # ── 5. Restore MIDI mappings ──
         midi_maps = data.get("midi_mappings", [])
         self.midi.load_mappings(midi_maps)
         for m in midi_maps:
@@ -1398,6 +1507,8 @@ class AppController:
             return
         cur = self.presets.active_index
         new_idx = (cur - 1) % n if cur > 0 else n - 1
+        if new_idx == cur:
+            return
         self._gui_live_recall_preset(new_idx)
 
     def _gui_preset_next(self):
@@ -1407,13 +1518,25 @@ class AppController:
             return
         cur = self.presets.active_index
         new_idx = (cur + 1) % n
+        if new_idx == cur:
+            return
         self._gui_live_recall_preset(new_idx)
+
+    def _gui_preset_reload(self):
+        """Reload the currently active preset."""
+        idx = self.presets.active_index
+        if idx < 0 or idx >= len(self.presets.setlist_presets):
+            return
+        self._gui_live_recall_preset(idx)
 
     def _gui_setlist_changed(self, name: str):
         """Switch to a different setlist."""
         if name and name != self.presets.setlist_name:
             self.presets.load_setlist(name)
             self._refresh_setlist_ui()
+            # Auto-load the first preset in the new setlist
+            if self.presets.setlist_presets:
+                self._gui_live_recall_preset(0)
             if self.window:
                 self.window.set_status(f"Setlist: {name}")
 
@@ -1443,6 +1566,9 @@ class AppController:
             self.config = self.presets.apply_preset(data, self.config)
             self._apply_config_to_engine()
             self._apply_config_to_gui()
+            # Clear ALL waveform displays so old samples don't linger
+            # while background loads run.
+            self._clear_all_waveform_displays()
             self._reload_samples_from_config()
             midi_maps = data.get("midi_mappings", [])
             self.midi.load_mappings(midi_maps)
@@ -1477,6 +1603,7 @@ class AppController:
                 self.config = self.presets.apply_preset(data, self.config)
                 self._apply_config_to_engine()
                 self._apply_config_to_gui()
+                self._clear_all_waveform_displays()
                 self._reload_samples_from_config()
                 # Restore MIDI mappings
                 midi_maps = data.get("midi_mappings", [])
@@ -1501,23 +1628,23 @@ class AppController:
 
     def _gui_save_preset_file(self, path: str):
         """Save current config to a specific file path (background write)."""
-        import json
+        from pathlib import Path as _Path
+        from mlrvp.preset.manager import _atomic_write_json, _SafeFloatEncoder
         try:
             data = self.presets._serialize_config(self.config)
             payload = {
-                "version": "0.6.9.15",
+                "version": "0.6.9.16",
                 "config": data,
                 "midi_mappings": self.midi.get_mappings_serializable(),
             }
 
             def _write():
                 try:
-                    with open(path, 'w') as f:
-                        json.dump(payload, f, indent=2)
+                    _atomic_write_json(_Path(path), payload, cls=_SafeFloatEncoder)
                 except Exception as e:
                     log.error("Failed to save preset file: %s", e)
 
-            threading.Thread(target=_write, daemon=True).start()
+            threading.Thread(target=_write, daemon=False).start()
             if self.window:
                 self.window.set_status(f"Saved preset: {path}")
         except Exception as e:
@@ -1527,20 +1654,19 @@ class AppController:
 
     def _gui_save_default(self, name: str):
         """Save current config as a named default preset (background write)."""
-        import json
         from .config import get_defaults_dir
+        from mlrvp.preset.manager import _atomic_write_json, _SafeFloatEncoder
         try:
             path = get_defaults_dir() / f"{name}.json"
             data = self.presets._serialize_config(self.config)
 
             def _write():
                 try:
-                    with open(path, 'w') as f:
-                        json.dump(data, f, indent=2)
+                    _atomic_write_json(path, data, cls=_SafeFloatEncoder)
                 except Exception as e:
                     log.error("Failed to save default: %s", e)
 
-            threading.Thread(target=_write, daemon=True).start()
+            threading.Thread(target=_write, daemon=False).start()
             if self.window:
                 self.window.set_status(f"Saved default: {name}")
         except Exception as e:
@@ -1565,6 +1691,7 @@ class AppController:
                     ech._seq_steps.clear()
                     ech._seq_column = -1
                     ech._seq_playing_step = False
+                    ech._seq_stopped = False
             # SEQ mode: lock steps to grid column count (one step per physical button)
             if self.window:
                 strip = self.window.channel_view.get_strip(row)
@@ -1625,6 +1752,7 @@ class AppController:
                     ech._seq_steps.clear()
                     ech._seq_column = -1
                     ech._seq_playing_step = False
+                    ech._seq_stopped = False
                 # Reset SLICE state
                 if ech.state.mode == PlaybackMode.SLICE:
                     ech._slice_btn1 = None
@@ -1678,10 +1806,10 @@ class AppController:
                 self.engine.channels[row].state.pitch_root = int(value)
                 if ch.mode == PlaybackMode.PITCH:
                     self._build_pitch_scale_cache_async(row)
-        elif param == "pitch_hold":
-            ch.pitch_hold = bool(value)
+        elif param == "pitch_loop":
+            ch.pitch_loop = bool(value)
             if self.engine:
-                self.engine.channels[row].state.pitch_hold = bool(value)
+                self.engine.channels[row].state.pitch_loop = bool(value)
         elif param == "mute":
             ch.mute = value
             if self.engine:
@@ -1690,6 +1818,10 @@ class AppController:
             ch.reverse = bool(value)
             if self.engine:
                 self.engine.channels[row].state.reverse = bool(value)
+        elif param == "shot_hold":
+            ch.shot_hold = bool(value)
+            if self.engine:
+                self.engine.channels[row].state.shot_hold = bool(value)
         elif param == "steps":
             ch.steps = value
             if self.engine:
@@ -1703,8 +1835,14 @@ class AppController:
                 self.engine.channels[row].state.sel_start = ch.sel_start
                 self.engine.channels[row].state.sel_end = ch.sel_end
                 # Recalculate speed to fit new selection length to grid
+                # SEQ mode uses a fixed speed (default 1.0), so save the
+                # BPM-derived speed as normal_speed but don't apply it.
                 self.engine.set_channel_speed(row, self.config.tempo)
                 speed = self.engine.channels[row].state.speed
+                if ch.mode == PlaybackMode.SEQ:
+                    ch.normal_speed = speed
+                    speed = 1.0
+                    self.engine.channels[row].state.speed = speed
                 ch.speed = speed
                 if self.window:
                     strip = self.window.channel_view.get_strip(row)
@@ -1754,13 +1892,17 @@ class AppController:
                         ch._slice_col_start = -1
                         ch._slice_col_end = -1
                     if ch.state.mode == PlaybackMode.SEQ:
-                        ch._seq_steps.clear()
-                        ch._seq_column = -1
+                        ch._seq_stopped = True
                         ch._seq_playing_step = False
-        # Clear grid LEDs for the stopped rows
-        for i, ch in enumerate(self.config.channels[:self.config.row_count]):
-            if ch.group == group:
-                self.grid.clear_row_leds(i, self.config.grid_columns)
+        # Update grid LEDs — show step pattern (dim) but no active step
+        if self.engine:
+            for i, ch in enumerate(self.engine.channels[:self.config.row_count]):
+                if ch.state.group == group:
+                    if ch.state.mode == PlaybackMode.SEQ and ch._seq_steps:
+                        ch._seq_column = -1
+                        self._update_seq_leds(i)
+                    else:
+                        self.grid.clear_row_leds(i, self.config.grid_columns)
 
     def _gui_stop_all(self):
         """Stop all channels and clear all grid LEDs."""
@@ -1777,11 +1919,15 @@ class AppController:
                     ch._slice_col_start = -1
                     ch._slice_col_end = -1
                 if ch.state.mode == PlaybackMode.SEQ:
-                    ch._seq_steps.clear()
-                    ch._seq_column = -1
+                    ch._seq_stopped = True
                     ch._seq_playing_step = False
+                    ch._seq_column = -1
+        # Update grid LEDs — show step pattern (dim) but no active step
         for i in range(self.config.row_count):
-            self.grid.clear_row_leds(i, self.config.grid_columns)
+            if self.engine and self.engine.channels[i].state.mode == PlaybackMode.SEQ and self.engine.channels[i]._seq_steps:
+                self._update_seq_leds(i)
+            else:
+                self.grid.clear_row_leds(i, self.config.grid_columns)
 
     def _gui_restart(self):
         """Restart the application by re-launching the process."""
@@ -3298,10 +3444,19 @@ class AppController:
             ech.state.gain = ch.gain
             ech.state.group = ch.group
             ech.state.mute = ch.mute
+            ech.state.reverse = ch.reverse
+            ech.state.shot_hold = ch.shot_hold
+            ech.state.steps = ch.steps
             ech.state.sel_start = ch.sel_start
             ech.state.sel_end = ch.sel_end
             ech.state.attack = ch.attack
             ech.state.release = ch.release
+            ech.state.pitch = ch.pitch
+            ech.state.velocity = ch.velocity
+            ech.state.filter_val = ch.filter_val
+            ech.state.pitch_scale = ch.pitch_scale
+            ech.state.pitch_root = ch.pitch_root
+            ech.state.pitch_loop = ch.pitch_loop
             ech.state.transpose = ch.transpose
             if ch.transpose != 0 and ech.sample is not None:
                 self._apply_pitch_shift_async(i, ch.transpose)
@@ -3380,21 +3535,30 @@ class AppController:
         for i, ch in enumerate(self.config.channels):
             ech = self.engine.channels[i]
             if i in playing_rows:
-                # Only safe to update gain/mute/attack/release while playing
                 ech.state.gain = ch.gain
                 ech.state.mute = ch.mute
                 ech.state.attack = ch.attack
                 ech.state.release = ch.release
+                ech.state.pitch_loop = ch.pitch_loop
             else:
                 ech.state.speed = ch.speed
                 ech.state.mode = ch.mode
                 ech.state.gain = ch.gain
                 ech.state.group = ch.group
                 ech.state.mute = ch.mute
+                ech.state.reverse = ch.reverse
+                ech.state.shot_hold = ch.shot_hold
+                ech.state.steps = ch.steps
                 ech.state.sel_start = ch.sel_start
                 ech.state.sel_end = ch.sel_end
                 ech.state.attack = ch.attack
                 ech.state.release = ch.release
+                ech.state.pitch = ch.pitch
+                ech.state.velocity = ch.velocity
+                ech.state.filter_val = ch.filter_val
+                ech.state.pitch_scale = ch.pitch_scale
+                ech.state.pitch_root = ch.pitch_root
+                ech.state.pitch_loop = ch.pitch_loop
             ech.state.transpose = ch.transpose
             if ch.transpose != 0 and ech.sample is not None:
                 self._apply_pitch_shift_async(i, ch.transpose)
@@ -3612,14 +3776,17 @@ class AppController:
         """
         sr = self.config.sample_rate
         worker = self._sample_load_worker
+        # Capture the current generation so stale loads can be discarded.
+        ech = self.engine.channels[row] if self.engine and row < len(self.engine.channels) else None
+        gen = ech._load_gen if ech else 0
 
         def _io_thread():
             sample = load_sample(filepath, sr)
-            worker._loaded.emit(row, filepath, sample, preserve_speed)
+            worker._loaded.emit(row, filepath, sample, preserve_speed, gen)
 
         threading.Thread(target=_io_thread, daemon=True).start()
 
-    def _on_bg_sample_loaded(self, row: int, filepath: str, sample, preserve_speed: bool):
+    def _on_bg_sample_loaded(self, row: int, filepath: str, sample, preserve_speed: bool, gen: int):
         """Main-thread callback when a background sample load completes."""
         if sample is None:
             if self.window:
@@ -3628,6 +3795,12 @@ class AppController:
         if not self.engine or row >= len(self.engine.channels):
             return
         ech = self.engine.channels[row]
+
+        # Discard stale loads — if the channel's generation has moved on
+        # (e.g. New pressed, or a different preset recalled), this load
+        # is obsolete and must not overwrite the current state.
+        if gen != ech._load_gen:
+            return
 
         # ---- Pending pre-load (playing channel awaiting next trigger) ----
         pending = getattr(ech, '_pending_sample_path', None)
@@ -3727,7 +3900,7 @@ class AppController:
                 strip.set_waveform_data(overview, os.path.basename(filepath))
                 strip._waveform.set_grid_columns(self.config.grid_columns)
 
-            self.engine.set_channel_speed(row, self.config.tempo)
+            self.engine.set_channel_speed(row, self.config.tempo, sample)
             speed = self.engine.channels[row].state.speed
             speed = self._normalize_speed(speed)
             if self.config.snap_speed_to_rate:
@@ -3756,12 +3929,24 @@ class AppController:
         except Exception as e:
             log.error("Failed to apply loaded sample: %s", e)
 
+    def _clear_all_waveform_displays(self):
+        """Clear waveform and sample name for all visible rows."""
+        if not self.window:
+            return
+        for i in range(self.config.row_count):
+            strip = self.window.channel_view.get_strip(i)
+            strip._waveform.set_waveform(None, "")
+            strip._sample_name.setText("(no sample)")
+
     def _reload_samples_from_config(self):
         """Reload audio samples from filepaths stored in config.
 
         Uses background threads so disk I/O doesn't block the main thread.
         """
         import os
+        if self.engine:
+            for i in range(self.config.row_count):
+                self.engine.channels[i]._load_gen += 1
         for i, ch in enumerate(self.config.channels[:self.config.row_count]):
             if ch.filename and os.path.isfile(ch.filename):
                 self._load_sample_bg(i, ch.filename)
@@ -3919,8 +4104,11 @@ class AppController:
                 strip._waveform.set_active_column(waveform_col)
 
                 # Update grid LEDs — map to physical grid columns (hardware)
+                # Only send LED update when the active column changes to
+                # avoid serial/MIDI I/O on every frame (reduces GIL hold time)
                 col = ch.get_grid_column(columns)
-                if col >= 0:
+                if col >= 0 and col != self._row_last_led_col[i]:
+                    self._row_last_led_col[i] = col
                     sl_col_a = getattr(ch, '_slice_col_start', -1)
                     sl_col_b = getattr(ch, '_slice_col_end', -1)
                     if sl_col_a >= 0 and sl_col_b >= 0:
@@ -3933,6 +4121,7 @@ class AppController:
                 # Clear grid LEDs when a row transitions from playing → stopped
                 if self._row_was_playing[i]:
                     self._row_was_playing[i] = False
+                    self._row_last_led_col[i] = -1
                     self.grid.clear_row_leds(i, columns)
 
         # Update control row LEDs (group stops + pattern buttons)
@@ -4039,7 +4228,7 @@ def run_app(argv=None) -> int:
 
     app = QApplication(argv or sys.argv)
     app.setApplicationName("mlrVp")
-    app.setApplicationVersion("0.6.9.15")
+    app.setApplicationVersion("0.6.9.16")
 
     # Delay tooltips so they only appear after hovering intentionally.
     from PySide6.QtWidgets import QProxyStyle, QStyle

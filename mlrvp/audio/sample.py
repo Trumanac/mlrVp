@@ -35,12 +35,23 @@ def load_sample(filepath: str, target_sr: int = SAMPLE_RATE) -> Optional[SampleB
         return None
 
     # Guard against absurdly large files that would exhaust RAM
-    _MAX_FILE_BYTES = 500 * 1024 * 1024  # 500 MB
+    _MAX_FILE_BYTES = 500 * 1024 * 1024  # 500 MB compressed
+    _MAX_DECOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB decompressed
     try:
         if path.stat().st_size > _MAX_FILE_BYTES:
             return None
     except OSError:
         return None
+
+    # Check decompressed size before reading (compressed formats like FLAC
+    # can decompress to many times their on-disk size)
+    try:
+        info = sf.info(str(path))
+        decompressed = info.frames * info.channels * 4  # float32 = 4 bytes
+        if decompressed > _MAX_DECOMPRESSED_BYTES:
+            return None
+    except Exception:
+        pass  # If sf.info fails, let sf.read handle the error
 
     try:
         data, sr = sf.read(str(path), dtype='float32', always_2d=True)

@@ -3,7 +3,7 @@
 import numpy as np
 from PySide6.QtWidgets import QWidget, QSizePolicy
 from PySide6.QtCore import Qt, Signal, QRectF, QLine
-from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient, QMouseEvent
+from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient, QMouseEvent, QPixmap
 
 from mlrvp.gui.styles import (
     BG_BLACK, BG_PANEL, SEPARATOR, ACCENT_BLUE, TEXT_SECONDARY, GROUP_COLORS
@@ -34,6 +34,8 @@ class WaveformWidget(QWidget):
         self._filename: str = ""
         self._grid_columns: int = 8  # number of grid columns for dividers
         self._active_column: int = -1  # currently playing column index
+        self._wave_cache: QPixmap | None = None  # cached waveform bars pixmap
+        self._cached_y_tops: np.ndarray | None = None  # cached bar heights
 
         self.setMinimumHeight(60)
         self.setMouseTracking(True)
@@ -44,11 +46,18 @@ class WaveformWidget(QWidget):
     def set_waveform(self, data: np.ndarray | None, filename: str = ""):
         self._waveform_data = data
         self._filename = filename
+        self._wave_cache = None
+        self._cached_y_tops = None
         self.update()
 
     def set_playback_position(self, pos: float):
+        # Only repaint if the pixel position actually changes
+        w = self.width() if self.width() > 0 else 1
+        old_px = int(self._playback_pos * w)
+        new_px = int(pos * w)
         self._playback_pos = pos
-        self.update()
+        if old_px != new_px:
+            self.update()
 
     def set_selection(self, start: float, end: float):
         start = max(0.0, min(1.0, start))
@@ -61,6 +70,7 @@ class WaveformWidget(QWidget):
 
     def set_group_color(self, idx: int):
         self._group_color_idx = idx % len(GROUP_COLORS)
+        self._wave_cache = None
         self.update()
 
     def set_playing(self, playing: bool):
@@ -74,6 +84,7 @@ class WaveformWidget(QWidget):
     def set_grid_columns(self, columns: int):
         """Set the number of grid columns for divider lines."""
         self._grid_columns = max(1, columns)
+        self._wave_cache = None
         self.update()
 
     def set_active_column(self, col: int):
@@ -83,37 +94,19 @@ class WaveformWidget(QWidget):
         self._active_column = col
         self.update()
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w = self.width()
-        h = self.height()
+    def _rebuild_wave_cache(self, w: int, h: int):
+        """Build a QPixmap containing just the static waveform bars.
 
-        # Background — black like original waveform~ display
-        painter.fillRect(self.rect(), QColor(BG_BLACK))
+        Selection overlay, dividers, and boundaries are drawn dynamically
+        in paintEvent to avoid full cache rebuilds during drag operations.
+        """
+        pm = QPixmap(w, h)
+        pm.fill(QColor(BG_BLACK))
+        p = QPainter(pm)
 
-        # Selection region pixel positions
-        sel_x1 = int(self._sel_start * w)
-        sel_x2 = int(self._sel_end * w)
-        sel_w = sel_x2 - sel_x1
-
-        # Highlight active column within the selection region
-        if self._active_column >= 0 and self._grid_columns > 0 and sel_w > 0:
-            col_w = sel_w / self._grid_columns
-            active_x = sel_x1 + int(self._active_column * col_w)
-            active_w = int(col_w) + 1
-            group_color = QColor(GROUP_COLORS[self._group_color_idx])
-            group_color.setAlpha(40)
-            painter.fillRect(active_x, 0, active_w, h, group_color)
-
-        # Draw waveform — two passes: dim outside selection, bright inside
         if self._waveform_data is not None and len(self._waveform_data) > 0:
             base_color = QColor(GROUP_COLORS[self._group_color_idx])
             num_points = len(self._waveform_data)
-
-            if w < 1:
-                painter.end()
-                return
 
             # Vectorized: compute all bar heights at once
             px_arr = np.arange(w)
@@ -124,25 +117,58 @@ class WaveformWidget(QWidget):
             )
             y_tops = (h - (peaks * (h * 0.95)).astype(int)).astype(int)
 
-            # Pass 1: full width at dim alpha
+            # Draw all bars at dim alpha (selection brightening done in paintEvent)
             dim_color = QColor(base_color)
             dim_color.setAlpha(50)
-            painter.setPen(QPen(dim_color, 1))
+            p.setPen(QPen(dim_color, 1))
             lines_dim = [QLine(px, int(y_tops[px]), px, h) for px in range(w)]
-            painter.drawLines(lines_dim)
+            p.drawLines(lines_dim)
 
-            # Pass 2: selection region only at full alpha
-            if sel_x1 < sel_x2:
-                bright_color = QColor(base_color)
-                bright_color.setAlpha(185)
-                painter.setPen(QPen(bright_color, 1))
-                painter.setClipRect(sel_x1, 0, sel_x2 - sel_x1, h)
-                lines_bright = [
-                    QLine(px, int(y_tops[px]), px, h)
-                    for px in range(sel_x1, min(sel_x2, w))
-                ]
-                painter.drawLines(lines_bright)
-                painter.setClipping(False)
+            # Store y_tops for paintEvent selection brightening
+            self._cached_y_tops = y_tops
+
+        # Border
+        p.setPen(QPen(QColor(SEPARATOR), 1))
+        p.drawRect(0, 0, w - 1, h - 1)
+
+        p.end()
+        self._wave_cache = pm
+        self._wave_cache_size = (w, h)
+
+    def paintEvent(self, event):
+        w = self.width()
+        h = self.height()
+        if w < 1 or h < 1:
+            return
+
+        # Rebuild cache if invalidated or widget resized
+        if (self._wave_cache is None
+                or getattr(self, '_wave_cache_size', None) != (w, h)):
+            self._rebuild_wave_cache(w, h)
+
+        painter = QPainter(self)
+
+        # Blit cached waveform (bars + border)
+        painter.drawPixmap(0, 0, self._wave_cache)
+
+        sel_x1 = int(self._sel_start * w)
+        sel_x2 = int(self._sel_end * w)
+        sel_w = sel_x2 - sel_x1
+
+        # Draw selection-region bright waveform bars on top of dim cache
+        y_tops = getattr(self, '_cached_y_tops', None)
+        if y_tops is not None and sel_x1 < sel_x2:
+            base_color = QColor(GROUP_COLORS[self._group_color_idx])
+            bright_color = QColor(base_color)
+            bright_color.setAlpha(185)
+            painter.setPen(QPen(bright_color, 1))
+            painter.setClipRect(sel_x1, 0, sel_x2 - sel_x1, h)
+            lines_bright = [
+                QLine(px, int(y_tops[px]), px, h)
+                for px in range(sel_x1, min(sel_x2, w))
+            ]
+            painter.drawLines(lines_bright)
+            painter.setClipping(False)
 
         # Column divider lines within the selection area
         if self._grid_columns > 1 and sel_w > 0:
@@ -157,6 +183,16 @@ class WaveformWidget(QWidget):
         painter.setPen(sel_pen)
         painter.drawLine(sel_x1, 0, sel_x1, h)
         painter.drawLine(sel_x2, 0, sel_x2, h)
+        sel_w = sel_x2 - sel_x1
+
+        # Highlight active column within the selection region (changes often)
+        if self._active_column >= 0 and self._grid_columns > 0 and sel_w > 0:
+            col_w = sel_w / self._grid_columns
+            active_x = sel_x1 + int(self._active_column * col_w)
+            active_w = int(col_w) + 1
+            group_color = QColor(GROUP_COLORS[self._group_color_idx])
+            group_color.setAlpha(40)
+            painter.fillRect(active_x, 0, active_w, h, group_color)
 
         # Playback position cursor
         if self._playing:
@@ -170,18 +206,17 @@ class WaveformWidget(QWidget):
             painter.setPen(QColor(TEXT_SECONDARY))
             painter.drawText(4, 12, self._filename)
 
-        # Border
-        painter.setPen(QPen(QColor(SEPARATOR), 1))
-        painter.drawRect(0, 0, w - 1, h - 1)
-
         painter.end()
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            pos = event.position().x() / self.width()
+            w = self.width()
+            if w < 1:
+                return
+            pos = event.position().x() / w
             # Check if near selection boundaries
-            start_x = self._sel_start * self.width()
-            end_x = self._sel_end * self.width()
+            start_x = self._sel_start * w
+            end_x = self._sel_end * w
             mx = event.position().x()
 
             if abs(mx - start_x) < 8:
@@ -192,8 +227,11 @@ class WaveformWidget(QWidget):
                 self.position_clicked.emit(pos)
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        w = self.width()
+        if w < 1:
+            return
         if self._dragging:
-            pos = max(0.0, min(1.0, event.position().x() / self.width()))
+            pos = max(0.0, min(1.0, event.position().x() / w))
             if self._dragging == 'start':
                 self._sel_start = min(pos, self._sel_end - 0.01)
             elif self._dragging == 'end':
@@ -202,8 +240,8 @@ class WaveformWidget(QWidget):
             self.update()
         else:
             # Change cursor near boundaries
-            start_x = self._sel_start * self.width()
-            end_x = self._sel_end * self.width()
+            start_x = self._sel_start * w
+            end_x = self._sel_end * w
             mx = event.position().x()
             if abs(mx - start_x) < 8 or abs(mx - end_x) < 8:
                 self.setCursor(Qt.CursorShape.SizeHorCursor)
@@ -214,3 +252,4 @@ class WaveformWidget(QWidget):
         if self._dragging:
             self.selection_changed.emit(self._sel_start, self._sel_end)
             self._dragging = None
+            self.update()

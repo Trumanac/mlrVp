@@ -321,6 +321,7 @@ class HorizontalFader(_ValueDisplayMixin, QWidget):
     def mouseDoubleClickEvent(self, event: QMouseEvent):
         self._value = self._default_value
         self.value_changed.emit(self._value)
+        self.show_value_popup()
         self.update()
 
     def _update_value(self, x: float):
@@ -342,9 +343,11 @@ class RotaryKnob(_ValueDisplayMixin, QWidget):
 
     value_changed = Signal(float)
 
-    def __init__(self, color: str = FADER_SLIDER, inverted: bool = False, parent=None):
+    def __init__(self, color: str = FADER_SLIDER, inverted: bool = False, parent=None,
+                 default_value: float = 0.5):
         super().__init__(parent)
-        self._value: float = 0.5
+        self._value: float = default_value
+        self._default_value: float = default_value
         self._dragging: bool = False
         self._drag_start_y: float = 0
         self._drag_start_val: float = 0
@@ -446,6 +449,7 @@ class RotaryKnob(_ValueDisplayMixin, QWidget):
             self._dragging = False
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
-        self._value = 0.5
+        self._value = self._default_value
         self.value_changed.emit(self._value)
+        self.show_value_popup()
         self.update()

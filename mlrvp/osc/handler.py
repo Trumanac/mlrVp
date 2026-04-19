@@ -41,7 +41,7 @@ class OscHandler:
                 disp.map(address, handler)
 
             self._server = osc_server.ThreadingOSCUDPServer(
-                ("0.0.0.0", self.recv_port), disp
+                ("127.0.0.1", self.recv_port), disp
             )
             self._server_thread = threading.Thread(
                 target=self._server.serve_forever, daemon=True

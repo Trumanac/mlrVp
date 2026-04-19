@@ -404,3 +404,112 @@ def xfade_tail_kernel(
             xfade_buf[i, 1] = s_r * f
         else:
             xfade_buf[i, 1] = s_l * f
+
+
+# ── Gated Reverb — gate envelope kernel ──────────────────────────────
+
+@njit(cache=True, nogil=True)
+def gate_envelope_kernel(
+    levels,      # float32[n] — per-sample input levels
+    n,           # int
+    gate_dur,    # int — gate duration in samples
+    fade_dec,    # float64 — 1 / fade_samples
+    thresh,      # float64 — trigger threshold
+    gate_open,   # bool — initial state
+    countdown,   # int — initial countdown
+    gate_env,    # float64 — initial envelope value
+    env_out,     # float32[n] — output envelope (written in-place)
+):
+    """Build gate envelope: open on trigger, hold for gate_dur, fade out.
+
+    Returns (gate_open, countdown, gate_env) final state.
+    """
+    for i in range(n):
+        if levels[i] > thresh and not gate_open:
+            gate_open = True
+            countdown = gate_dur
+            gate_env = 1.0
+
+        if gate_open:
+            countdown -= 1
+            if countdown <= 0:
+                gate_env -= fade_dec
+                if gate_env <= 0.0:
+                    gate_env = 0.0
+                    gate_open = False
+
+        env_out[i] = gate_env
+
+    return gate_open, countdown, gate_env
+
+
+# ── Transient Shaper — envelope follower kernel ──────────────────────
+
+@njit(cache=True, nogil=True)
+def transient_env_kernel(
+    rect,          # float64[n, n_ch] — rectified input
+    n,             # int
+    n_ch,          # int
+    fast_att,      # float64
+    fast_rel,      # float64
+    slow_att,      # float64
+    slow_rel,      # float64
+    fast_env_state,  # float64[n_ch] — per-channel fast env state (read/write)
+    slow_env_state,  # float64[n_ch] — per-channel slow env state (read/write)
+    fast_env_out,    # float64[n, n_ch] — output (written in-place)
+    slow_env_out,    # float64[n, n_ch] — output (written in-place)
+):
+    """Dual envelope follower (fast + slow) for transient detection."""
+    for ch in range(n_ch):
+        fe = fast_env_state[ch]
+        se = slow_env_state[ch]
+        for i in range(n):
+            s = rect[i, ch]
+            if s > fe:
+                fe = fast_att * fe + (1.0 - fast_att) * s
+            else:
+                fe = fast_rel * fe + (1.0 - fast_rel) * s
+            if s > se:
+                se = slow_att * se + (1.0 - slow_att) * s
+            else:
+                se = slow_rel * se + (1.0 - slow_rel) * s
+            fast_env_out[i, ch] = fe
+            slow_env_out[i, ch] = se
+        fast_env_state[ch] = fe
+        slow_env_state[ch] = se
+
+
+# ── Biquad filter (Direct Form II Transposed, stereo in-place) ──────
+
+@njit(cache=True, nogil=True)
+def biquad_filter_kernel(
+    data,    # float32[n, 2]  — input/output (overwritten in-place)
+    n,       # int            — number of frames
+    b0,      # float64        — feedforward coefficients
+    b1,      # float64
+    b2,      # float64
+    a1,      # float64        — feedback coefficients (a0 = 1)
+    a2,      # float64
+    z,       # float64[2, 2]  — filter state [delay_line, channel]
+):
+    """Apply a biquad filter in-place to stereo float32 audio.
+
+    Uses Direct Form II Transposed for numerical stability.
+    State ``z`` is updated in-place so it persists across calls.
+    """
+    for ch in range(2):
+        z0 = z[0, ch]
+        z1 = z[1, ch]
+        for i in range(n):
+            x = float(data[i, ch])
+            y = b0 * x + z0
+            z0 = b1 * x - a1 * y + z1
+            z1 = b2 * x - a2 * y
+            data[i, ch] = float(y)
+        z[0, ch] = z0
+        z[1, ch] = z1
+        # Flush denormals
+        if abs(z[0, ch]) < 1e-18:
+            z[0, ch] = 0.0
+        if abs(z[1, ch]) < 1e-18:
+            z[1, ch] = 0.0

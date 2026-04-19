@@ -68,11 +68,11 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
   - **Ether Drift** — bipolar infinite phaser for vaporwave/slushwave textures; two allpass chains (RISE ↑ sawtooth / FALL ↓ inverted) with stereo spread, SYNC lock, ROUTE selector (BOTH / UP / DOWN), rate, depth, feedback, and dry/wet mix
   - **The Velvet Rope** — noise gate with threshold, attack, hold, release, range, and key frequency sidechain filter
   - **Heartquake** — tremolo with rate, depth, stereo spread, and mix
-  - **Auto Wah** — envelope-controlled auto-wah filter with sensitivity, frequency, depth, speed, and mix
+  - **Funk Doctor** — envelope auto-wah filter (Mutron III-style) with sensitivity, frequency, depth, speed, and mix
   - **All Buttons In** — FET limiter with input drive, output, attack, release, and mix
   - **Vitamin E** — aural exciter with high-frequency tune, low-frequency tune, output level, and mix
   - **Punch Card** — transient shaper with attack boost/cut, sustain boost/cut, output, and mix
-  - **Freq Shifter** — frequency shifter with shift amount (Hz), feedback, and mix
+  - **The Bode Plot** — single-sideband frequency shifter with shift amount (Hz), feedback, and mix
   - **Ring Leader** — ring modulator with carrier frequency, shape, and mix
   - **Spin Cycle** — rotary speaker simulator with speed, drive, horn/drum balance, and mix
   - **Personal Space** — stereo widener with width, center, low-frequency mono crossover, and mix
@@ -363,11 +363,11 @@ MLRVp/
 │           ├── ether_drift.py      # Ether Drift — Bipolar Infinite Phaser (1U)
 │           ├── noise_gate.py       # The Velvet Rope — Noise Gate (1U)
 │           ├── tremolo.py          # Heartquake — Tremolo (1U)
-│           ├── auto_wah.py         # Auto Wah (1U)
+│           ├── auto_wah.py         # Funk Doctor — Auto-Wah (1U)
 │           ├── fet_limiter.py      # All Buttons In — FET Limiter (1U)
 │           ├── exciter.py          # Vitamin E — Aural Exciter (1U)
 │           ├── transient_shaper.py # Punch Card — Transient Shaper (1U)
-│           ├── freq_shifter.py     # Freq Shifter (1U)
+│           ├── freq_shifter.py     # The Bode Plot — Freq Shifter (1U)
 │           ├── ring_mod.py         # Ring Leader — Ring Modulator (1U)
 │           ├── rotary.py           # Spin Cycle — Rotary Speaker (1U)
 │           ├── stereo_widener.py   # Personal Space — Stereo Widener (1U)
@@ -602,6 +602,19 @@ mlrVp uses a two-tier system: a **global preset library** and **ordered setlists
 - **File → Open Preset** loads a preset from any location on disk.
 - **File → Save Preset** exports the current state to a standalone JSON file for sharing.
 
+### Audio Device Setup
+
+To configure your audio hardware, open **Setup → Audio**:
+
+1. Use the **Driver Type** dropdown to filter devices by host API — select **ASIO**, **WASAPI**, **CoreAudio**, **ALSA**, or leave at **All Drivers** to see every available device.
+2. Choose your **Output Device** from the filtered list (or leave at Default).
+3. Choose your **Input Device** if you plan to record audio.
+4. Set **Sample Rate** and **Buffer Size** — lower buffer sizes reduce latency at the cost of increased CPU load.
+5. Click **Start Engine** to open the audio stream. The status label shows the active device and sample rate.
+6. Click **Restart** (File → Restart) at any time to reinitialize the audio engine with the current settings.
+
+> **Windows tip**: Use the Driver Type filter to select **ASIO** for lowest latency. If no ASIO devices appear, install [ASIO4ALL](https://www.asio4all.org/) for onboard audio.
+
 ### Grid Controller Setup
 
 #### Connecting a Controller
@@ -619,7 +632,7 @@ A **Virtual Grid** is always available — check **Show Virtual Grid** to pop ou
 
 - **Active Rows**: 1–16 rows (default 8).
 - **Grid Columns**: 8 or 16 columns per row.
-- **Snap Speed to Rate (½x / 2x)**: When checked (default), sample load speed snaps to the nearest power-of-two rate. Uncheck for raw calculated speed.
+- **Snap Speed to Rate (½x / 2x)**: When checked, sample load speed snaps to the nearest power-of-two rate. Off by default — uncheck to use raw calculated speed.
 - **Show Virtual Grid**: Toggle the on-screen virtual grid window.
 - **Tilt Control Mapping**: Enable monome accelerometer axis mapping.
 
@@ -743,11 +756,11 @@ All of the following are available for MIDI mapping:
 | **Group Hug** (Glue Compressor) | Enable, Threshold, Ratio, Attack, Release, Makeup, HPF Selector |
 | **The Velvet Rope** (Noise Gate) | Enable, Threshold, Attack, Hold, Release, Range, Key Frequency |
 | **Heartquake** (Tremolo) | Enable, Rate, Depth, Spread, Mix |
-| **Auto Wah** (Auto Wah) | Enable, Sensitivity, Frequency, Depth, Speed, Mix |
+| **Funk Doctor** (Auto-Wah) | Enable, Sensitivity, Frequency, Depth, Speed, Mix |
 | **All Buttons In** (FET Limiter) | Enable, Input, Output, Attack, Release, Mix |
 | **Vitamin E** (Exciter) | Enable, Tune, Lo Tune, Output, Mix |
 | **Punch Card** (Transient Shaper) | Enable, Attack, Sustain, Output, Mix |
-| **Freq Shifter** (Freq Shifter) | Enable, Shift, Feedback, Mix |
+| **The Bode Plot** (Freq Shifter) | Enable, Shift, Feedback, Mix |
 | **Ring Leader** (Ring Mod) | Enable, Frequency, Shape, Mix |
 | **Spin Cycle** (Rotary) | Enable, Speed, Drive, Balance, Mix |
 | **Personal Space** (Stereo Widener) | Enable, Width, Center, Lo Mono, Mix |
@@ -885,7 +898,7 @@ Each FX group has a curated default loadout:
 
 ##### Adding and Removing Effects
 
-- Click the **＋ ADD EFFECT** button at the bottom of a rack to open a menu of all 37 available effect modules. Each entry shows the effect type in parentheses — e.g. *Byte Me (Bit Crusher)*, *Echo Chamber (Hall Reverb)*.
+- Click the **＋ ADD EFFECT** button at the bottom of a rack to open a menu of all 40 available effect modules. Each entry shows the effect type in parentheses — e.g. *Byte Me (Bit Crusher)*, *Echo Chamber (Hall Reverb)*.
 - Select a module to insert it into the rack.
 - Each module's **right rack ear** has two controls:
   - **Power button** (green/gray circle icon) — toggles the effect on or bypass. Bypassed modules pass audio through unprocessed; their state is still saved with the preset. Power can also be MIDI-mapped.
@@ -918,11 +931,11 @@ Each FX group has a curated default loadout:
 | **Ether Drift** | Modulation | Bipolar infinite phaser — two allpass chains (RISE/FALL sawtooth LFOs) with stereo spread, SYNC lock, route selector, rate, depth, feedback, and mix |
 | **The Velvet Rope** | Dynamics | Noise gate — threshold, attack, hold, release, range, key frequency sidechain filter |
 | **Heartquake** | Modulation | Tremolo — rate, depth, stereo spread, mix |
-| **Auto Wah** | Filter | Envelope auto-wah filter — sensitivity, frequency, depth, speed, mix |
+| **Funk Doctor** | Filter | Envelope auto-wah filter — sensitivity, frequency, depth, speed, mix |
 | **All Buttons In** | Dynamics | FET limiter — input drive, output, attack, release, mix |
 | **Vitamin E** | Enhancement | Aural exciter — high-frequency tune, low-frequency tune, output, mix |
 | **Punch Card** | Enhancement | Transient shaper — attack boost/cut, sustain boost/cut, output, mix |
-| **Freq Shifter** | Modulation | Frequency shifter — shift (Hz), feedback, mix |
+| **The Bode Plot** | Modulation | Frequency shifter (SSB) — shift (Hz), feedback, mix |
 | **Ring Leader** | Modulation | Ring modulator — carrier frequency, shape, mix |
 | **Spin Cycle** | Modulation | Rotary speaker — speed, drive, horn/drum balance, mix |
 | **Personal Space** | Enhancement | Stereo widener — width, center, low-frequency mono crossover, mix |
@@ -933,6 +946,9 @@ Each FX group has a curated default loadout:
 | **Tin Can** | Lo-Fi | Lo-fi radio — noise, wobble, lo-cut/hi-cut filters, mix |
 | **Pendulum** | Modulation | Auto-panner — rate, depth, shape, mix |
 | **Wool Over** | Distortion | Fuzz — drive, tone, gate, mix |
+| **Snow Globe** | Pitch / Texture | Granular freeze processor — grain size, scatter, pitch spread, density, freeze toggle, mix |
+| **Gate Crasher** | Reverb | Gated/reverse reverb — room size, gate time, slope, pre-delay, gate/reverse mode toggle, mix |
+| **Broken Record** | Glitch | Stutter/glitch buffer looper — loop size, retrigger rate, chaos, smear, trigger toggle, mix |
 
 ##### MIDI MAP Mode
 
@@ -1035,6 +1051,16 @@ You can also **right-click** any individual knob or fader to permanently latch o
 | **Ctrl+O** | Open preset file |
 | **Ctrl+S** | Save preset file |
 | **Ctrl+Q** | Quit |
+
+### File Menu
+
+| Action | Description |
+|--------|-------------|
+| **File → Open Preset File…** | Load a preset from any location on disk (same as Ctrl+O). |
+| **File → Save Preset File…** | Export the current state as a standalone JSON preset file (same as Ctrl+S). |
+| **File → Restart** | Reinitialize the audio engine and reload all settings — useful after changing audio device settings or recovering from an audio dropout. |
+| **File → Stop All Audio** | Immediately stop all playing channels and pattern recorders. |
+| **File → Quit** | Close mlrVp (same as Ctrl+Q). |
 
 ---
 

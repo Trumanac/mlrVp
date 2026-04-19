@@ -39,19 +39,21 @@ data/slices/*.wav
 # Runtime-generated user config
 data/ui_scale.txt
 
-# Test / scratch presets and setlists
-data/presets/test.json
-data/setlists/TEST.json
-data/setlists/TEST/
+# User presets and setlists (ignored so clones start blank)
+data/presets/*.json
+data/setlists/*.json
+data/setlists/*/
 
 # Dev/planning files not for end users
 FX_RACK_PLAN.md
+SLICER_UPGRADE_SPEC.md
 generate_icon.py
 stress_test.py
 stress_test_ringbuf.py
 stress_results.txt
 stress_output.txt
 stress_out.txt
+build_local.log
 
 # Local dev backups
 _backup/

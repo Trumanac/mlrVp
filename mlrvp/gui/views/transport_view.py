@@ -169,6 +169,26 @@ class PatternButton(QWidget):
             )
 
 
+class _ClickableCombo(QComboBox):
+    """QComboBox that opens its dropdown when the line-edit area is clicked."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def setEditable(self, editable):
+        super().setEditable(editable)
+        if editable and self.lineEdit():
+            self.lineEdit().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj is self.lineEdit() and event.type() == event.Type.MouseButtonPress:
+            if self.count() > 0:
+                self.showPopup()
+            return True
+        return super().eventFilter(obj, event)
+
+
+
 class TransportView(QWidget):
     """Transport bar with tempo, quantize, pattern recorders, and preset selector."""
 
@@ -182,6 +202,7 @@ class TransportView(QWidget):
     preset_prev_requested = Signal()
     preset_next_requested = Signal()
     preset_new_requested = Signal()               # clear/reset to defaults
+    preset_reload_requested = Signal()            # reload current preset
     setlist_changed = Signal(str)              # setlist name
     setlist_edit_requested = Signal()
     sync_bpm_requested = Signal()  # auto-detect BPM from loaded samples
@@ -472,11 +493,14 @@ class TransportView(QWidget):
         sl_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sl_col.addWidget(sl_label)
 
-        self._setlist_combo = QComboBox()
+        self._setlist_combo = _ClickableCombo()
+        self._setlist_combo.setEditable(True)
+        self._setlist_combo.lineEdit().setReadOnly(True)
+        self._setlist_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._setlist_combo.setFixedWidth(90)
         self._setlist_combo.setFixedHeight(22)
         self._setlist_combo.currentTextChanged.connect(
-            lambda txt: self.setlist_changed.emit(txt) if txt else None
+            lambda txt: self.setlist_changed.emit(txt) if txt and txt != "<new>" else None
         )
         sl_col.addWidget(self._setlist_combo)
 
@@ -515,11 +539,13 @@ class TransportView(QWidget):
         pr_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         pr_col.addWidget(pr_label)
 
-        self._preset_combo = QComboBox()
+        self._preset_combo = _ClickableCombo()
         self._preset_combo.setEditable(True)
         self._preset_combo.setFixedWidth(130)
         self._preset_combo.setFixedHeight(22)
         self._preset_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._preset_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preset_combo.lineEdit().setReadOnly(True)
         self._preset_combo.currentIndexChanged.connect(self._on_preset_selected)
         pr_col.addWidget(self._preset_combo)
         setlist_layout.addLayout(pr_col)
@@ -535,6 +561,18 @@ class TransportView(QWidget):
         )
         self._next_btn.clicked.connect(self.preset_next_requested.emit)
         setlist_layout.addWidget(self._next_btn, alignment=Qt.AlignmentFlag.AlignBottom)
+
+        # Reload button — reload current preset
+        self._reload_btn = QPushButton("\u21BB")
+        self._reload_btn.setFixedSize(22, 22)
+        self._reload_btn.setToolTip("Reload current preset")
+        self._reload_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 14px; font-weight: bold; border: 1px solid {SEPARATOR}; padding: 0; }}"
+            f"QPushButton:hover {{ color: {TEXT_PRIMARY}; border-color: {ACCENT_GOLD}; }}"
+        )
+        self._reload_btn.clicked.connect(self.preset_reload_requested.emit)
+        setlist_layout.addWidget(self._reload_btn, alignment=Qt.AlignmentFlag.AlignBottom)
 
         # Save button — saves current state as the named preset + adds to setlist
         self._save_btn = QPushButton("SAVE")
@@ -579,10 +617,8 @@ class TransportView(QWidget):
             self.preset_recall_requested.emit(index)
 
     def _on_save_clicked(self):
-        """User clicked SAVE — emit the current preset name text."""
-        name = self._preset_combo.currentText().strip()
-        if name:
-            self.preset_save_requested.emit(name)
+        """User clicked SAVE — emit signal to trigger the save flow."""
+        self.preset_save_requested.emit(self._preset_combo.currentText().strip())
 
     def flash_save_button(self):
         """Briefly flash the SAVE button green to confirm a save."""
@@ -608,6 +644,18 @@ class TransportView(QWidget):
             idx = self._setlist_combo.findText(current)
             if idx >= 0:
                 self._setlist_combo.setCurrentIndex(idx)
+                self._set_setlist_text_dim(False)
+            else:
+                # No matching setlist — show <new> placeholder
+                self._setlist_combo.setCurrentIndex(-1)
+                self._setlist_combo.setEditText("<new>")
+                self._set_setlist_text_dim(True)
+        elif not names:
+            self._setlist_combo.setCurrentIndex(-1)
+            self._setlist_combo.setEditText("<new>")
+            self._set_setlist_text_dim(True)
+        else:
+            self._set_setlist_text_dim(False)
         self._setlist_combo.blockSignals(False)
 
     def populate_preset_combo(self, presets: list[str], active: int = -1):
@@ -619,9 +667,12 @@ class TransportView(QWidget):
             self._preset_combo.addItem(name)
         if 0 <= active < self._preset_combo.count():
             self._preset_combo.setCurrentIndex(active)
-        elif presets:
-            # No active — show first but don't trigger recall
-            self._preset_combo.setCurrentIndex(0)
+            self._set_preset_text_dim(False)
+        else:
+            # No active preset — show <new> without selecting a list entry
+            self._preset_combo.setCurrentIndex(-1)
+            self._preset_combo.setEditText("<new>")
+            self._set_preset_text_dim(True)
         self._preset_combo.blockSignals(False)
         self._updating_presets = False
 
@@ -630,8 +681,29 @@ class TransportView(QWidget):
         self._preset_combo.blockSignals(True)
         if 0 <= index < self._preset_combo.count():
             self._preset_combo.setCurrentIndex(index)
+            self._set_preset_text_dim(False)
+        else:
+            self._preset_combo.setCurrentIndex(-1)
+            self._preset_combo.setEditText("<new>")
+            self._set_preset_text_dim(True)
         self._preset_combo.blockSignals(False)
         self._updating_presets = False
+
+    def _set_setlist_text_dim(self, dim: bool):
+        """Toggle the setlist combo line-edit text between dim and normal."""
+        clr = SEPARATOR if dim else TEXT_PRIMARY
+        self._setlist_combo.setStyleSheet(
+            f"QComboBox QLineEdit {{ color: {clr}; }}"
+            f"QComboBox QAbstractItemView {{ color: {TEXT_PRIMARY}; }}"
+        )
+
+    def _set_preset_text_dim(self, dim: bool):
+        """Toggle the preset combo line-edit text between dim and normal."""
+        clr = SEPARATOR if dim else TEXT_PRIMARY
+        self._preset_combo.setStyleSheet(
+            f"QComboBox QLineEdit {{ color: {clr}; }}"
+            f"QComboBox QAbstractItemView {{ color: {TEXT_PRIMARY}; }}"
+        )
 
     def set_tempo(self, bpm: float):
         self._tempo_spin.blockSignals(True)
@@ -664,6 +736,8 @@ class TransportView(QWidget):
         if self._tap_times and (now - self._tap_times[-1]) > 2.0:
             self._tap_times.clear()  # gap too long — start fresh
         self._tap_times.append(now)
+        if len(self._tap_times) > 16:
+            self._tap_times = self._tap_times[-16:]
         # Flash feedback
         self._tap_btn.setStyleSheet(
             f"QPushButton {{ font-size: 14px; font-weight: bold; color: {BG_BLACK}; "

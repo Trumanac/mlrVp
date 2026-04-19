@@ -663,6 +663,8 @@ class MidiSetupPanel(QFrame):
         self._available_inputs = list(inputs)
         # Update existing input row combos
         for row_info in self._midi_input_rows:
+            if row_info is None:
+                continue
             combo = row_info["combo"]
             prev = combo.currentIndex()
             combo.blockSignals(True)

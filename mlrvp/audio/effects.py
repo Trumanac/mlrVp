@@ -25,6 +25,9 @@ try:
         phaser_kernel as _phaser_jit,
         compressor_kernel as _compressor_jit,
         glue_compressor_kernel as _glue_jit,
+        biquad_filter_kernel as _biquad_jit,
+        gate_envelope_kernel as _gate_env_jit,
+        transient_env_kernel as _transient_env_jit,
     )
     _HAS_NUMBA = True
 except ImportError:
@@ -38,12 +41,23 @@ class BiquadFilter:
         self.sr = sample_rate
         self.b = np.array([1.0, 0.0, 0.0], dtype=np.float64)
         self.a = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        # Cached as plain Python floats — avoids numpy scalar alloc in process()
+        self._b0 = 1.0; self._b1 = 0.0; self._b2 = 0.0
+        self._a1 = 0.0; self._a2 = 0.0
         # lfilter state for both channels at once: shape (2, 2) = (order, channels)
         self._zi = np.zeros((2, 2), dtype=np.float64)
         # Pre-allocated conversion buffers to avoid per-call astype allocations
         from mlrvp.config import BUFFER_SIZE
         self._f64_buf = np.zeros((BUFFER_SIZE, 2), dtype=np.float64)
         self._f32_buf = np.zeros((BUFFER_SIZE, 2), dtype=np.float32)
+
+    def _update_coeffs(self):
+        """Extract numpy array coefficients as plain Python floats."""
+        self._b0 = float(self.b[0])
+        self._b1 = float(self.b[1])
+        self._b2 = float(self.b[2])
+        self._a1 = float(self.a[1])
+        self._a2 = float(self.a[2])
 
     def set_lowpass(self, freq: float, q: float = 0.707):
         freq = max(20.0, min(freq, self.sr * 0.49))
@@ -53,6 +67,7 @@ class BiquadFilter:
         a0 = 1 + alpha
         self.b = np.array([(1 - cos_w0) / 2, 1 - cos_w0, (1 - cos_w0) / 2], dtype=np.float64) / a0
         self.a = np.array([1.0, (-2 * cos_w0) / a0, (1 - alpha) / a0], dtype=np.float64)
+        self._update_coeffs()
 
     def set_highpass(self, freq: float, q: float = 0.707):
         freq = max(20.0, min(freq, self.sr * 0.49))
@@ -62,6 +77,7 @@ class BiquadFilter:
         a0 = 1 + alpha
         self.b = np.array([(1 + cos_w0) / 2, -(1 + cos_w0), (1 + cos_w0) / 2], dtype=np.float64) / a0
         self.a = np.array([1.0, (-2 * cos_w0) / a0, (1 - alpha) / a0], dtype=np.float64)
+        self._update_coeffs()
 
     def set_peaking(self, freq: float, gain_db: float, q: float = 1.0):
         """Peaking EQ biquad (Audio EQ Cookbook)."""
@@ -74,6 +90,7 @@ class BiquadFilter:
         a0 = 1.0 + alpha / A
         self.b = np.array([1.0 + alpha * A, -2.0 * cos_w0, 1.0 - alpha * A], dtype=np.float64) / a0
         self.a = np.array([1.0, (-2.0 * cos_w0) / a0, (1.0 - alpha / A) / a0], dtype=np.float64)
+        self._update_coeffs()
 
     def set_low_shelf(self, freq: float, gain_db: float):
         """Low-shelving EQ biquad (Audio EQ Cookbook, S=1)."""
@@ -91,11 +108,24 @@ class BiquadFilter:
         a2 =        (A+1) + (A-1)*cos_w0 - 2*sqA*alpha
         self.b = np.array([b0, b1, b2], dtype=np.float64) / a0
         self.a = np.array([1.0, a1 / a0, a2 / a0], dtype=np.float64)
+        self._update_coeffs()
 
     def process(self, data: np.ndarray) -> np.ndarray:
-        """Process stereo data using scipy lfilter — both channels at once."""
+        """Process stereo data — JIT in-place path or scipy fallback."""
         n = len(data)
-        # Resize pre-allocated buffers if needed
+        if _HAS_NUMBA:
+            # In-place biquad via Numba — ZERO allocations
+            # We need float32 contiguous copy to write in-place, reuse buf
+            if n > self._f32_buf.shape[0]:
+                self._f32_buf = np.zeros((n, 2), dtype=np.float32)
+            buf32 = self._f32_buf[:n]
+            buf32[:] = data
+            _biquad_jit(buf32, n,
+                        self._b0, self._b1, self._b2,
+                        self._a1, self._a2,
+                        self._zi)
+            return buf32
+        # Fallback: scipy lfilter (allocates output array)
         if n > self._f64_buf.shape[0]:
             self._f64_buf = np.zeros((n, 2), dtype=np.float64)
             self._f32_buf = np.zeros((n, 2), dtype=np.float32)
@@ -238,6 +268,8 @@ class StereoDelay:
         self.lp_filter.reset()
         self.hp_filter.reset()
 
+    reset = clear
+
 
 class ChannelFilter:
     """Simple filter for per-channel use. Sweepable LP/HP."""
@@ -265,6 +297,11 @@ class ChannelFilter:
             # Highpass: map 0..1 to 20Hz..8000Hz
             freq = 20 * (8000 / 20) ** self._filter_val
             self.hp.set_highpass(freq)
+
+    def reset(self):
+        self.lp.reset()
+        self.hp.reset()
+        self._filter_val = 0.0
 
     def process(self, data: np.ndarray) -> np.ndarray:
         if abs(self._filter_val) < 0.01:
@@ -337,6 +374,13 @@ class GlobalFilter:
         if abs(out_db) > 0.05:
             out = out * (10.0 ** (out_db / 20.0))
         return out
+
+    def reset(self):
+        self.lp.reset()
+        self.hp.reset()
+        self.lf.reset()
+        self.lmf.reset()
+        self.hmf.reset()
 
 
 class MoogLadderFilter:
@@ -628,6 +672,8 @@ class TapeDelay:
             ap._buf[:] = 0
             ap._idx = 0
 
+    reset = clear
+
 
 class Phaser:
     """Phaser using per-sample cascaded first-order allpass filters.
@@ -728,6 +774,13 @@ class Phaser:
         self._ap_y[np.abs(self._ap_y) < 1e-18] = 0.0
         return out
 
+    def reset(self):
+        self._ap_x[:] = 0
+        self._ap_y[:] = 0
+        self._fb0 = 0.0
+        self._fb1 = 0.0
+        self._phase = 0.0
+
 
 class Chorus:
     """Simple chorus effect using modulated delay (block-vectorised)."""
@@ -799,6 +852,11 @@ class Chorus:
 
         # Mix
         return data * (1.0 - self.mix) + delayed * self.mix
+
+    def reset(self):
+        self._buf[:] = 0
+        self._write_pos = 0
+        self._phase = 0.0
 
 
 class Flanger:
@@ -900,6 +958,12 @@ class Flanger:
         # Mix dry/wet
         return data * (1.0 - self.mix) + delayed * self.mix
 
+    def reset(self):
+        self._buf[:] = 0
+        self._write_pos = 0
+        self._phase = 0.0
+        self._fb_lp_zi[:] = 0
+
 
 class FXBus:
     """A complete FX processing bus containing filter + modulation effects.
@@ -969,6 +1033,12 @@ class FXBus:
         if self._flanger_enabled and self.flanger_in_rack:
             out = self.flanger.process(out)
         return out
+
+    def reset(self):
+        self.global_filter.reset()
+        self.phaser.reset()
+        self.chorus.reset()
+        self.flanger.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -1209,6 +1279,13 @@ class ReelToReelProcessor:
 
         return data * (1.0 - mix) + wet * mix
 
+    def reset(self):
+        self._tone_lp.reset()
+        self._delay_buf[:] = 0
+        self._buf_pos = 0
+        self._flutter_phase = 0.0
+        self._last_tone = -1.0
+
 
 class CassetteTapeProcessor:
     """Home cassette tape emulation: saturation, hiss, punch, warp, tone.
@@ -1323,6 +1400,16 @@ class CassetteTapeProcessor:
         wet = self._tone_lp.process(wet)
 
         return data * (1.0 - mix) + wet * mix
+
+    def reset(self):
+        self._tone_lp.reset()
+        self._punch_lp.reset()
+        self._delay_buf[:] = 0
+        self._buf_pos = 0
+        self._warp_phase = 0.0
+        self._noise_pos = 0
+        self._last_tone = -1.0
+        self._last_punch = -1.0
 
 
 # ---------------------------------------------------------------------------
@@ -1543,6 +1630,8 @@ class VHSProcessor:
         _NL = 8192
         self._noise_buf = np.random.default_rng(99).standard_normal((_NL, 2)).astype(np.float32)
         self._noise_pos = 0
+        # Per-instance RNG for stochastic effects (thread-safe)
+        self._rng = np.random.default_rng()
         # Cache last worn value to avoid rebuilding filter every block
         self._last_worn: float = -1.0
         # Pre-allocated wet buffer
@@ -1593,8 +1682,8 @@ class VHSProcessor:
         if dropout > 0.01:
             self._dropout_counter += 1
             # Stochastic dropout: higher values = more frequent and deeper
-            if random.random() < dropout * 0.06:
-                self._dropout_gate = dropout * 0.02 + random.random() * 0.2
+            if self._rng.random() < dropout * 0.06:
+                self._dropout_gate = dropout * 0.02 + self._rng.random() * 0.2
             else:
                 self._dropout_gate = min(1.0, self._dropout_gate + 0.08)
             wet = wet * np.float32(self._dropout_gate)
@@ -1619,6 +1708,16 @@ class VHSProcessor:
             wet = wet + noise
 
         return data * (1.0 - mix) + wet * mix
+
+    def reset(self):
+        self._worn_lp.reset()
+        self._delay_buf[:] = 0
+        self._buf_pos = 0
+        self._wobble_phase = 0.0
+        self._dropout_counter = 0
+        self._dropout_gate = 1.0
+        self._noise_pos = 0
+        self._last_worn = -1.0
 
 
 class VinylProcessor:
@@ -1650,6 +1749,8 @@ class VinylProcessor:
         self._noise_buf = _rng.standard_normal((_NL, 2)).astype(np.float32)
         self._gate_buf = _rng.random(_NL).astype(np.float32)
         self._noise_pos = 0
+        # Per-instance RNG for stochastic effects (thread-safe)
+        self._rng = np.random.default_rng()
         # Cache last filter param values
         self._last_wear: float = -1.0
         self._last_warmth_freq: float = -1.0
@@ -1741,9 +1842,9 @@ class VinylProcessor:
             self._samples_until_pop -= n
             if self._samples_until_pop <= 0:
                 if has_signal:
-                    pop_pos = min(n - 1, max(0, int(random.random() * n)))
+                    pop_pos = min(n - 1, max(0, int(self._rng.random() * n)))
                     pop_amp = 0.08 + pops * 0.25
-                    pop_sign = 1.0 if random.random() > 0.5 else -1.0
+                    pop_sign = 1.0 if self._rng.random() > 0.5 else -1.0
                     wet[pop_pos, 0] += np.float32(pop_amp * pop_sign)
                     wet[pop_pos, 1] += np.float32(pop_amp * pop_sign)
                     # Wider pop (couple adjacent samples)
@@ -1754,10 +1855,21 @@ class VinylProcessor:
                 # Always reschedule the timer so pops fire promptly when signal returns
                 avg_gap = max(0.03, 1.5 - pops * 1.3)
                 self._samples_until_pop = int(
-                    self.sr * avg_gap * (0.5 + random.random())
+                    self.sr * avg_gap * (0.5 + self._rng.random())
                 )
 
         return data * (1.0 - mix) + wet * mix
+
+    def reset(self):
+        self._warmth_lp.reset()
+        self._wear_lp.reset()
+        self._delay_buf[:] = 0
+        self._buf_pos = 0
+        self._wow_phase = 0.0
+        self._noise_pos = 0
+        self._samples_until_pop = int(self.sr * 0.5)
+        self._last_wear = -1.0
+        self._last_warmth_freq = -1.0
 
 class CompressorProcessor:
     """Feedforward stereo compressor with sidechain support.
@@ -1858,6 +1970,13 @@ class CompressorProcessor:
 
         # Apply gain reduction + makeup
         return data * gain[:n, np.newaxis] * np.float32(makeup_lin)
+
+    def reset(self):
+        self._sc_hp.reset()
+        self._env = 0.0
+        self.gr_db = 0.0
+        self._gain[:] = 1.0
+        self._sc_buf[:] = 0
 
 
 # ------------------------------------------------------------------ #
@@ -1983,6 +2102,13 @@ class GlueCompressorProcessor:
             self._env = 0.0
 
         return data * gain[:n, np.newaxis] * np.float32(makeup_lin)
+
+    def reset(self):
+        self._hpf.reset()
+        self._env = 0.0
+        self.gr_db = 0.0
+        self._hpf_idx_cached = -1
+        self._gain[:] = 1.0
 
 
 # ------------------------------------------------------------------ #
@@ -2291,6 +2417,15 @@ class HallReverbProcessor:
         mix = st.mix
         return data * np.float32(1.0 - mix) + wet[:n] * np.float32(mix)
 
+    def reset(self):
+        self._pd_buf[:] = 0
+        self._pd_idx = 0
+        for c in self._combs:
+            c.reset()
+        for ap in self._allpasses:
+            ap.reset()
+        self._wet[:] = 0
+
 
 # ------------------------------------------------------------------ #
 # Plate / Spring Reverb                                               #
@@ -2374,6 +2509,15 @@ class PlateReverbProcessor:
 
         mix = st.mix
         return data * np.float32(1.0 - mix) + wet[:n] * np.float32(mix)
+
+    def reset(self):
+        self._pd_buf[:] = 0
+        self._pd_idx = 0
+        for c in self._combs:
+            c.reset()
+        for ap in self._allpasses:
+            ap.reset()
+        self._wet[:] = 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3302,6 +3446,10 @@ class TransientShaperProcessor:
         self._slow_env_buf = np.zeros((buffer_size, 2), dtype=np.float64)
         self._fe_out = np.zeros(buffer_size, dtype=np.float64)
         self._se_out = np.zeros(buffer_size, dtype=np.float64)
+        # Pre-allocated gain computation buffers
+        self._gain_buf = np.empty((buffer_size, 2), dtype=np.float64)
+        self._trans_buf = np.empty((buffer_size, 2), dtype=np.float64)
+        self._gain_buf_size = buffer_size
 
     def process(self, data: np.ndarray) -> np.ndarray:
         if not self.state.enabled:
@@ -3328,32 +3476,39 @@ class TransientShaperProcessor:
         # Compute per-sample rectified input
         rect = np.abs(work)
 
-        # Vectorised envelope follower via block processing
+        # Envelope follower — Numba JIT or Python fallback
         fast_env = self._fast_env_buf[:n_samples]
         slow_env = self._slow_env_buf[:n_samples]
 
-        for ch in range(n_ch):
-            fe = self._fast_env[ch]
-            se = self._slow_env[ch]
-            r = rect[:, ch]
-            fe_out = self._fe_out[:n_samples]
-            se_out = self._se_out[:n_samples]
-            for i in range(n_samples):
-                s = r[i]
-                if s > fe:
-                    fe = fast_att * fe + (1.0 - fast_att) * s
-                else:
-                    fe = fast_rel * fe + (1.0 - fast_rel) * s
-                if s > se:
-                    se = slow_att * se + (1.0 - slow_att) * s
-                else:
-                    se = slow_rel * se + (1.0 - slow_rel) * s
-                fe_out[i] = fe
-                se_out[i] = se
-            self._fast_env[ch] = fe
-            self._slow_env[ch] = se
-            fast_env[:, ch] = fe_out
-            slow_env[:, ch] = se_out
+        if _HAS_NUMBA:
+            _transient_env_jit(
+                rect, n_samples, n_ch,
+                fast_att, fast_rel, slow_att, slow_rel,
+                self._fast_env, self._slow_env,
+                fast_env, slow_env)
+        else:
+            for ch in range(n_ch):
+                fe = self._fast_env[ch]
+                se = self._slow_env[ch]
+                r = rect[:, ch]
+                fe_out = self._fe_out[:n_samples]
+                se_out = self._se_out[:n_samples]
+                for i in range(n_samples):
+                    s = r[i]
+                    if s > fe:
+                        fe = fast_att * fe + (1.0 - fast_att) * s
+                    else:
+                        fe = fast_rel * fe + (1.0 - fast_rel) * s
+                    if s > se:
+                        se = slow_att * se + (1.0 - slow_att) * s
+                    else:
+                        se = slow_rel * se + (1.0 - slow_rel) * s
+                    fe_out[i] = fe
+                    se_out[i] = se
+                self._fast_env[ch] = fe
+                self._slow_env[ch] = se
+                fast_env[:, ch] = fe_out
+                slow_env[:, ch] = se_out
 
         # Stereo link: average L/R envelopes
         if st.stereo_link and n_ch == 2:
@@ -3366,27 +3521,33 @@ class TransientShaperProcessor:
         # so they represent *proportional* change — not tiny absolute diffs.
         # Add small floor to avoid division by zero.
         env_floor = 1e-6
-        norm = np.maximum(slow_env, env_floor)
+        if n_samples > self._gain_buf_size:
+            self._gain_buf = np.empty((n_samples, 2), dtype=np.float64)
+            self._trans_buf = np.empty((n_samples, 2), dtype=np.float64)
+            self._gain_buf_size = n_samples
+        gain = self._gain_buf[:n_samples]
+        transient = self._trans_buf[:n_samples]
+        np.maximum(slow_env, env_floor, out=gain)  # use gain as temp for norm
 
         # Transient = (fast - slow) / slow — large during sharp attacks
-        raw_trans = (fast_env - slow_env) / norm
-        transient = np.clip(raw_trans, 0.0, 1.0)
-
-        # Sustain signal: where we are NOT in a transient (inverse).
-        # The SPL Transient Designer shapes the body/tail of the sound —
-        # everything that ISN'T the initial attack.  We use
-        # (1 - transient) so it acts on the sustained body.
-        sustain = 1.0 - transient
+        np.subtract(fast_env, slow_env, out=transient)
+        np.divide(transient, gain, out=transient)
+        np.clip(transient, 0.0, 1.0, out=transient)
 
         # Gain shaping: ±1 maps to ±12 dB of boost/cut
-        # attack_shape=+1  → up to +12 dB on transients
-        # sustain_shape=+1 → up to +12 dB on body/tail
         _RANGE_DB = 12.0
         _LOG10_20 = 0.11512925464970229  # log(10)/20
-        att_db = attack_shape * _RANGE_DB * transient
-        sus_db = sustain_shape * _RANGE_DB * sustain
-        gain = np.exp((att_db + sus_db) * _LOG10_20)
-        gain = np.clip(gain, 0.05, 8.0)
+        # gain = exp(((attack_shape * transient) + (sustain_shape * (1-transient))) * RANGE * LOG10_20)
+        np.multiply(transient, attack_shape * _RANGE_DB * _LOG10_20, out=gain)
+        # sustain = (1 - transient) * sustain_shape * RANGE * LOG10_20
+        # Add in-place: gain += sustain_shape * (1-transient) * RANGE * LOG10_20
+        sus_coeff = sustain_shape * _RANGE_DB * _LOG10_20
+        if abs(sus_coeff) > 1e-9:
+            # transient is still valid, compute (1-transient) contribution
+            gain += sus_coeff
+            gain -= sus_coeff * transient
+        np.exp(gain, out=gain)
+        np.clip(gain, 0.05, 8.0, out=gain)
 
         out = work * gain
 
@@ -3444,6 +3605,22 @@ class HarmonizerProcessor:
 
         # Feedback buffer (large enough for any reasonable block size)
         self._fb = np.zeros((4096, max_channels), dtype=np.float32)
+        # Pre-allocated interpolation buffers (grow-only)
+        self._interp_size = 4096
+        self._interp_arange = np.arange(4096, dtype=np.float64)
+        self._interp_positions = np.empty(4096, dtype=np.float64)
+        self._interp_fl = np.empty(4096, dtype=np.int64)
+        self._interp_frac = np.empty((4096, 1), dtype=np.float32)
+        self._interp_out = np.empty((4096, max_channels), dtype=np.float32)
+
+    def _ensure_interp_bufs(self, n):
+        if n > self._interp_size:
+            self._interp_size = n
+            self._interp_arange = np.arange(n, dtype=np.float64)
+            self._interp_positions = np.empty(n, dtype=np.float64)
+            self._interp_fl = np.empty(n, dtype=np.int64)
+            self._interp_frac = np.empty((n, 1), dtype=np.float32)
+            self._interp_out = np.empty((n, self._max_ch), dtype=np.float32)
 
     # ---- helpers -----------------------------------------------------------
 
@@ -3457,17 +3634,26 @@ class HarmonizerProcessor:
 
         Returns ``(audio[n, channels], new_read_pos)``.
         """
+        self._ensure_interp_bufs(n)
         blen = self._blen
         buf = self._buf
-        positions = start + np.arange(n, dtype=np.float64) * ratio
-        fl = np.floor(positions).astype(np.int64)
-        frac = (positions - fl).astype(np.float32)[:, np.newaxis]  # (n,1)
+        positions = self._interp_positions[:n]
+        np.multiply(self._interp_arange[:n], ratio, out=positions)
+        positions += start
+        fl = self._interp_fl[:n]
+        np.floor(positions, out=self._interp_positions[:n])  # temp reuse ok
+        fl[:] = self._interp_positions[:n]
+        frac = self._interp_frac[:n]
+        frac[:, 0] = positions - self._interp_positions[:n]
         i0 = fl % blen
         i1 = (fl + 1) % blen
         # Advanced-index both points, sliced to actual channel count
         s0 = buf[i0, :channels]    # (n, channels)
         s1 = buf[i1, :channels]
-        out = (s0 + (s1 - s0) * frac).astype(np.float32)
+        out = self._interp_out[:n, :channels]
+        np.subtract(s1, s0, out=out)
+        out *= frac
+        out += s0
         return out, float(positions[-1] + ratio)
 
     # ---- per-voice overlap-add ---------------------------------------------
@@ -3617,6 +3803,9 @@ class StereoWidenerProcessor:
         # Pre-allocated stereo buffer for side-channel LP filter
         self._s_stereo = np.empty((buffer_size, 2), dtype=np.float32)
         self._s_stereo_size = buffer_size
+        # Pre-allocated output buffer
+        self._out = np.empty((buffer_size, 2), dtype=np.float32)
+        self._out_size = buffer_size
 
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
@@ -3658,7 +3847,11 @@ class StereoWidenerProcessor:
             S = S - s_lo
 
         # M-S decode
-        out = np.empty_like(data)
+        n = len(data)
+        if n > self._out_size:
+            self._out = np.empty((n, 2), dtype=np.float32)
+            self._out_size = n
+        out = self._out[:n]
         out[:, 0] = M + S
         if data.shape[1] > 1:
             out[:, 1] = M - S
@@ -3722,6 +3915,12 @@ class FreqShifterProcessor:
         self._wet_buf = np.empty((4096, 2), dtype=np.float32)
         self._fb_f64_buf = np.zeros((4096, 2), dtype=np.float64)
         self._wet_size = 4096
+        # Pre-allocated oscillator buffers
+        self._osc_phases = np.empty(4096, dtype=np.float64)
+        self._cos_osc = np.empty(4096, dtype=np.float64)
+        self._sin_osc = np.empty(4096, dtype=np.float64)
+        self._osc_arange = np.arange(4096, dtype=np.float64)
+        self._osc_buf_size = 4096
 
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
@@ -3776,12 +3975,22 @@ class FreqShifterProcessor:
             self._delay_buf[-n:, :nchan] = x
         I_out = i_out
 
-        # Oscillator
+        # Oscillator — pre-allocated buffers
+        if n > self._osc_buf_size:
+            self._osc_phases = np.empty(n, dtype=np.float64)
+            self._cos_osc = np.empty(n, dtype=np.float64)
+            self._sin_osc = np.empty(n, dtype=np.float64)
+            self._osc_arange = np.arange(n, dtype=np.float64)
+            self._osc_buf_size = n
         phase_inc = 2.0 * np.pi * shift / self.sr
-        phases = self._osc_phase + phase_inc * np.arange(n, dtype=np.float64)
+        phases = self._osc_phases[:n]
+        np.multiply(self._osc_arange[:n], phase_inc, out=phases)
+        phases += self._osc_phase
         self._osc_phase = float(phases[-1] + phase_inc) % (2.0 * np.pi)
-        cos_osc = np.cos(phases)
-        sin_osc = np.sin(phases)
+        cos_osc = self._cos_osc[:n]
+        sin_osc = self._sin_osc[:n]
+        np.cos(phases, out=cos_osc)
+        np.sin(phases, out=sin_osc)
 
         # SSB: upper sideband = I·cos − Q·sin
         if n > self._wet_size:
@@ -3826,6 +4035,20 @@ class RingModProcessor:
         from mlrvp.config import RingModState
         self.state = RingModState()
         self._phase = 0.0
+        # Pre-allocated work buffers (grow-only)
+        self._buf_size = 512
+        self._phases = np.empty(self._buf_size, dtype=np.float64)
+        self._carrier = np.empty(self._buf_size, dtype=np.float32)
+        self._mod = np.empty(self._buf_size, dtype=np.float32)
+        self._arange = np.arange(self._buf_size, dtype=np.float64)
+
+    def _ensure_bufs(self, n):
+        if n > self._buf_size:
+            self._buf_size = n
+            self._phases = np.empty(n, dtype=np.float64)
+            self._carrier = np.empty(n, dtype=np.float32)
+            self._mod = np.empty(n, dtype=np.float32)
+            self._arange = np.arange(n, dtype=np.float64)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
@@ -3842,31 +4065,43 @@ class RingModProcessor:
         n = len(data)
         if n <= 0:
             return data
+        self._ensure_bufs(n)
         phase_inc = 2.0 * np.pi * freq / self.sr
-        phases = self._phase + phase_inc * np.arange(n, dtype=np.float64)
+        phases = self._phases[:n]
+        np.multiply(self._arange[:n], phase_inc, out=phases)
+        phases += self._phase
         self._phase = float(phases[-1] + phase_inc) % (2.0 * np.pi)
 
+        carrier = self._carrier[:n]
         shape = int(st.shape)
         if shape == 1:
             # Triangle: fold sawtooth
-            carrier = 2.0 * np.abs(2.0 * (phases / (2.0 * np.pi) % 1.0) - 1.0) - 1.0
+            t = phases / (2.0 * np.pi) % 1.0
+            np.subtract(2.0 * t, 1.0, out=phases[:n])  # reuse as temp
+            np.abs(phases[:n], out=phases[:n])
+            np.multiply(phases[:n], 2.0, out=phases[:n])
+            np.subtract(phases[:n], 1.0, out=phases[:n])
+            carrier[:] = phases[:n]
         elif shape == 2:
             # Square: sign of sine
-            carrier = np.sign(np.sin(phases))
+            np.sin(phases, out=phases)
+            np.sign(phases, out=phases)
+            carrier[:] = phases
         else:
             # Sine (default)
-            carrier = np.sin(phases)
-
-        carrier = carrier.astype(np.float32)
+            np.sin(phases, out=phases)
+            carrier[:] = phases
 
         # depth: 0 = unmodulated, 1 = full ring-mod
-        # modulator = (1 - depth) + depth * carrier  → at depth=1 pure multiply
-        mod = ((1.0 - depth) + depth * carrier)
+        mod = self._mod[:n]
+        np.multiply(carrier, depth, out=mod)
+        mod += (1.0 - depth)
 
         if data.ndim == 2:
-            mod = mod[:, np.newaxis]
+            wet = data * mod[:, np.newaxis]
+        else:
+            wet = data * mod
 
-        wet = data * mod
         return data * (1.0 - mix) + wet * mix
 
     def reset(self):
@@ -4034,6 +4269,18 @@ class PingPongDelayProcessor:
         # Pre-allocated filter coefficient arrays
         self._lp_b = np.array([1.0], dtype=np.float64)
         self._lp_a = np.array([1.0, 0.0], dtype=np.float64)
+        # Pre-allocated read/output buffers (grow-only)
+        self._work_size = buffer_size
+        self._tap_l = np.empty(buffer_size, dtype=np.float32)
+        self._tap_r = np.empty(buffer_size, dtype=np.float32)
+        self._out = np.empty((buffer_size, 2), dtype=np.float32)
+
+    def _ensure_work_bufs(self, n):
+        if n > self._work_size:
+            self._work_size = n
+            self._tap_l = np.empty(n, dtype=np.float32)
+            self._tap_r = np.empty(n, dtype=np.float32)
+            self._out = np.empty((n, 2), dtype=np.float32)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
@@ -4065,11 +4312,14 @@ class PingPongDelayProcessor:
 
         if delay_l >= n and delay_r >= n:
             # Fast vectorised path — both delays > blocksize
-            # Read taps (all from previous blocks, no overlap)
+            self._ensure_work_bufs(n)
+            # Read taps into pre-allocated buffers
             rd_l_start = (wp - delay_l) % bl
             rd_r_start = (wp - delay_r) % bl
-            tap_l = self._circ_read_mono(self._buf_l, rd_l_start, n)
-            tap_r = self._circ_read_mono(self._buf_r, rd_r_start, n)
+            tap_l = self._tap_l[:n]
+            tap_r = self._tap_r[:n]
+            self._circ_read_into(self._buf_l, rd_l_start, n, tap_l)
+            self._circ_read_into(self._buf_r, rd_r_start, n, tap_r)
 
             # LP damping via lfilter (one-pole IIR in C)
             self._lp_b[0] = lp_coeff
@@ -4103,7 +4353,7 @@ class PingPongDelayProcessor:
 
             mix_f32 = np.float32(mix)
             if stereo:
-                out = data.copy()
+                out = self._out[:n]
                 out[:, 0] = data[:, 0] * (1.0 - mix_f32) + wet_l * mix_f32
                 out[:, 1] = data[:, 1] * (1.0 - mix_f32) + wet_r * mix_f32
             else:
@@ -4153,6 +4403,18 @@ class PingPongDelayProcessor:
         out[:split] = buf[idx:sz]
         out[split:] = buf[:end - sz]
         return out
+
+    @staticmethod
+    def _circ_read_into(buf, idx, n, out):
+        """Read n samples from circular buffer into pre-allocated out array."""
+        sz = len(buf)
+        end = idx + n
+        if end <= sz:
+            out[:n] = buf[idx:end]
+        else:
+            split = sz - idx
+            out[:split] = buf[idx:sz]
+            out[split:] = buf[:end - sz]
 
     @staticmethod
     def _circ_write_mono(buf, idx, data, n):
@@ -4234,6 +4496,39 @@ class ShimmerReverbProcessor:
         # Pre-allocated circ-read buffer for predelay, combs, allpass
         self._circ_rd_buf = np.empty((buffer_size, 2), dtype=np.float32)
         self._circ_rd_size = buffer_size
+        # Pre-allocated comb-sum and LP coefficient arrays
+        self._comb_sum = np.zeros((buffer_size, 2), dtype=np.float32)
+        self._comb_sum_size = buffer_size
+        self._lp_b = np.array([1.0], dtype=np.float64)
+        self._lp_a = np.array([1.0, 0.0], dtype=np.float64)
+        # Pre-allocated pitch-shift work buffers
+        self._ps_buf_size = buffer_size
+        self._ps_positions = np.empty(buffer_size, dtype=np.float64)
+        self._ps_pos_a = np.empty(buffer_size, dtype=np.float64)
+        self._ps_pos_b = np.empty(buffer_size, dtype=np.float64)
+        self._ps_ia = np.empty(buffer_size, dtype=np.int32)
+        self._ps_ib = np.empty(buffer_size, dtype=np.int32)
+        self._ps_fa = np.empty((buffer_size, 1), dtype=np.float32)
+        self._ps_fb = np.empty((buffer_size, 1), dtype=np.float32)
+        self._ps_t = np.empty(buffer_size, dtype=np.float32)
+        self._ps_w = np.empty((buffer_size, 1), dtype=np.float32)
+        self._ps_result = np.empty((buffer_size, 2), dtype=np.float32)
+        self._ps_arange = np.arange(buffer_size, dtype=np.float64)
+
+    def _ensure_ps_bufs(self, n):
+        if n > self._ps_buf_size:
+            self._ps_buf_size = n
+            self._ps_positions = np.empty(n, dtype=np.float64)
+            self._ps_pos_a = np.empty(n, dtype=np.float64)
+            self._ps_pos_b = np.empty(n, dtype=np.float64)
+            self._ps_ia = np.empty(n, dtype=np.int32)
+            self._ps_ib = np.empty(n, dtype=np.int32)
+            self._ps_fa = np.empty((n, 1), dtype=np.float32)
+            self._ps_fb = np.empty((n, 1), dtype=np.float32)
+            self._ps_t = np.empty(n, dtype=np.float32)
+            self._ps_w = np.empty((n, 1), dtype=np.float32)
+            self._ps_result = np.empty((n, 2), dtype=np.float32)
+            self._ps_arange = np.arange(n, dtype=np.float64)
 
     # ------------------------------------------------------------------
     def process(self, data: np.ndarray) -> np.ndarray:
@@ -4278,10 +4573,16 @@ class ShimmerReverbProcessor:
         self._pd_wp = (self._pd_wp + n) % self._pd_len
 
         # ---- Comb bank — vectorised (all delays > blocksize) ----------
-        comb_sum = np.zeros((n, 2), dtype=np.float32)
+        if n > self._comb_sum_size:
+            self._comb_sum = np.zeros((n, 2), dtype=np.float32)
+            self._comb_sum_size = n
+        comb_sum = self._comb_sum[:n]
+        comb_sum[:] = 0.0
         fb_f32 = np.float32(fb)
-        lp_b = np.array([lp_c], dtype=np.float64)
-        lp_a = np.array([1.0, -(1.0 - lp_c)], dtype=np.float64)
+        lp_b = self._lp_b
+        lp_a = self._lp_a
+        lp_b[0] = lp_c
+        lp_a[1] = -(1.0 - lp_c)
 
         if n > self._lp_buf_size:
             self._delayed_f64 = np.zeros((n, 2), dtype=np.float64)
@@ -4369,29 +4670,48 @@ class ShimmerReverbProcessor:
         buffer), so energy cannot accumulate across blocks."""
         if n < 2:
             return block.copy()
+        self._ensure_ps_bufs(n)
         half = n // 2
 
-        positions = self._ps_phase + np.arange(n, dtype=np.float64) * ratio
-        pos_a = np.mod(positions, n)
-        pos_b = np.mod(positions + half, n)
+        positions = self._ps_positions[:n]
+        np.multiply(self._ps_arange[:n], ratio, out=positions)
+        positions += self._ps_phase
+        pos_a = self._ps_pos_a[:n]
+        np.mod(positions, n, out=pos_a)
+        pos_b = self._ps_pos_b[:n]
+        np.add(positions, half, out=pos_b)
+        np.mod(pos_b, n, out=pos_b)
 
         # Linear interpolation for head A
-        ia = pos_a.astype(np.int32) % n
-        fa = (pos_a - np.floor(pos_a)).astype(np.float32)[:, np.newaxis]
+        ia = self._ps_ia[:n]
+        np.floor(pos_a, out=self._ps_positions[:n])  # reuse as temp
+        ia[:] = self._ps_positions[:n].astype(np.int32) % n
+        fa = self._ps_fa[:n]
+        np.subtract(pos_a, self._ps_positions[:n], out=fa[:, 0])
         sa = block[ia] * (1.0 - fa) + block[(ia + 1) % n] * fa
 
         # Linear interpolation for head B
-        ib = pos_b.astype(np.int32) % n
-        fb_frac = (pos_b - np.floor(pos_b)).astype(np.float32)[:, np.newaxis]
+        ib = self._ps_ib[:n]
+        np.floor(pos_b, out=self._ps_positions[:n])
+        ib[:] = self._ps_positions[:n].astype(np.int32) % n
+        fb_frac = self._ps_fb[:n]
+        np.subtract(pos_b, self._ps_positions[:n], out=fb_frac[:, 0])
         sb = block[ib] * (1.0 - fb_frac) + block[(ib + 1) % n] * fb_frac
 
         # Cosine crossfade between the two heads
-        t = (np.mod(positions, half) / half).astype(np.float32)
-        w = (0.5 + 0.5 * np.cos(np.pi * t))[:, np.newaxis]
-        result = sa * w + sb * (1.0 - w)
+        t = self._ps_t[:n]
+        np.mod(positions[:n], half, out=self._ps_pos_a[:n])  # reuse as temp
+        np.divide(self._ps_pos_a[:n], half, out=self._ps_positions[:n])
+        t[:] = self._ps_positions[:n]
+        w = self._ps_w[:n]
+        np.multiply(t, np.pi, out=t)
+        np.cos(t, out=t)
+        w[:, 0] = 0.5 + 0.5 * t
+        result = self._ps_result[:n]
+        result[:] = sa * w + sb * (1.0 - w)
 
         self._ps_phase = float(np.mod(self._ps_phase + n * ratio, n))
-        return result.astype(np.float32)
+        return result
 
     # ------------------------------------------------------------------
     def reset(self):
@@ -4610,6 +4930,26 @@ class AutoPanProcessor:
         from mlrvp.config import AutoPanState
         self.state = AutoPanState()
         self._phase = 0.0
+        # Pre-allocated work buffers (grow-only)
+        self._buf_size = buffer_size
+        self._phases = np.empty(buffer_size, dtype=np.float64)
+        self._pan = np.empty(buffer_size, dtype=np.float64)
+        self._theta = np.empty(buffer_size, dtype=np.float64)
+        self._gain_l = np.empty(buffer_size, dtype=np.float32)
+        self._gain_r = np.empty(buffer_size, dtype=np.float32)
+        self._wet = np.empty((buffer_size, 2), dtype=np.float32)
+        self._arange = np.arange(buffer_size, dtype=np.float64)
+
+    def _ensure_bufs(self, n):
+        if n > self._buf_size:
+            self._buf_size = n
+            self._phases = np.empty(n, dtype=np.float64)
+            self._pan = np.empty(n, dtype=np.float64)
+            self._theta = np.empty(n, dtype=np.float64)
+            self._gain_l = np.empty(n, dtype=np.float32)
+            self._gain_r = np.empty(n, dtype=np.float32)
+            self._wet = np.empty((n, 2), dtype=np.float32)
+            self._arange = np.arange(n, dtype=np.float64)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
@@ -4627,32 +4967,49 @@ class AutoPanProcessor:
         if depth < 1e-6 or mix < 1e-6:
             return data
 
+        self._ensure_bufs(n)
+
         # Generate LFO — pan position from -1 (left) to +1 (right)
         phase_inc = rate / self.sr
-        phases = np.mod(self._phase + np.arange(n, dtype=np.float64) * phase_inc, 1.0)
+        phases = self._phases[:n]
+        np.multiply(self._arange[:n], phase_inc, out=phases)
+        phases += self._phase
+        np.mod(phases, 1.0, out=phases)
         self._phase = float(np.mod(self._phase + n * phase_inc, 1.0))
 
+        pan = self._pan[:n]
         shape = st.shape
         if shape == 0:       # Sine
-            pan = np.sin(2.0 * np.pi * phases)
+            np.multiply(phases, 2.0 * np.pi, out=pan)
+            np.sin(pan, out=pan)
         elif shape == 1:     # Triangle
-            pan = 2.0 * np.abs(2.0 * phases - 1.0) - 1.0
+            np.subtract(np.multiply(phases, 2.0), 1.0, out=pan)
+            np.abs(pan, out=pan)
+            np.multiply(pan, 2.0, out=pan)
+            np.subtract(pan, 1.0, out=pan)
         else:                # Square
-            pan = np.where(phases < 0.5, -1.0, 1.0)
+            pan[:] = np.where(phases < 0.5, -1.0, 1.0)
 
         # Convert pan position to L/R gains using constant-power panning
-        # pan = -1 → full left, pan = 0 → center, pan = +1 → full right
-        pan_scaled = pan * depth  # -depth to +depth
-        # Constant power: gain_L = cos(theta), gain_R = sin(theta)
-        # theta = (pan+1)/2 * pi/2 → 0 (left) to pi/2 (right)
-        theta = (pan_scaled + 1.0) * 0.5 * (np.pi * 0.5)
-        gain_l = np.cos(theta).astype(np.float32)
-        gain_r = np.sin(theta).astype(np.float32)
+        theta = self._theta[:n]
+        np.multiply(pan, depth, out=theta)
+        theta += 1.0
+        theta *= 0.5 * (np.pi * 0.5)
+        gain_l = self._gain_l[:n]
+        gain_r = self._gain_r[:n]
+        np.cos(theta, out=theta)  # reuse theta for cos
+        gain_l[:] = theta
+        # Recompute theta for sin
+        np.multiply(pan, depth, out=theta)
+        theta += 1.0
+        theta *= 0.5 * (np.pi * 0.5)
+        np.sin(theta, out=theta)
+        gain_r[:] = theta
 
         if data.ndim == 2:
-            wet = np.empty_like(data)
-            wet[:, 0] = data[:, 0] * gain_l
-            wet[:, 1] = data[:, 1] * gain_r
+            wet = self._wet[:n]
+            np.multiply(data[:, 0], gain_l, out=wet[:, 0])
+            np.multiply(data[:, 1], gain_r, out=wet[:, 1])
         else:
             wet = data * (gain_l + gain_r) * 0.5
 
@@ -4951,6 +5308,19 @@ class GatedReverbProcessor:
         # Threshold for gate trigger
         self._trigger_thresh = 0.01
 
+        # Pre-allocated gate envelope and wet buffers
+        self._env_buf = np.empty(buffer_size, dtype=np.float32)
+        self._gate_wet = np.empty((buffer_size, 2), dtype=np.float32)
+        self._gate_buf_size = buffer_size
+        self._levels_buf = np.empty(buffer_size, dtype=np.float32)
+
+    def _ensure_gate_bufs(self, n):
+        if n > self._gate_buf_size:
+            self._gate_buf_size = n
+            self._env_buf = np.empty(n, dtype=np.float32)
+            self._gate_wet = np.empty((n, 2), dtype=np.float32)
+            self._levels_buf = np.empty(n, dtype=np.float32)
+
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
         if not st.enabled:
@@ -5014,45 +5384,53 @@ class GatedReverbProcessor:
 
     def _apply_gate(self, dry, reverb, n, gate_dur, slope, stereo):
         """Gate mode: let reverb through for gate_dur samples after trigger."""
+        self._ensure_gate_bufs(n)
         # Pre-compute input levels vectorised
+        levels = self._levels_buf[:n]
         if stereo:
-            levels = np.maximum(np.abs(dry[:n, 0]), np.abs(dry[:n, 1]))
+            np.maximum(np.abs(dry[:n, 0]), np.abs(dry[:n, 1]), out=levels)
         else:
-            levels = np.abs(dry[:n].ravel())
+            np.abs(dry[:n].ravel(), out=levels)
 
-        # Build envelope in tight scalar loop (no per-sample numpy indexing)
+        # Build envelope
         fade_samples = max(1, int(slope * gate_dur * 0.5))
         fade_dec = 1.0 / fade_samples
-        env = np.empty(n, dtype=np.float32)
-        gate_open = self._gate_open
-        countdown = self._gate_countdown
-        gate_env = self._gate_env
+        env = self._env_buf[:n]
         thresh = self._trigger_thresh
 
-        for i in range(n):
-            if levels[i] > thresh and not gate_open:
-                gate_open = True
-                countdown = gate_dur
-                gate_env = 1.0
-
-            if gate_open:
-                countdown -= 1
-                if countdown <= 0:
-                    gate_env -= fade_dec
-                    if gate_env <= 0.0:
-                        gate_env = 0.0
-                        gate_open = False
-
-            env[i] = gate_env
-
-        self._gate_open = gate_open
-        self._gate_countdown = countdown
-        self._gate_env = gate_env
+        if _HAS_NUMBA:
+            go, cd, ge = _gate_env_jit(
+                levels, n, gate_dur, fade_dec, thresh,
+                self._gate_open, self._gate_countdown, self._gate_env,
+                env)
+            self._gate_open = go
+            self._gate_countdown = cd
+            self._gate_env = ge
+        else:
+            gate_open = self._gate_open
+            countdown = self._gate_countdown
+            gate_env = self._gate_env
+            for i in range(n):
+                if levels[i] > thresh and not gate_open:
+                    gate_open = True
+                    countdown = gate_dur
+                    gate_env = 1.0
+                if gate_open:
+                    countdown -= 1
+                    if countdown <= 0:
+                        gate_env -= fade_dec
+                        if gate_env <= 0.0:
+                            gate_env = 0.0
+                            gate_open = False
+                env[i] = gate_env
+            self._gate_open = gate_open
+            self._gate_countdown = countdown
+            self._gate_env = gate_env
 
         # Vectorised multiply
-        wet = np.empty((n, 2), dtype=np.float32)
-        wet[:, 0] = reverb[:n, 0] * env
-        wet[:, 1] = reverb[:n, 1] * env
+        wet = self._gate_wet[:n]
+        np.multiply(reverb[:n, 0], env, out=wet[:, 0])
+        np.multiply(reverb[:n, 1], env, out=wet[:, 1])
         return wet
 
     def _apply_reverse(self, dry, reverb, n, gate_dur, stereo):

@@ -30,6 +30,7 @@ class _GridSignalBridge(QObject):
     """
     button_event = Signal(int, int, int)    # x, y, state
     control_event = Signal(int, int)        # btn_idx, state
+    tilt_event = Signal(int, float, float, float)  # sensor, x, y, z
 
 
 @dataclass
@@ -58,6 +59,8 @@ class GridController:
         self._led_state = [[LED_OFF] * MAX_COLUMNS for _ in range(MAX_ROWS)]
         self._control_led_state = [LED_OFF] * MAX_COLUMNS
         self._control_led_sent: dict[int, tuple] = {}  # track sent state to avoid MIDI spam
+        # Row-level cache: row_index → (tuple(values), color) to skip unchanged I/O
+        self._row_sent: dict[int, tuple] = {}
         self._button_callback: Optional[Callable] = None
         self._control_button_callback: Optional[Callable] = None
         self._led_update_callback: Optional[Callable] = None
@@ -72,6 +75,7 @@ class GridController:
         self._bridge = _GridSignalBridge()
         self._bridge.button_event.connect(self._dispatch_button, Qt.ConnectionType.QueuedConnection)
         self._bridge.control_event.connect(self._dispatch_control, Qt.ConnectionType.QueuedConnection)
+        self._bridge.tilt_event.connect(self._dispatch_tilt, Qt.ConnectionType.QueuedConnection)
 
         # MIDI grid controller (Launchpad, etc.)
         self._midi_grid: Optional[MidiGridAdapter] = None
@@ -142,11 +146,12 @@ class GridController:
         self._midi_grid.set_button_callback(self._on_midi_grid_button)
         self._midi_grid.set_control_callback(self._on_midi_grid_control_button)
         if self._midi_grid.connect(in_port, out_port):
-            self._connected = True
-            self._control_led_sent.clear()  # force LED refresh on reconnect
-            self.info.type = f"midi:{self._midi_grid.model.value}"
-            self.info.rows = self._midi_grid.rows
-            self.info.columns = self._midi_grid.columns
+            with self._state_lock:
+                self._connected = True
+                self._control_led_sent.clear()  # force LED refresh on reconnect
+                self.info.type = f"midi:{self._midi_grid.model.value}"
+                self.info.rows = self._midi_grid.rows
+                self.info.columns = self._midi_grid.columns
             log.info("MIDI grid connected: %s (%dx%d)",
                      self._midi_grid.model.value,
                      self._midi_grid.columns, self._midi_grid.rows)
@@ -160,7 +165,8 @@ class GridController:
             self._midi_grid.disconnect()
             self._midi_grid = None
             if self._monome is None:
-                self._connected = False
+                with self._state_lock:
+                    self._connected = False
 
     def _dispatch_button(self, x: int, y: int, state: int):
         """Slot executed on the Qt main thread via queued connection."""
@@ -173,6 +179,12 @@ class GridController:
         cb = self._control_button_callback
         if cb:
             cb(btn_idx, state)
+
+    def _dispatch_tilt(self, sensor: int, x: float, y: float, z: float):
+        """Slot executed on the Qt main thread via queued connection."""
+        cb = self._tilt_callback
+        if cb:
+            cb(sensor, x, y, z)
 
     def _on_midi_grid_button(self, x: int, y: int, state: int):
         """Forward MIDI grid button events to the main callback (on Qt thread)."""
@@ -234,7 +246,7 @@ class GridController:
                         nx = max(0.0, min(1.0, x / 255.0))
                         ny = max(0.0, min(1.0, y / 255.0))
                         nz = max(0.0, min(1.0, z / 255.0))
-                        self.controller._tilt_callback(n, nx, ny, nz)
+                        self.controller._bridge.tilt_event.emit(n, nx, ny, nz)
 
             app = MlrGridApp(self)
             self._monome = app
@@ -249,10 +261,14 @@ class GridController:
 
     def disconnect(self):
         """Disconnect from all grid hardware."""
-        self._connected = False
+        with self._state_lock:
+            self._connected = False
         self.disconnect_midi_grid()
         if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            except RuntimeError:
+                pass  # loop already closed
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             if self._thread.is_alive():
@@ -298,6 +314,11 @@ class GridController:
     def set_row(self, y: int, values: list[int], color: int = 0):
         """Set an entire row of LEDs (logical channel row coordinates)."""
         if 0 <= y < MAX_ROWS:
+            # Fast check: skip all I/O if values + color haven't changed
+            cache_key = (tuple(values), color)
+            if self._row_sent.get(y) == cache_key:
+                return
+            self._row_sent[y] = cache_key
             for x, val in enumerate(values):
                 if x < MAX_COLUMNS:
                     self._led_state[y][x] = val
@@ -319,6 +340,7 @@ class GridController:
 
     def set_all(self, brightness: int):
         """Set all LEDs to the same brightness."""
+        self._row_sent.clear()
         for y in range(MAX_ROWS):
             for x in range(MAX_COLUMNS):
                 self._led_state[y][x] = brightness
@@ -335,23 +357,25 @@ class GridController:
             offset = self._monome_row_offset
             cols = self.info.columns
             rows = self.info.rows
+            # Snapshot LED state under lock to avoid races with Qt thread
+            ctrl_leds = self._control_led_state[:cols].copy()
+            data_rows = rows - offset
+            led_snapshot = [
+                self._led_state[y][:cols].copy()
+                for y in range(min(data_rows, MAX_ROWS))
+            ]
         if connected and self._monome is not None:
             # Control row at physical y=0 for monome
             if offset > 0:
                 try:
-                    self._monome.grid.led_level_row(
-                        0, 0, self._control_led_state[:cols]
-                    )
+                    self._monome.grid.led_level_row(0, 0, ctrl_leds)
                 except Exception:
                     pass
             # Data rows offset by monome_row_offset
-            data_rows = rows - offset
-            for y in range(min(data_rows, MAX_ROWS)):
+            for y, row_leds in enumerate(led_snapshot):
                 try:
                     physical_y = y + offset
-                    self._monome.grid.led_level_row(
-                        0, physical_y, self._led_state[y][:cols]
-                    )
+                    self._monome.grid.led_level_row(0, physical_y, row_leds)
                 except Exception:
                     pass
 

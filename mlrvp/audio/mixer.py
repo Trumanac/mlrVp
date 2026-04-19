@@ -39,9 +39,15 @@ class Mixer:
         self._fx4_bus = np.zeros((_MAX_BUF, 2), dtype=np.float32)
         # Temp buffer for wet/dry routing (avoids per-group temporaries)
         self._route_tmp = np.zeros((_MAX_BUF, 2), dtype=np.float32)
+        # Temp buffer for peak calculation (avoids per-block np.abs alloc)
+        self._abs_tmp = np.zeros((_MAX_BUF, 2), dtype=np.float32)
+        # Pre-allocated list for group_buses views (avoids list-comp per block)
+        self._group_bus_views = [gb[:_MAX_BUF] for gb in self._group_buses]
+        # Pre-allocated result list (avoids tuple creation per block)
+        self._result = [None, None, None, None, None, None]
 
     def process_groups(self, channel_outputs: list[tuple[int, np.ndarray]],
-                       num_frames: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                       num_frames: int) -> list:
         """Mix channel outputs into group buses.
 
         Args:
@@ -66,9 +72,13 @@ class Mixer:
             self._fx3_bus = np.zeros((num_frames, 2), dtype=np.float32)
             self._fx4_bus = np.zeros((num_frames, 2), dtype=np.float32)
             self._route_tmp = np.zeros((num_frames, 2), dtype=np.float32)
+            self._abs_tmp = np.zeros((num_frames, 2), dtype=np.float32)
+            self._group_bus_views = [gb[:num_frames] for gb in self._group_buses]
 
-        # Slice to actual frame count then zero
-        group_buses = [gb[:num_frames] for gb in self._group_buses]
+        # Update pre-allocated view list (no list allocation)
+        group_buses = self._group_bus_views
+        for _gi in range(NUM_GROUPS):
+            group_buses[_gi] = self._group_buses[_gi][:num_frames]
         main_bus = self._main_bus[:num_frames]
         aux_send = self._aux_send[:num_frames]
         fx1_bus = self._fx1_bus[:num_frames]
@@ -93,6 +103,7 @@ class Mixer:
         for i, (bus, group) in enumerate(zip(group_buses, self.groups)):
             if group.mute:
                 self.group_peaks[i] = self.group_peaks[i] * 0.95
+                self._group_audio[i][:num_frames] = 0
                 continue
 
             # Apply group volume in-place into pre-allocated buffer
@@ -100,13 +111,15 @@ class Mixer:
             np.multiply(bus, group.volume, out=scaled)
 
             # Track peak level (with decay) — use pre-allocated tmp for max
-            peak = float(np.abs(scaled).max())
+            abs_tmp = self._abs_tmp[:num_frames]
+            np.abs(scaled, out=abs_tmp)
+            peak = float(abs_tmp.max())
             if np.isnan(peak):
                 peak = 0.0
             self.group_peaks[i] = max(self.group_peaks[i] * 0.95, peak)
 
             # Route to FX bus or main using send fader as wet/dry mix
-            fx_route = getattr(group, 'fx_route', 0)
+            fx_route = group.fx_route
             if fx_route == 1:
                 wet = group.send  # send fader = wet amount
                 dry = 1.0 - wet
@@ -148,7 +161,10 @@ class Mixer:
                 np.multiply(scaled, group.send * self.aux_send_level, out=tmp)
                 aux_send += tmp
 
-        return main_bus, aux_send, fx1_bus, fx2_bus, fx3_bus, fx4_bus
+        r = self._result
+        r[0] = main_bus; r[1] = aux_send
+        r[2] = fx1_bus; r[3] = fx2_bus; r[4] = fx3_bus; r[5] = fx4_bus
+        return r
 
     def apply_master(self, main_bus: np.ndarray, aux_return: np.ndarray) -> np.ndarray:
         """Apply master volume and sum in aux return.

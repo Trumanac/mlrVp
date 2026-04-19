@@ -44,6 +44,7 @@ class Channel:
         self._releasing: bool = False
         # Crossfade state for glitch-free retriggering / pitch changes
         self._xfade_buf = np.zeros((self.XFADE_LEN, 2), dtype=np.float32)
+        self._xfade_tmp = np.zeros((self.XFADE_LEN, 2), dtype=np.float32)
         self._xfade_active: bool = False
         self._xfade_pos: int = 0
         self._xfade_len: int = 0
@@ -70,10 +71,20 @@ class Channel:
         self._seq_column: int = -1              # current step index (-1 = not started)
         self._seq_columns: int = 8             # total grid columns (set at trigger time)
         self._seq_playing_step: bool = False    # True while the sample is sounding this step
+        self._seq_stopped: bool = False         # True = paused by group/all stop (pattern kept)
+
+        # ONESHOT HOLD mode state
+        self._shot_held: bool = False           # True while grid button is held (loops sample)
 
         # STEP mode state (play one slice then stop)
         self._step_mode_start: float = 0.0
         self._step_mode_end: float = 0.0
+
+        # Cached envelope params (recomputed on trigger / state change)
+        self._attack_samples: int = 1
+        self._release_samples: int = 1
+        self._last_attack: float = -1.0
+        self._last_release: float = -1.0
 
         # PITCH mode state
         self._pitch_mode_mult: float = 1.0     # rate multiplier from scale degree
@@ -81,6 +92,8 @@ class Channel:
 
         # Pending sample for live preset transitions
         self._pending_sample_path: Optional[str] = None
+        self._pending_sample_buffer = None
+        self._load_gen: int = 0  # incremented on each new load/clear to invalidate in-flight loads
 
         # Pre-allocated output buffer to avoid per-callback allocation
         _MAX_BUF = max(BUFFER_SIZE, 4096)
@@ -130,7 +143,7 @@ class Channel:
         # The shifted audio array for the currently-triggered semitone.
         # Set in trigger() from _pitch_scale_cache; None = use rate-based fallback.
         self._active_pitch_data: Optional[np.ndarray] = None
-        self._active_pitch_semitone: int = 0
+        self._active_pitch_semitone: Optional[int] = None
         # Incremented to cancel in-flight background builds.
         self._pitch_scale_cache_gen: int = 0
 
@@ -284,11 +297,14 @@ class Channel:
             self.state.playing = True
             return
 
-        # Reverse mode: invert mapping so column 0 starts from end
+        # Reverse mode: button still corresponds to its visual slice, but
+        # playback runs backwards.  Start from the *end* of the slice so the
+        # reversed audio heard matches what the button visually represents.
         if self.state.mode == PlaybackMode.REVERSE or (
             self.state.mode == PlaybackMode.ONESHOT and self.state.reverse
         ):
-            self._position = sel_end_samp - col_frac * sel_length
+            next_frac = (slice_index + 1) / steps
+            self._position = sel_start_samp + next_frac * sel_length
         else:
             self._position = sel_start_samp + col_frac * sel_length
 
@@ -301,13 +317,22 @@ class Channel:
 
         Now called only from the audio thread (via queued trigger/force_stop),
         so all state reads are safe.
+
+        On rapid retrigger, the unconsumed portion of the previous crossfade
+        tail is accumulated into the new tail so overlapping fades sum
+        correctly instead of clobbering each other.
         """
         xlen = self.XFADE_LEN
-        buf = self._xfade_buf
+        # Render new tail into _xfade_tmp to avoid destroying the old tail
+        buf = self._xfade_tmp
         audio_data = self._get_audio_data()
         num_sample_frames = audio_data.shape[0]
         if num_sample_frames < 2:
             buf[:] = 0
+            self._xfade_buf, self._xfade_tmp = buf, self._xfade_buf
+            self._xfade_pos = 0
+            self._xfade_len = xlen
+            self._xfade_active = True
             return
         speed = self._effective_speed()
         if self.state.reverse or self.state.mode == PlaybackMode.REVERSE:
@@ -366,6 +391,18 @@ class Channel:
                 buf[:, 0] = samp_b
                 buf[:, 1] = samp_b
 
+        # Accumulate unconsumed remainder of the previous tail into the new
+        # one so rapid retriggering doesn't clip the old fade-out mid-way.
+        old_buf = self._xfade_buf
+        old_pos = self._xfade_pos
+        old_len = self._xfade_len
+        if self._xfade_active and old_pos < old_len:
+            remaining = old_len - old_pos
+            n = min(remaining, xlen)
+            buf[:n] += old_buf[old_pos:old_pos + n]
+
+        # Swap buffers (no allocation — just pointer swap)
+        self._xfade_buf, self._xfade_tmp = buf, self._xfade_buf
         self._xfade_pos = 0
         self._xfade_len = xlen
         self._xfade_active = True
@@ -374,6 +411,7 @@ class Channel:
         """Stop playback (with release)."""
         if self._playing:
             self._releasing = True
+            self._shot_held = False
 
     def force_stop(self):
         """Immediately stop playback (with short fade-out to avoid click).
@@ -385,6 +423,7 @@ class Channel:
         self._playing = False
         self._releasing = False
         self._envelope = 0.0
+        self._shot_held = False
         self.state.playing = False
 
     def process(self, num_frames: int) -> np.ndarray:
@@ -477,13 +516,18 @@ class Channel:
             self.state.playing = False
             return output
 
-        # Speed calculation (pitch * speed * direction)
-        # Note: transpose is handled via pre-shifted audio in _pitch_cache (see set_pitch_cache)
-        # PITCH mode uses per-button multiplier via _effective_speed()
-        speed = self._effective_speed()
-        is_reverse = self.state.reverse or self.state.mode == PlaybackMode.REVERSE
+        # Speed calculation (inlined _effective_speed to avoid method call)
+        _mode = self.state.mode
+        if _mode == PlaybackMode.PITCH:
+            if self._active_pitch_data is not None:
+                speed = self.state.speed
+            else:
+                speed = self.state.speed * self._pitch_mode_mult
+        else:
+            speed = self.state.speed * self.state.pitch
+        is_reverse = self.state.reverse or _mode == PlaybackMode.REVERSE
         # SLICE mode sub-loop reverse
-        if self.state.mode == PlaybackMode.SLICE and getattr(self, '_slice_reverse', False):
+        if _mode == PlaybackMode.SLICE and self._slice_reverse:
             is_reverse = not is_reverse
         if is_reverse:
             speed = -speed
@@ -491,9 +535,9 @@ class Channel:
         # Effective loop bounds (SLICE sub-loop overrides)
         loop_start = sel_start
         loop_end = sel_end
-        if self.state.mode == PlaybackMode.SLICE:
-            slice_ls = getattr(self, '_slice_loop_start', None)
-            slice_le = getattr(self, '_slice_loop_end', None)
+        if _mode == PlaybackMode.SLICE:
+            slice_ls = self._slice_loop_start
+            slice_le = self._slice_loop_end
             if slice_ls is not None and slice_le is not None:
                 if slice_ls < slice_le:
                     loop_start = slice_ls
@@ -501,20 +545,29 @@ class Channel:
                 else:
                     # Inverted or equal bounds — fall back to full selection
                     pass
-        if self.state.mode == PlaybackMode.STEP:
+        if _mode == PlaybackMode.STEP:
             loop_start = self._step_mode_start
             loop_end = self._step_mode_end
         loop_len = loop_end - loop_start
 
-        # Attack/release times in samples
-        attack_samples = max(1, int(self.state.attack * self.sample_rate))
-        release_samples = max(1, int(self.state.release * self.sample_rate))
+        # Attack/release times in samples (cached — only recompute when changed)
+        _atk = self.state.attack
+        _rel = self.state.release
+        if _atk != self._last_attack:
+            self._last_attack = _atk
+            self._attack_samples = max(1, int(_atk * self.sample_rate))
+        if _rel != self._last_release:
+            self._last_release = _rel
+            self._release_samples = max(1, int(_rel * self.sample_rate))
+        attack_samples = self._attack_samples
+        release_samples = self._release_samples
 
         active_frames = num_frames
 
         # Determine loop mode
-        pitch_loops = (self.state.mode == PlaybackMode.PITCH and self.state.pitch_hold)
-        do_loop = not (self.state.mode in (PlaybackMode.ONESHOT, PlaybackMode.SEQ, PlaybackMode.PITCH, PlaybackMode.STEP) and not pitch_loops)
+        pitch_loops = (_mode == PlaybackMode.PITCH and self.state.pitch_loop)
+        shot_hold_loops = (_mode == PlaybackMode.ONESHOT and self.state.shot_hold and self._shot_held)
+        do_loop = not (_mode in (PlaybackMode.ONESHOT, PlaybackMode.SEQ, PlaybackMode.PITCH, PlaybackMode.STEP) and not pitch_loops and not shot_hold_loops)
 
         # ── Numba JIT path ──────────────────────────────────────────
         if _HAS_CH_JIT:
@@ -527,14 +580,14 @@ class Channel:
             new_pos, new_env, active_frames, stopped, new_xf_pos, new_fi_rem = _ch_jit(
                 sample_data, num_sample_frames, num_channels,
                 output, num_frames,
-                float(self._position), float(speed),
-                float(loop_start), float(loop_end), do_loop,
-                float(self._envelope), bool(self._releasing),
-                float(attack_samples), float(release_samples),
-                float(self.state.gain * self.state.velocity),
+                self._position, speed,
+                loop_start, loop_end, do_loop,
+                self._envelope, self._releasing,
+                attack_samples, release_samples,
+                self.state.gain * self.state.velocity,
                 self._xfade_buf, xf_pos, xf_len,
                 self._fade_in_ramp, fi_off, fi_rem,
-                bool(self.state.mute),
+                self.state.mute,
             )
 
             self._envelope = new_env
@@ -595,7 +648,7 @@ class Channel:
         np.add(positions, self._position, out=positions)
 
         # Handle oneshot boundary (ONESHOT and SEQ both play through once then stop)
-        # PITCH mode stops at boundary unless pitch_hold is active (loop behaviour)
+        # PITCH mode stops at boundary unless pitch_loop is active
         stop_after = False
         if not do_loop:
             out_of_bounds = self._bool_buf[:active_frames]

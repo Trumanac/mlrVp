@@ -73,6 +73,7 @@ class PatternRecorder:
                 self._recording = False
                 self._playing = True  # Auto-play after recording
                 self._start_beat = current_beat
+                self._last_playback_pos = -1.0
             else:
                 self.events.clear()
                 self._recording = True
@@ -87,6 +88,7 @@ class PatternRecorder:
             else:
                 self._playing = True
                 self._start_beat = current_beat
+                self._last_playback_pos = -1.0
 
     def stop(self):
         """Stop recording and playback."""
@@ -192,4 +194,7 @@ class PatternRecorder:
         with self._lock:
             if not self._playing:
                 return 0.0
-            return self._last_playback_pos / self.length_beats if self.length_beats > 0 else 0.0
+            pos = self._last_playback_pos
+        if pos < 0.0:
+            return 0.0
+        return pos / self.length_beats if self.length_beats > 0 else 0.0

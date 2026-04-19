@@ -9,7 +9,7 @@ import threading
 from typing import Optional, Callable
 from dataclasses import dataclass, field, fields
 
-from PySide6.QtCore import QObject, Signal, QTimer
+from PySide6.QtCore import QObject, Signal
 
 log = logging.getLogger("mlrvp")
 
@@ -33,6 +33,7 @@ class MidiHandler(QObject):
     """
 
     learn_completed = Signal(str, int, int)  # param_path, channel, cc
+    _cc_dispatch = Signal(str, float)  # param_path, value — internal signal for thread-safe CC dispatch
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,6 +49,7 @@ class MidiHandler(QObject):
         self._toggle_state: dict[str, bool] = {}  # param_path -> on/off for toggle mode
         self._available_inputs: list = []
         self._available_outputs: list = []
+        self._cc_dispatch.connect(self._on_cc_dispatch)
 
     def scan_devices(self):
         """Scan for available MIDI devices."""
@@ -259,13 +261,16 @@ class MidiHandler(QObject):
             if not m_toggle:
                 scaled = m_min
 
-        # Dispatch callback on Qt main thread (never from rtmidi thread)
+        # Dispatch callback on Qt main thread via signal (thread-safe)
         if scaled is not None:
-            with self._lock:
-                cb = self._param_callbacks.get(param_path)
-            if cb is not None:
-                val = scaled
-                QTimer.singleShot(0, lambda cb=cb, v=val: cb(v))
+            self._cc_dispatch.emit(param_path, scaled)
+
+    def _on_cc_dispatch(self, param_path: str, value: float):
+        """Handle CC dispatch on the Qt main thread (connected via signal)."""
+        with self._lock:
+            cb = self._param_callbacks.get(param_path)
+        if cb is not None:
+            cb(value)
 
     def _finish_learn(self, channel: int, cc: int):
         """Complete a MIDI learn — creates mapping and emits signal on Qt thread."""
