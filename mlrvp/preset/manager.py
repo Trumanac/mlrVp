@@ -79,8 +79,10 @@ def _atomic_write_json(fp: Path, data: dict, cls=None):
     import time
     dir_ = fp.parent
     fd, tmp = tempfile.mkstemp(dir=str(dir_), suffix='.tmp')
+    fd_open = False
     try:
         with os.fdopen(fd, 'w') as f:
+            fd_open = True
             json.dump(data, f, indent=2, cls=cls)
         last_err = None
         for attempt in range(5):
@@ -92,6 +94,11 @@ def _atomic_write_json(fp: Path, data: dict, cls=None):
                 time.sleep(0.05 * (attempt + 1))
         raise last_err
     except BaseException:
+        if not fd_open:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             os.unlink(tmp)
         except OSError:
@@ -487,7 +494,7 @@ class PresetManager:
             td = config.tape_delay
             for key in ["sync_time", "ms_time", "time_mode", "feedback",
                         "wow_flutter", "saturation", "tone", "gain",
-                        "enabled", "fx_route"]:
+                        "enabled", "fx_route", "head_mode", "spring_mix"]:
                 if key in tape_delay_data:
                     _safe_setattr(td, key, tape_delay_data[key])
 
@@ -496,7 +503,12 @@ class PresetManager:
         if filter_a_data:
             fa = config.filter_a
             for key in ["lp_enabled", "hp_enabled", "lp_freq", "hp_freq",
-                        "lp_q", "hp_q", "enabled", "fx_route"]:
+                        "lp_q", "hp_q", "lf_enabled",
+                        "lo_mid_gain", "lo_mid_freq", "lo_mid_q",
+                        "mid_gain", "mid_freq", "mid_q",
+                        "hi_mid_gain", "hi_mid_freq", "hi_mid_q",
+                        "hf_enabled", "drive", "output_gain",
+                        "enabled", "fx_route"]:
                 if key in filter_a_data:
                     _safe_setattr(fa, key, filter_a_data[key])
             # Backward compat: old presets used single "resonance" for both Q
@@ -620,7 +632,12 @@ class PresetManager:
                             "head_mode", "spring_mix",
                             "enabled", "fx_route"]),
             ("filter_a", ["lp_enabled", "hp_enabled", "lp_freq", "hp_freq",
-                          "lp_q", "hp_q", "enabled", "fx_route"]),
+                          "lp_q", "hp_q", "lf_enabled",
+                          "lo_mid_gain", "lo_mid_freq", "lo_mid_q",
+                          "mid_gain", "mid_freq", "mid_q",
+                          "hi_mid_gain", "hi_mid_freq", "hi_mid_q",
+                          "hf_enabled", "drive", "output_gain",
+                          "enabled", "fx_route"]),
             ("filter_b", ["cutoff", "resonance", "drive", "enabled", "fx_route"]),
             ("mod", ["phaser_enabled", "phaser_rate", "phaser_depth", "phaser_feedback",
                      "chorus_enabled", "chorus_rate", "chorus_depth", "chorus_mix",
@@ -681,6 +698,17 @@ class PresetManager:
                         "naming_template"]:
                 if key in slicer_data:
                     _safe_setattr(config.slicer, key, slicer_data[key])
+
+        # Foreign Exchange (stowaway) plugin slots
+        stowaway_data = cfg_data.get("stowaway_slots", [])
+        if stowaway_data and hasattr(config, "stowaway_slots"):
+            from mlrvp.config import StowawayState
+            loaded = [StowawayState.from_dict(d) for d in stowaway_data]
+            # Pad to expected 20 slots (5 buses × 4 slots) if preset has fewer
+            _EXPECTED = 20
+            while len(loaded) < _EXPECTED:
+                loaded.append(StowawayState(slot_index=len(loaded)))
+            config.stowaway_slots = loaded
 
         return config
 
@@ -757,16 +785,8 @@ class PresetManager:
                 "enabled": config.tape_delay.enabled,
                 "fx_route": config.tape_delay.fx_route,
             },
-            "filter_a": {
-                "lp_enabled": config.filter_a.lp_enabled,
-                "hp_enabled": config.filter_a.hp_enabled,
-                "lp_freq": config.filter_a.lp_freq,
-                "hp_freq": config.filter_a.hp_freq,
-                "lp_q": config.filter_a.lp_q,
-                "hp_q": config.filter_a.hp_q,
-                "enabled": config.filter_a.enabled,
-                "fx_route": config.filter_a.fx_route,
-            },
+            "filter_a": {k: v for k, v in vars(config.filter_a).items()
+                         if not k.startswith('_')},
             "filter_b": {
                 "cutoff": config.filter_b.cutoff,
                 "resonance": config.filter_b.resonance,
@@ -928,16 +948,8 @@ class PresetManager:
                 "enabled": config.tape_delay_b.enabled,
                 "fx_route": config.tape_delay_b.fx_route,
             },
-            "filter_a_b": {
-                "lp_enabled": config.filter_a_b.lp_enabled,
-                "hp_enabled": config.filter_a_b.hp_enabled,
-                "lp_freq": config.filter_a_b.lp_freq,
-                "hp_freq": config.filter_a_b.hp_freq,
-                "lp_q": config.filter_a_b.lp_q,
-                "hp_q": config.filter_a_b.hp_q,
-                "enabled": config.filter_a_b.enabled,
-                "fx_route": config.filter_a_b.fx_route,
-            },
+            "filter_a_b": {k: v for k, v in vars(config.filter_a_b).items()
+                           if not k.startswith('_')},
             "filter_b_b": {
                 "cutoff": config.filter_b_b.cutoff,
                 "resonance": config.filter_b_b.resonance,
@@ -1058,16 +1070,8 @@ class PresetManager:
                 "enabled": config.tape_delay_m.enabled,
                 "fx_route": config.tape_delay_m.fx_route,
             },
-            "filter_a_m": {
-                "lp_enabled": config.filter_a_m.lp_enabled,
-                "hp_enabled": config.filter_a_m.hp_enabled,
-                "lp_freq": config.filter_a_m.lp_freq,
-                "hp_freq": config.filter_a_m.hp_freq,
-                "lp_q": config.filter_a_m.lp_q,
-                "hp_q": config.filter_a_m.hp_q,
-                "enabled": config.filter_a_m.enabled,
-                "fx_route": config.filter_a_m.fx_route,
-            },
+            "filter_a_m": {k: v for k, v in vars(config.filter_a_m).items()
+                           if not k.startswith('_')},
             "filter_b_m": {
                 "cutoff": config.filter_b_m.cutoff,
                 "resonance": config.filter_b_m.resonance,
@@ -1590,5 +1594,11 @@ class PresetManager:
             "auto_chop_mode": config.slicer.auto_chop_mode,
             "naming_template": config.slicer.naming_template,
         }
+
+        # Foreign Exchange (stowaway) plugin slots
+        if hasattr(config, "stowaway_slots"):
+            result["stowaway_slots"] = [
+                s.to_dict() for s in config.stowaway_slots
+            ]
 
         return result

@@ -114,7 +114,7 @@ class Mixer:
             abs_tmp = self._abs_tmp[:num_frames]
             np.abs(scaled, out=abs_tmp)
             peak = float(abs_tmp.max())
-            if np.isnan(peak):
+            if not np.isfinite(peak):
                 peak = 0.0
             self.group_peaks[i] = max(self.group_peaks[i] * 0.95, peak)
 

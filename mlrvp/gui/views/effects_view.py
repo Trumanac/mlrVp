@@ -1237,6 +1237,7 @@ class EffectsView(QWidget):
     granular_freeze_param_changed = Signal(str, object, int)
     gate_reverb_param_changed = Signal(str, object, int)
     stutter_param_changed = Signal(str, object, int)
+    stowaway_param_changed = Signal(str, object, int)
     effect_route_changed = Signal(str, int)
     midi_map_toggled = Signal(bool)  # activates the global MIDI map manager
     rack_contents_changed = Signal(dict)  # rack/effect sync payload for app↔engine
@@ -1455,7 +1456,7 @@ class EffectsView(QWidget):
                  + len(self._rack_c.get_modules())
                  + len(self._rack_d.get_modules())
                  + len(self._rack_m.get_modules()))
-        return total > MAX_TOTAL_EFFECTS
+        return total >= MAX_TOTAL_EFFECTS
 
     # --- MIDI mapping mode ---
     def _toggle_midi_map(self, on: bool):
@@ -1484,27 +1485,23 @@ class EffectsView(QWidget):
         self.rack_contents_changed.emit(self.get_rack_sync_state())
 
     def get_rack_sync_state(self) -> dict:
-        """Return per-bus effect presence derived from current rack contents."""
-        a_types = {
-            mod.effect_type for mod in self._rack_a.get_modules()
-            if hasattr(mod, "effect_type")
-        }
-        b_types = {
-            mod.effect_type for mod in self._rack_b.get_modules()
-            if hasattr(mod, "effect_type")
-        }
-        c_types = {
-            mod.effect_type for mod in self._rack_c.get_modules()
-            if hasattr(mod, "effect_type")
-        }
-        d_types = {
-            mod.effect_type for mod in self._rack_d.get_modules()
-            if hasattr(mod, "effect_type")
-        }
-        m_types = {
-            mod.effect_type for mod in self._rack_m.get_modules()
-            if hasattr(mod, "effect_type")
-        }
+        """Return per-bus effect presence and ordering derived from current rack contents."""
+        def _collect(rack):
+            types = set()
+            order = []
+            for mod in rack.get_modules():
+                et = getattr(mod, 'effect_type', None)
+                if et:
+                    types.add(et)
+                    order.append(et)
+            return types, order
+
+        a_types, a_order = _collect(self._rack_a)
+        b_types, b_order = _collect(self._rack_b)
+        c_types, c_order = _collect(self._rack_c)
+        d_types, d_order = _collect(self._rack_d)
+        m_types, m_order = _collect(self._rack_m)
+
         all_fx = {"delay", "tape_delay", "filter_a", "filter_b",
                   "phaser", "chorus", "flanger",
                   "reel_to_reel", "cassette_tape", "vhs", "vinyl",
@@ -1525,6 +1522,11 @@ class EffectsView(QWidget):
             "presence_c": {et: (et in c_types) for et in all_fx},
             "presence_d": {et: (et in d_types) for et in all_fx},
             "presence_master": {et: (et in m_types) for et in all_fx},
+            "order_a": a_order,
+            "order_b": b_order,
+            "order_c": c_order,
+            "order_d": d_order,
+            "order_m": m_order,
         }
 
     def _route_module_param(self, module_class: str, param: str, value, bus: int = 1):
@@ -1568,6 +1570,7 @@ class EffectsView(QWidget):
             "GranularFreezeModule": self.granular_freeze_param_changed,
             "GatedReverbModule": self.gate_reverb_param_changed,
             "StutterModule": self.stutter_param_changed,
+            "ForeignExchangeModule": self.stowaway_param_changed,
         }
         sig = _MAP.get(module_class)
         if sig:

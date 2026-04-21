@@ -8,5 +8,5 @@ import platform as _platform
 if _platform.system() == "Windows":
     _os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
-__version__ = "0.6.9.16"
+__version__ = "0.6.9.17"
 __app_name__ = "mlrVp"

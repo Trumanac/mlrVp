@@ -1082,6 +1082,7 @@ class AppController:
         w.effects_view.granular_freeze_param_changed.connect(self._gui_granular_freeze_param)
         w.effects_view.gate_reverb_param_changed.connect(self._gui_gate_reverb_param)
         w.effects_view.stutter_param_changed.connect(self._gui_stutter_param)
+        w.effects_view.stowaway_param_changed.connect(self._gui_stowaway_param_from_gui)
         w.effects_view.effect_route_changed.connect(self._gui_effect_route)
         w.effects_view.midi_map_toggled.connect(self._gui_toggle_midi_map_mode)
         w.effects_view.rack_contents_changed.connect(self._on_rack_contents_changed)
@@ -2253,6 +2254,211 @@ class AppController:
         if inst:
             setattr(inst.state, param, value)
 
+    # ── Foreign Exchange (stowaway) plugin host handlers ─────────────
+
+    def _gui_stowaway_param_from_gui(self, param: str, value, bus: int = 1):
+        """Handle param_changed signals from ForeignExchangeModule in the rack."""
+        bus_key = {1: "fx_bus_1", 2: "fx_bus_2", 3: "fx_bus_m",
+                   4: "fx_bus_c", 5: "fx_bus_d"}.get(bus, "fx_bus_1")
+
+        if param == "load_plugin":
+            self._open_plugin_browser(bus_key, int(value))
+        elif param == "open_editor":
+            self._open_plugin_editor(bus_key, int(value))
+        elif param == "assign_quick_param":
+            knob_idx, slot_idx = value
+            self._open_quick_param_assign(bus_key, slot_idx, knob_idx)
+        elif param == "stowaway_enabled":
+            if isinstance(value, (tuple, list)):
+                slot_idx, on = value
+            else:
+                on = bool(value)
+                slot_idx = 0
+                log.warning("stowaway_enabled received plain bool – assuming slot 0")
+            if self.engine:
+                self.engine.set_plugin_slot_enabled(bus_key, slot_idx, bool(on))
+            state = self._get_stowaway_config(bus_key, slot_idx)
+            if state:
+                state.enabled = bool(on)
+        elif param == "wet_dry":
+            slot_idx, val = value
+            if self.engine:
+                self.engine.set_plugin_slot_wet_dry(bus_key, slot_idx, float(val))
+            state = self._get_stowaway_config(bus_key, slot_idx)
+            if state:
+                state.wet_dry = float(val)
+        elif param.startswith("quick_"):
+            qi = int(param.split("_")[1])
+            slot_idx, val = value
+            if self.engine:
+                state = self._get_stowaway_config(bus_key, slot_idx)
+                if state and qi < len(state.quick_map_params) and state.quick_map_params[qi]:
+                    self.engine.set_plugin_slot_param(
+                        bus_key, slot_idx, state.quick_map_params[qi], float(val)
+                    )
+
+    def _gui_stowaway_param(self, bus_key: str, slot_idx: int, param: str, value):
+        """Handle MIDI-mapped stowaway param changes (from _register_midi_param_callback)."""
+        if not self.engine:
+            return
+        if param == "enabled":
+            self.engine.set_plugin_slot_enabled(bus_key, slot_idx, bool(value))
+            state = self._get_stowaway_config(bus_key, slot_idx)
+            if state:
+                state.enabled = bool(value)
+        elif param == "wet_dry":
+            self.engine.set_plugin_slot_wet_dry(bus_key, slot_idx, float(value))
+            state = self._get_stowaway_config(bus_key, slot_idx)
+            if state:
+                state.wet_dry = float(value)
+        elif param.startswith("quick_"):
+            qi = int(param.split("_")[1])
+            state = self._get_stowaway_config(bus_key, slot_idx)
+            if state and qi < len(state.quick_map_params) and state.quick_map_params[qi]:
+                self.engine.set_plugin_slot_param(
+                    bus_key, slot_idx, state.quick_map_params[qi], float(value)
+                )
+
+    def _get_stowaway_config(self, bus_key: str, slot_idx: int):
+        """Get the StowawayState for a bus + slot from config."""
+        bus_offset = {"fx_bus_1": 0, "fx_bus_2": 4, "fx_bus_m": 8,
+                      "fx_bus_c": 12, "fx_bus_d": 16}.get(bus_key, 0)
+        idx = bus_offset + slot_idx
+        if hasattr(self.config, "stowaway_slots") and idx < len(self.config.stowaway_slots):
+            return self.config.stowaway_slots[idx]
+        return None
+
+    def _open_plugin_browser(self, bus_key: str, slot_idx: int):
+        """Open the plugin browser dialog for a stowaway slot."""
+        from mlrvp.gui.plugin_browser import PluginBrowserDialog
+        dlg = PluginBrowserDialog(self.window)
+
+        def _on_selected(path: str, fmt: str):
+            if not self.engine:
+                return
+            # Show LOADING state and flush paint so the user sees it
+            self._update_stowaway_loading(bus_key, slot_idx)
+            from PySide6.QtWidgets import QApplication
+            QApplication.processEvents()
+
+            # Load on main thread (required for show_editor to work later)
+            ok = self.engine.load_plugin_slot(bus_key, slot_idx, path, fmt)
+            if ok:
+                state = self._get_stowaway_config(bus_key, slot_idx)
+                if state:
+                    state.plugin_path = path
+                    state.plugin_format = fmt
+                from pathlib import Path
+                name = Path(path).stem
+                self._update_stowaway_gui(bus_key, slot_idx, name, fmt)
+            else:
+                self._update_stowaway_error(bus_key, slot_idx)
+
+        dlg.plugin_selected.connect(_on_selected)
+        dlg.exec()
+
+    def _open_plugin_editor(self, bus_key: str, slot_idx: int):
+        """Open the plugin editor window for a stowaway slot."""
+        if not self.engine:
+            return
+        state = self._get_stowaway_config(bus_key, slot_idx)
+        if not state or not state.plugin_path:
+            return
+        from mlrvp.gui.plugin_editor_window import PluginEditorWindow
+        from pathlib import Path
+        win = PluginEditorWindow(
+            engine=self.engine,
+            bus_key=bus_key,
+            slot_idx=slot_idx,
+            plugin_name=Path(state.plugin_path).stem,
+            plugin_path=state.plugin_path,
+            plugin_format=state.plugin_format,
+            parent=self.window,
+        )
+        win.show()
+
+    def _open_quick_param_assign(self, bus_key: str, slot_idx: int, knob_idx: int):
+        """Show a list of available plugin params for quick-knob assignment."""
+        if not self.engine:
+            return
+        names = self.engine.get_plugin_slot_param_names(bus_key, slot_idx)
+        if not names:
+            return
+        from PySide6.QtWidgets import QInputDialog
+        chosen, ok = QInputDialog.getItem(
+            self.window, "Assign Parameter",
+            f"Choose parameter for P{knob_idx + 1}:",
+            names, 0, False,
+        )
+        if ok and chosen:
+            state = self._get_stowaway_config(bus_key, slot_idx)
+            if state:
+                while len(state.quick_map_params) <= knob_idx:
+                    state.quick_map_params.append(None)
+                state.quick_map_params[knob_idx] = chosen
+            # Update GUI knob label
+            self._update_stowaway_quick_label(bus_key, slot_idx, knob_idx, chosen)
+
+    def _update_stowaway_gui(self, bus_key: str, slot_idx: int, name: str, fmt: str):
+        """Update the Foreign Exchange module's display after plugin load."""
+        if not self.window:
+            return
+        ev = self.window.effects_view
+        rack = {"fx_bus_1": ev._rack_a, "fx_bus_2": ev._rack_b,
+                "fx_bus_m": ev._rack_m, "fx_bus_c": ev._rack_c,
+                "fx_bus_d": ev._rack_d}.get(bus_key)
+        if not rack:
+            return
+        for mod in rack.get_modules():
+            if getattr(mod, "effect_type", "") == f"stowaway_{slot_idx}":
+                mod.set_plugin_loaded(name, fmt)
+                break
+
+    def _update_stowaway_loading(self, bus_key: str, slot_idx: int):
+        """Show LOADING… state on the Foreign Exchange module."""
+        if not self.window:
+            return
+        ev = self.window.effects_view
+        rack = {"fx_bus_1": ev._rack_a, "fx_bus_2": ev._rack_b,
+                "fx_bus_m": ev._rack_m, "fx_bus_c": ev._rack_c,
+                "fx_bus_d": ev._rack_d}.get(bus_key)
+        if not rack:
+            return
+        for mod in rack.get_modules():
+            if getattr(mod, "effect_type", "") == f"stowaway_{slot_idx}":
+                mod.set_loading()
+                break
+
+    def _update_stowaway_error(self, bus_key: str, slot_idx: int):
+        """Show LOAD FAILED state on the Foreign Exchange module."""
+        if not self.window:
+            return
+        ev = self.window.effects_view
+        rack = {"fx_bus_1": ev._rack_a, "fx_bus_2": ev._rack_b,
+                "fx_bus_m": ev._rack_m, "fx_bus_c": ev._rack_c,
+                "fx_bus_d": ev._rack_d}.get(bus_key)
+        if not rack:
+            return
+        for mod in rack.get_modules():
+            if getattr(mod, "effect_type", "") == f"stowaway_{slot_idx}":
+                mod._name_display.setText("LOAD FAILED")
+                break
+
+    def _update_stowaway_quick_label(self, bus_key: str, slot_idx: int,
+                                      knob_idx: int, label: str):
+        if not self.window:
+            return
+        ev = self.window.effects_view
+        rack = {"fx_bus_1": ev._rack_a, "fx_bus_2": ev._rack_b,
+                "fx_bus_m": ev._rack_m, "fx_bus_c": ev._rack_c,
+                "fx_bus_d": ev._rack_d}.get(bus_key)
+        if not rack:
+            return
+        for mod in rack.get_modules():
+            if getattr(mod, "effect_type", "") == f"stowaway_{slot_idx}":
+                mod.set_quick_knob_label(knob_idx, label)
+                break
+
     def _gui_plate_reverb_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("plate_reverb", bus)
         setattr(cfg, param, value)
@@ -2274,7 +2480,7 @@ class AppController:
         ChannelStrip._add_to_library(filepath)
 
     def _on_rack_contents_changed(self, payload: dict):
-        """Sync per-bus effect in-rack status from rack UI."""
+        """Sync per-bus effect in-rack status and processing order from rack UI."""
         # Register any newly-added FX controls so MIDI learn works on both tabs.
         self._register_fx_rack_mappable_controls()
         if not self.engine:
@@ -2295,6 +2501,14 @@ class AppController:
             self.engine.set_effect_in_rack(effect_type, 4, in_rack)
         for effect_type, in_rack in pres_d.items():
             self.engine.set_effect_in_rack(effect_type, 5, in_rack)
+
+        # Update processing order per bus (drives dynamic FX chain in engine)
+        if isinstance(payload, dict):
+            for key, bus in (("order_a", 1), ("order_b", 2), ("order_m", 3),
+                             ("order_c", 4), ("order_d", 5)):
+                order = payload.get(key)
+                if order is not None:
+                    self.engine.set_rack_order(bus, order)
 
     # --- Setup handlers ---
 
@@ -2919,11 +3133,38 @@ class AppController:
             },
         }
 
+        _RACK_BUS = {"A": "a", "B": "b", "M": "m", "C": "c", "D": "d"}
         for rack_name, rack in (("A", ev._rack_a), ("B", ev._rack_b), ("M", ev._rack_m), ("C", ev._rack_c), ("D", ev._rack_d)):
+            bus_letter = _RACK_BUS[rack_name]
             for mi, mod in enumerate(rack.get_modules()):
                 et = getattr(mod, "effect_type", "")
                 spec = fx_specs.get(et)
                 if not spec:
+                    # Handle stowaway (Foreign Exchange) modules dynamically
+                    if et.startswith("stowaway_"):
+                        slot_idx = int(et.split("_", 1)[1])
+                        key_pfx = f"stowaway_{bus_letter}_{slot_idx}"
+                        spec = {
+                            "_enabled": f"{key_pfx}.enabled",
+                            "_wet_dry_knob": f"{key_pfx}.wet_dry",
+                        }
+                        for ki in range(4):
+                            spec[f"_quick_knobs[{ki}]"] = f"{key_pfx}.quick_{ki}"
+                        for attr, key in spec.items():
+                            if attr == "_enabled":
+                                ctrl = mod.power_widget
+                            elif attr == "_wet_dry_knob":
+                                ctrl = mod.wet_dry_widget
+                            elif attr.startswith("_quick_knobs["):
+                                qi = int(attr.split("[")[1].rstrip("]"))
+                                ctrl = mod.get_quick_knob(qi)
+                            else:
+                                ctrl = None
+                            if ctrl is not None:
+                                self._midi_map.register_control(
+                                    ctrl, key,
+                                    f"FX {rack_name} {et} {attr[1:]} {mi+1}",
+                                )
                     continue
                 for attr, key in spec.items():
                     ctrl = mod.power_widget if attr == "_enabled" else getattr(mod, attr, None)
@@ -3086,7 +3327,7 @@ class AppController:
                     lambda v, g=grp: self._gui_group_mute(g, v > 0.5))
             elif param == "fx_route":
                 self.midi.set_param_callback(param_path,
-                    lambda v, g=grp: self._gui_group_fx_route(g, int(round(v * 2))))
+                    lambda v, g=grp: self._gui_group_fx_route(g, int(round(v * 4))))
         elif param_path == "transport.tempo":
             self.midi.set_param_callback(param_path,
                 lambda v: self._gui_tempo_changed(20.0 + v * 280.0))
@@ -3249,7 +3490,7 @@ class AppController:
                     lambda v: self._gui_aux_mute(v > 0.5))
             elif parts[1] == "fx_route":
                 self.midi.set_param_callback(param_path,
-                    lambda v: self._gui_aux_fx_route(int(round(v * 2))))
+                    lambda v: self._gui_aux_fx_route(int(round(v * 4))))
         elif parts[0] == "master" and len(parts) == 2:
             if parts[1] == "volume":
                 self.midi.set_param_callback(param_path,
@@ -3262,7 +3503,7 @@ class AppController:
         elif parts[0] == "effect" and len(parts) == 2:
             effect_name = parts[1].replace("_route", "")
             self.midi.set_param_callback(param_path,
-                lambda v, e=effect_name: self._gui_effect_route(e, int(round(v * 2))))
+                lambda v, e=effect_name: self._gui_effect_route(e, int(round(v * 4))))
         elif parts[0] in ("reel_to_reel", "cassette_tape", "vhs", "vinyl",
                            "compressor", "hall_reverb", "plate_reverb",
                            "glue_compressor", "bit_crusher", "tube_overdrive",
@@ -3351,6 +3592,26 @@ class AppController:
         elif parts[0] == "tilt" and len(parts) == 3:
             # Tilt axes are source-only — no callback needed (data flows in)
             pass
+        elif parts[0].startswith("stowaway_") and len(parts) == 2:
+            # Foreign Exchange (external plugin) params
+            # Format: stowaway_{bus}_{slot}.{param}  e.g. "stowaway_a_0.wet_dry"
+            tokens = parts[0].split("_")  # ["stowaway", "a", "0"]
+            if len(tokens) < 3:
+                return
+            bus_letter = tokens[1]
+            slot_idx = int(tokens[2])
+            _BUS_MAP = {"a": "fx_bus_1", "b": "fx_bus_2", "m": "fx_bus_m",
+                        "c": "fx_bus_c", "d": "fx_bus_d"}
+            bus_key = _BUS_MAP.get(bus_letter)
+            if bus_key is None:
+                return
+            param = parts[1]    # e.g. "wet_dry", "quick_0", "enabled"
+            if param == "enabled":
+                self.midi.set_param_callback(param_path,
+                    lambda v, _bk=bus_key, _si=slot_idx: self._gui_stowaway_param(_bk, _si, "enabled", v > 0.5))
+            else:
+                self.midi.set_param_callback(param_path,
+                    lambda v, _bk=bus_key, _si=slot_idx, p=param: self._gui_stowaway_param(_bk, _si, p, v))
 
         # Post-wrap: for knob/fader widgets that are registered in the MIDI map,
         # call widget.set_value(raw_v) on the Qt thread so the visual position
@@ -3431,6 +3692,26 @@ class AppController:
                 for attr, val in vars(cfg).items():
                     if not attr.startswith('_'):
                         setattr(eng.state, attr, val)
+
+        # Sync stowaway (Foreign Exchange) plugin slots from config
+        if hasattr(self.config, "stowaway_slots"):
+            _BUS_KEYS = ["fx_bus_1", "fx_bus_2", "fx_bus_m", "fx_bus_c", "fx_bus_d"]
+            for bus_idx, bus_key in enumerate(_BUS_KEYS):
+                for si in range(4):
+                    cfg_idx = bus_idx * 4 + si
+                    if cfg_idx >= len(self.config.stowaway_slots):
+                        continue
+                    st = self.config.stowaway_slots[cfg_idx]
+                    self.engine.set_plugin_slot_enabled(bus_key, si, st.enabled)
+                    self.engine.set_plugin_slot_wet_dry(bus_key, si, st.wet_dry)
+                    if st.plugin_path:
+                        self.engine.load_plugin_slot(
+                            bus_key, si, st.plugin_path, st.plugin_format)
+                        if st.plugin_state_b64:
+                            self.engine.set_plugin_slot_state_b64(
+                                bus_key, si, st.plugin_state_b64)
+                    else:
+                        self.engine.unload_plugin_slot(bus_key, si)
 
         # Re-sync in-rack flags from current rack layout
         if self.window:
@@ -4013,6 +4294,8 @@ class AppController:
             # Rack modules state recall — push config to every module in all 5 racks
             _MOD_TYPES = {"chorus", "flanger", "phaser"}
             _SKIP_TYPES = {"vu_meter", "oscilloscope"}
+            _RACK_BUS_KEY = {"": "fx_bus_1", "_b": "fx_bus_2", "_m": "fx_bus_m",
+                             "_c": "fx_bus_c", "_d": "fx_bus_d"}
             for rack, sfx in ((w.effects_view._rack_a, ""),
                               (w.effects_view._rack_b, "_b"),
                               (w.effects_view._rack_m, "_m"),
@@ -4021,6 +4304,14 @@ class AppController:
                 for mod in rack.get_modules():
                     et = getattr(mod, "effect_type", "")
                     if et in _SKIP_TYPES or not et:
+                        continue
+                    # Stowaway modules have config in stowaway_slots list
+                    if et.startswith("stowaway_"):
+                        si = int(et.split("_", 1)[1])
+                        bk = _RACK_BUS_KEY.get(sfx, "fx_bus_1")
+                        cfg = self._get_stowaway_config(bk, si)
+                        if cfg is not None and hasattr(mod, "set_state"):
+                            mod.set_state(cfg)
                         continue
                     cfg_base = "mod" if et in _MOD_TYPES else et
                     cfg_key = f"{cfg_base}{sfx}" if sfx else cfg_base

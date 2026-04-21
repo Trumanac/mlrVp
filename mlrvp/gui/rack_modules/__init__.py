@@ -40,6 +40,7 @@ from mlrvp.gui.rack_modules.fuzz import FuzzModule
 from mlrvp.gui.rack_modules.granular_freeze import GranularFreezeModule
 from mlrvp.gui.rack_modules.gated_reverb import GatedReverbModule
 from mlrvp.gui.rack_modules.stutter import StutterModule
+from mlrvp.gui.rack_modules.stowaway import ForeignExchangeModule
 
 from mlrvp.gui.widgets.rack_container import register_rack_module
 
@@ -85,6 +86,7 @@ _MODULES = {
     "Snow Globe (Granular Freeze)": GranularFreezeModule,
     "Gate Crasher (Gated Reverb)": GatedReverbModule,
     "Broken Record (Stutter)": StutterModule,
+    "Foreign Exchange (Plugin Host)": ForeignExchangeModule,
 }
 
 for _name, _cls in _MODULES.items():
@@ -118,4 +120,5 @@ __all__ = [
     "GranularFreezeModule",
     "GatedReverbModule",
     "StutterModule",
+    "ForeignExchangeModule",
 ]

@@ -59,6 +59,7 @@ from mlrvp.audio.effects import (
     GranularFreezeProcessor,
     GatedReverbProcessor,
     StutterProcessor,
+    StowawayProcessor,
 )
 from mlrvp.audio.recorder import Recorder
 from mlrvp.audio.sample import SampleBuffer
@@ -525,6 +526,150 @@ class AudioEngine:
         self.stutter_in_rack_c = False
         self.stutter_in_rack_d = False
         self.stutter_in_rack_m = False
+
+        # --- Dynamic FX chain ordering ---
+        # Ordered lists of effect_type strings per bus.
+        # The DSP processes effects in this order (set from the GUI rack).
+        # Default order matches the original hardcoded chain.
+        _default_order: list[str] = []  # empty = nothing in rack initially
+        self._fx_order_a: list[str] = list(_default_order)
+        self._fx_order_b: list[str] = list(_default_order)
+        self._fx_order_c: list[str] = list(_default_order)
+        self._fx_order_d: list[str] = list(_default_order)
+        self._fx_order_m: list[str] = list(_default_order)
+
+        # Per-bus processor dispatch tables — maps effect_type → processor instance.
+        # Built once at init, keyed by bus suffix letter.
+        self._fx_processors: dict[str, dict[str, object]] = {
+            'a': {
+                'noise_gate': self.noise_gate, 'tremolo': self.tremolo,
+                'auto_wah': self.auto_wah, 'fet_limiter': self.fet_limiter,
+                'filter_a': self.filter_a, 'filter_b': self.filter_b,
+                'phaser': self.fx_bus_1, 'chorus': self.fx_bus_1, 'flanger': self.fx_bus_1,
+                'delay': self.delay, 'tape_delay': self.tape_delay,
+                'reel_to_reel': self.reel_to_reel, 'cassette_tape': self.cassette_tape,
+                'vhs': self.vhs, 'vinyl': self.vinyl,
+                'hall_reverb': self.hall_reverb, 'plate_reverb': self.plate_reverb,
+                'compressor': self.compressor, 'glue_compressor': self.glue_compressor,
+                'bit_crusher': self.bit_crusher, 'tube_overdrive': self.tube_overdrive,
+                'exciter': self.exciter, 'transient_shaper': self.transient_shaper,
+                'ether_drift': self.ether_drift, 'harmonizer': self.harmonizer,
+                'rotary': self.rotary, 'stereo_widener': self.stereo_widener,
+                'freq_shifter': self.freq_shifter, 'ring_mod': self.ring_mod,
+                'simple_eq': self.simple_eq, 'ping_pong_delay': self.ping_pong_delay,
+                'shimmer_reverb': self.shimmer_reverb, 'lofi_radio': self.lofi_radio,
+                'auto_pan': self.auto_pan, 'fuzz': self.fuzz,
+                'granular_freeze': self.granular_freeze, 'gate_reverb': self.gate_reverb,
+                'stutter': self.stutter,
+            },
+            'b': {
+                'noise_gate': self.noise_gate_b, 'tremolo': self.tremolo_b,
+                'auto_wah': self.auto_wah_b, 'fet_limiter': self.fet_limiter_b,
+                'filter_a': self.filter_a_b, 'filter_b': self.filter_b_b,
+                'phaser': self.fx_bus_2, 'chorus': self.fx_bus_2, 'flanger': self.fx_bus_2,
+                'delay': self.delay_b, 'tape_delay': self.tape_delay_b,
+                'reel_to_reel': self.reel_to_reel_b, 'cassette_tape': self.cassette_tape_b,
+                'vhs': self.vhs_b, 'vinyl': self.vinyl_b,
+                'hall_reverb': self.hall_reverb_b, 'plate_reverb': self.plate_reverb_b,
+                'compressor': self.compressor_b, 'glue_compressor': self.glue_compressor_b,
+                'bit_crusher': self.bit_crusher_b, 'tube_overdrive': self.tube_overdrive_b,
+                'exciter': self.exciter_b, 'transient_shaper': self.transient_shaper_b,
+                'ether_drift': self.ether_drift_b, 'harmonizer': self.harmonizer_b,
+                'rotary': self.rotary_b, 'stereo_widener': self.stereo_widener_b,
+                'freq_shifter': self.freq_shifter_b, 'ring_mod': self.ring_mod_b,
+                'simple_eq': self.simple_eq_b, 'ping_pong_delay': self.ping_pong_delay_b,
+                'shimmer_reverb': self.shimmer_reverb_b, 'lofi_radio': self.lofi_radio_b,
+                'auto_pan': self.auto_pan_b, 'fuzz': self.fuzz_b,
+                'granular_freeze': self.granular_freeze_b, 'gate_reverb': self.gate_reverb_b,
+                'stutter': self.stutter_b,
+            },
+            'c': {
+                'noise_gate': self.noise_gate_c, 'tremolo': self.tremolo_c,
+                'auto_wah': self.auto_wah_c, 'fet_limiter': self.fet_limiter_c,
+                'filter_a': self.filter_a_c, 'filter_b': self.filter_b_c,
+                'phaser': self.fx_bus_c, 'chorus': self.fx_bus_c, 'flanger': self.fx_bus_c,
+                'delay': self.delay_c, 'tape_delay': self.tape_delay_c,
+                'reel_to_reel': self.reel_to_reel_c, 'cassette_tape': self.cassette_tape_c,
+                'vhs': self.vhs_c, 'vinyl': self.vinyl_c,
+                'hall_reverb': self.hall_reverb_c, 'plate_reverb': self.plate_reverb_c,
+                'compressor': self.compressor_c, 'glue_compressor': self.glue_compressor_c,
+                'bit_crusher': self.bit_crusher_c, 'tube_overdrive': self.tube_overdrive_c,
+                'exciter': self.exciter_c, 'transient_shaper': self.transient_shaper_c,
+                'ether_drift': self.ether_drift_c, 'harmonizer': self.harmonizer_c,
+                'rotary': self.rotary_c, 'stereo_widener': self.stereo_widener_c,
+                'freq_shifter': self.freq_shifter_c, 'ring_mod': self.ring_mod_c,
+                'simple_eq': self.simple_eq_c, 'ping_pong_delay': self.ping_pong_delay_c,
+                'shimmer_reverb': self.shimmer_reverb_c, 'lofi_radio': self.lofi_radio_c,
+                'auto_pan': self.auto_pan_c, 'fuzz': self.fuzz_c,
+                'granular_freeze': self.granular_freeze_c, 'gate_reverb': self.gate_reverb_c,
+                'stutter': self.stutter_c,
+            },
+            'd': {
+                'noise_gate': self.noise_gate_d, 'tremolo': self.tremolo_d,
+                'auto_wah': self.auto_wah_d, 'fet_limiter': self.fet_limiter_d,
+                'filter_a': self.filter_a_d, 'filter_b': self.filter_b_d,
+                'phaser': self.fx_bus_d, 'chorus': self.fx_bus_d, 'flanger': self.fx_bus_d,
+                'delay': self.delay_d, 'tape_delay': self.tape_delay_d,
+                'reel_to_reel': self.reel_to_reel_d, 'cassette_tape': self.cassette_tape_d,
+                'vhs': self.vhs_d, 'vinyl': self.vinyl_d,
+                'hall_reverb': self.hall_reverb_d, 'plate_reverb': self.plate_reverb_d,
+                'compressor': self.compressor_d, 'glue_compressor': self.glue_compressor_d,
+                'bit_crusher': self.bit_crusher_d, 'tube_overdrive': self.tube_overdrive_d,
+                'exciter': self.exciter_d, 'transient_shaper': self.transient_shaper_d,
+                'ether_drift': self.ether_drift_d, 'harmonizer': self.harmonizer_d,
+                'rotary': self.rotary_d, 'stereo_widener': self.stereo_widener_d,
+                'freq_shifter': self.freq_shifter_d, 'ring_mod': self.ring_mod_d,
+                'simple_eq': self.simple_eq_d, 'ping_pong_delay': self.ping_pong_delay_d,
+                'shimmer_reverb': self.shimmer_reverb_d, 'lofi_radio': self.lofi_radio_d,
+                'auto_pan': self.auto_pan_d, 'fuzz': self.fuzz_d,
+                'granular_freeze': self.granular_freeze_d, 'gate_reverb': self.gate_reverb_d,
+                'stutter': self.stutter_d,
+            },
+            'm': {
+                'noise_gate': self.noise_gate_m, 'tremolo': self.tremolo_m,
+                'auto_wah': self.auto_wah_m, 'fet_limiter': self.fet_limiter_m,
+                'filter_a': self.filter_a_m, 'filter_b': self.filter_b_m,
+                'phaser': self.fx_bus_m, 'chorus': self.fx_bus_m, 'flanger': self.fx_bus_m,
+                'delay': self.delay_m, 'tape_delay': self.tape_delay_m,
+                'reel_to_reel': self.reel_to_reel_m, 'cassette_tape': self.cassette_tape_m,
+                'vhs': self.vhs_m, 'vinyl': self.vinyl_m,
+                'hall_reverb': self.hall_reverb_m, 'plate_reverb': self.plate_reverb_m,
+                'compressor': self.compressor_m, 'glue_compressor': self.glue_compressor_m,
+                'bit_crusher': self.bit_crusher_m, 'tube_overdrive': self.tube_overdrive_m,
+                'exciter': self.exciter_m, 'transient_shaper': self.transient_shaper_m,
+                'ether_drift': self.ether_drift_m, 'harmonizer': self.harmonizer_m,
+                'rotary': self.rotary_m, 'stereo_widener': self.stereo_widener_m,
+                'freq_shifter': self.freq_shifter_m, 'ring_mod': self.ring_mod_m,
+                'simple_eq': self.simple_eq_m, 'ping_pong_delay': self.ping_pong_delay_m,
+                'shimmer_reverb': self.shimmer_reverb_m, 'lofi_radio': self.lofi_radio_m,
+                'auto_pan': self.auto_pan_m, 'fuzz': self.fuzz_m,
+                'granular_freeze': self.granular_freeze_m, 'gate_reverb': self.gate_reverb_m,
+                'stutter': self.stutter_m,
+            },
+        }
+        # Set of effect_types that require .state.enabled check before processing
+        self._FX_NEEDS_ENABLED_CHECK = frozenset({
+            'filter_a', 'filter_b', 'delay', 'tape_delay',
+        })
+        # Set of mod sub-effects handled via FXBus.process_mod_only
+        self._FX_MOD_TYPES = frozenset({'phaser', 'chorus', 'flanger'})
+        # Map bus suffix letter → the fx_order list reference
+        self._fx_order_map: dict[str, list[str]] = {
+            'a': self._fx_order_a, 'b': self._fx_order_b,
+            'c': self._fx_order_c, 'd': self._fx_order_d,
+            'm': self._fx_order_m,
+        }
+
+        # --- External plugin host pool (Foreign Exchange) ---
+        # 4 StowawayProcessor slots per bus, registered into _fx_processors
+        # so _process_fx_chain handles them at whatever rack position they appear.
+        self._stowaway_pool: dict[str, list[StowawayProcessor]] = {
+            k: [StowawayProcessor(self.sample_rate, BUFFER_SIZE) for _ in range(4)]
+            for k in ('a', 'b', 'c', 'd', 'm')
+        }
+        for _bus_key, _pool in self._stowaway_pool.items():
+            for _i, _proc in enumerate(_pool):
+                self._fx_processors[_bus_key][f'stowaway_{_i}'] = _proc
 
         # Master filter (gentle HP/LP trim)
         self._master_hp = BiquadFilter(self.sample_rate)
@@ -1054,367 +1199,15 @@ class AudioEngine:
             _t2 = time.perf_counter()
 
         # --- FX Processing Chain (per-bus: rack A → FX1, rack B → FX2) ---
-        # Noise Gate (first in chain — gates signal before any processing)
-        if self.noise_gate_in_rack_a:
-            fx1_bus = self.noise_gate.process(fx1_bus)
-        if self.noise_gate_in_rack_b:
-            fx2_bus = self.noise_gate_b.process(fx2_bus)
-
-        # Tremolo
-        if self.tremolo_in_rack_a:
-            fx1_bus = self.tremolo.process(fx1_bus)
-        if self.tremolo_in_rack_b:
-            fx2_bus = self.tremolo_b.process(fx2_bus)
-
-        # Auto-Wah
-        if self.auto_wah_in_rack_a:
-            fx1_bus = self.auto_wah.process(fx1_bus)
-        if self.auto_wah_in_rack_b:
-            fx2_bus = self.auto_wah_b.process(fx2_bus)
-
-        # FET Limiter (1176)
-        if self.fet_limiter_in_rack_a:
-            fx1_bus = self.fet_limiter.process(fx1_bus)
-        if self.fet_limiter_in_rack_b:
-            fx2_bus = self.fet_limiter_b.process(fx2_bus)
-
-        # Filter A (shapeable LP/HP)
-        if self.filter_a_in_rack_a and self.filter_a.state.enabled:
-            fx1_bus = self.filter_a.process(fx1_bus)
-        if self.filter_a_in_rack_b and self.filter_a_b.state.enabled:
-            fx2_bus = self.filter_a_b.process(fx2_bus)
-
-        # Filter B (Moog ladder)
-        if self.filter_b_in_rack_a and self.filter_b.state.enabled:
-            fx1_bus = self.filter_b.process(fx1_bus)
-        if self.filter_b_in_rack_b and self.filter_b_b.state.enabled:
-            fx2_bus = self.filter_b_b.process(fx2_bus)
-
-        # Mod effects (phaser, chorus, flanger) — per-bus FXBus handles own enabled
-        if self.mod_in_rack_a:
-            fx1_bus = self.fx_bus_1.process_mod_only(fx1_bus)
-        if self.mod_in_rack_b:
-            fx2_bus = self.fx_bus_2.process_mod_only(fx2_bus)
-
-        # Digital delay
-        if self.delay_in_rack_a and self.delay.state.enabled:
-            fx1_bus = self.delay.process(fx1_bus)
-        if self.delay_in_rack_b and self.delay_b.state.enabled:
-            fx2_bus = self.delay_b.process(fx2_bus)
-
-        # Tape delay
-        if self.tape_delay_in_rack_a and self.tape_delay.state.enabled:
-            fx1_bus = self.tape_delay.process(fx1_bus)
-        if self.tape_delay_in_rack_b and self.tape_delay_b.state.enabled:
-            fx2_bus = self.tape_delay_b.process(fx2_bus)
-
-        # Lo-fi media effects (each checks own state.enabled in process())
-        if self.reel_to_reel_in_rack_a:
-            fx1_bus = self.reel_to_reel.process(fx1_bus)
-        if self.reel_to_reel_in_rack_b:
-            fx2_bus = self.reel_to_reel_b.process(fx2_bus)
-
-        if self.cassette_tape_in_rack_a:
-            fx1_bus = self.cassette_tape.process(fx1_bus)
-        if self.cassette_tape_in_rack_b:
-            fx2_bus = self.cassette_tape_b.process(fx2_bus)
-
-        if self.vhs_in_rack_a:
-            fx1_bus = self.vhs.process(fx1_bus)
-        if self.vhs_in_rack_b:
-            fx2_bus = self.vhs_b.process(fx2_bus)
-
-        if self.vinyl_in_rack_a:
-            fx1_bus = self.vinyl.process(fx1_bus)
-        if self.vinyl_in_rack_b:
-            fx2_bus = self.vinyl_b.process(fx2_bus)
-
-        # Hall reverb
-        if self.hall_reverb_in_rack_a:
-            fx1_bus = self.hall_reverb.process(fx1_bus)
-        if self.hall_reverb_in_rack_b:
-            fx2_bus = self.hall_reverb_b.process(fx2_bus)
-
-        # Plate reverb
-        if self.plate_reverb_in_rack_a:
-            fx1_bus = self.plate_reverb.process(fx1_bus)
-        if self.plate_reverb_in_rack_b:
-            fx2_bus = self.plate_reverb_b.process(fx2_bus)
-
-        # Compressor (with sidechain routing, checks own state.enabled)
-        if self.compressor_in_rack_a:
-            sc_a = self._get_compressor_sidechain(self.compressor, fx1_bus, frames)
-            fx1_bus = self.compressor.process(fx1_bus, sc_a)
-        if self.compressor_in_rack_b:
-            sc_b = self._get_compressor_sidechain(self.compressor_b, fx2_bus, frames)
-            fx2_bus = self.compressor_b.process(fx2_bus, sc_b)
-
-        # Glue compressor (no sidechain routing; self-keyed bus glue)
-        if self.glue_compressor_in_rack_a:
-            fx1_bus = self.glue_compressor.process(fx1_bus)
-        if self.glue_compressor_in_rack_b:
-            fx2_bus = self.glue_compressor_b.process(fx2_bus)
-
-        # Bit crusher (checks own state.enabled via process())
-        if self.bit_crusher_in_rack_a:
-            fx1_bus = self.bit_crusher.process(fx1_bus)
-        if self.bit_crusher_in_rack_b:
-            fx2_bus = self.bit_crusher_b.process(fx2_bus)
-
-        # Tube overdrive (checks own state.enabled via process())
-        if self.tube_overdrive_in_rack_a:
-            fx1_bus = self.tube_overdrive.process(fx1_bus)
-        if self.tube_overdrive_in_rack_b:
-            fx2_bus = self.tube_overdrive_b.process(fx2_bus)
-
-        # Aural Exciter
-        if self.exciter_in_rack_a:
-            fx1_bus = self.exciter.process(fx1_bus)
-        if self.exciter_in_rack_b:
-            fx2_bus = self.exciter_b.process(fx2_bus)
-
-        # Transient Shaper
-        if self.transient_shaper_in_rack_a:
-            fx1_bus = self.transient_shaper.process(fx1_bus)
-        if self.transient_shaper_in_rack_b:
-            fx2_bus = self.transient_shaper_b.process(fx2_bus)
-
-        # Ether Drift (checks own state.enabled via process())
-        if self.ether_drift_in_rack_a:
-            fx1_bus = self.ether_drift.process(fx1_bus)
-        if self.ether_drift_in_rack_b:
-            fx2_bus = self.ether_drift_b.process(fx2_bus)
-
-        # Harmonizer
-        if self.harmonizer_in_rack_a:
-            fx1_bus = self.harmonizer.process(fx1_bus)
-        if self.harmonizer_in_rack_b:
-            fx2_bus = self.harmonizer_b.process(fx2_bus)
-
-        # Rotary Speaker
-        if self.rotary_in_rack_a:
-            fx1_bus = self.rotary.process(fx1_bus)
-        if self.rotary_in_rack_b:
-            fx2_bus = self.rotary_b.process(fx2_bus)
-
-        # Stereo Widener
-        if self.stereo_widener_in_rack_a:
-            fx1_bus = self.stereo_widener.process(fx1_bus)
-        if self.stereo_widener_in_rack_b:
-            fx2_bus = self.stereo_widener_b.process(fx2_bus)
-
-        # Frequency Shifter
-        if self.freq_shifter_in_rack_a:
-            fx1_bus = self.freq_shifter.process(fx1_bus)
-        if self.freq_shifter_in_rack_b:
-            fx2_bus = self.freq_shifter_b.process(fx2_bus)
-
-        # Ring Modulator
-        if self.ring_mod_in_rack_a:
-            fx1_bus = self.ring_mod.process(fx1_bus)
-        if self.ring_mod_in_rack_b:
-            fx2_bus = self.ring_mod_b.process(fx2_bus)
-
-        # Simple EQ
-        if self.simple_eq_in_rack_a:
-            fx1_bus = self.simple_eq.process(fx1_bus)
-        if self.simple_eq_in_rack_b:
-            fx2_bus = self.simple_eq_b.process(fx2_bus)
-
-        # Ping-Pong Delay
-        if self.ping_pong_delay_in_rack_a:
-            fx1_bus = self.ping_pong_delay.process(fx1_bus)
-        if self.ping_pong_delay_in_rack_b:
-            fx2_bus = self.ping_pong_delay_b.process(fx2_bus)
-
-        # Shimmer Reverb
-        if self.shimmer_reverb_in_rack_a:
-            fx1_bus = self.shimmer_reverb.process(fx1_bus)
-        if self.shimmer_reverb_in_rack_b:
-            fx2_bus = self.shimmer_reverb_b.process(fx2_bus)
-
-        # Lo-Fi Radio
-        if self.lofi_radio_in_rack_a:
-            fx1_bus = self.lofi_radio.process(fx1_bus)
-        if self.lofi_radio_in_rack_b:
-            fx2_bus = self.lofi_radio_b.process(fx2_bus)
-
-        # Auto-Pan
-        if self.auto_pan_in_rack_a:
-            fx1_bus = self.auto_pan.process(fx1_bus)
-        if self.auto_pan_in_rack_b:
-            fx2_bus = self.auto_pan_b.process(fx2_bus)
-
-        # Fuzz
-        if self.fuzz_in_rack_a:
-            fx1_bus = self.fuzz.process(fx1_bus)
-        if self.fuzz_in_rack_b:
-            fx2_bus = self.fuzz_b.process(fx2_bus)
-        # Granular Freeze
-        if self.granular_freeze_in_rack_a:
-            fx1_bus = self.granular_freeze.process(fx1_bus)
-        if self.granular_freeze_in_rack_b:
-            fx2_bus = self.granular_freeze_b.process(fx2_bus)
-        # Gated Reverb
-        if self.gate_reverb_in_rack_a:
-            fx1_bus = self.gate_reverb.process(fx1_bus)
-        if self.gate_reverb_in_rack_b:
-            fx2_bus = self.gate_reverb_b.process(fx2_bus)
-        # Stutter
-        if self.stutter_in_rack_a:
-            fx1_bus = self.stutter.process(fx1_bus)
-        if self.stutter_in_rack_b:
-            fx2_bus = self.stutter_b.process(fx2_bus)
+        # Dynamic order: processes effects in the order set by the rack UI.
+        fx1_bus = self._process_fx_chain(fx1_bus, 'a', frames)
+        fx2_bus = self._process_fx_chain(fx2_bus, 'b', frames)
 
         # --- FX Processing Chain C (rack C → FX3) ---
-        if self.noise_gate_in_rack_c:
-            fx3_bus = self.noise_gate_c.process(fx3_bus)
-        if self.tremolo_in_rack_c:
-            fx3_bus = self.tremolo_c.process(fx3_bus)
-        if self.auto_wah_in_rack_c:
-            fx3_bus = self.auto_wah_c.process(fx3_bus)
-        if self.fet_limiter_in_rack_c:
-            fx3_bus = self.fet_limiter_c.process(fx3_bus)
-        if self.filter_a_in_rack_c and self.filter_a_c.state.enabled:
-            fx3_bus = self.filter_a_c.process(fx3_bus)
-        if self.filter_b_in_rack_c and self.filter_b_c.state.enabled:
-            fx3_bus = self.filter_b_c.process(fx3_bus)
-        if self.mod_in_rack_c:
-            fx3_bus = self.fx_bus_c.process_mod_only(fx3_bus)
-        if self.delay_in_rack_c and self.delay_c.state.enabled:
-            fx3_bus = self.delay_c.process(fx3_bus)
-        if self.tape_delay_in_rack_c and self.tape_delay_c.state.enabled:
-            fx3_bus = self.tape_delay_c.process(fx3_bus)
-        if self.reel_to_reel_in_rack_c:
-            fx3_bus = self.reel_to_reel_c.process(fx3_bus)
-        if self.cassette_tape_in_rack_c:
-            fx3_bus = self.cassette_tape_c.process(fx3_bus)
-        if self.vhs_in_rack_c:
-            fx3_bus = self.vhs_c.process(fx3_bus)
-        if self.vinyl_in_rack_c:
-            fx3_bus = self.vinyl_c.process(fx3_bus)
-        if self.hall_reverb_in_rack_c:
-            fx3_bus = self.hall_reverb_c.process(fx3_bus)
-        if self.plate_reverb_in_rack_c:
-            fx3_bus = self.plate_reverb_c.process(fx3_bus)
-        if self.compressor_in_rack_c:
-            sc_c = self._get_compressor_sidechain(self.compressor_c, fx3_bus, frames)
-            fx3_bus = self.compressor_c.process(fx3_bus, sc_c)
-        if self.glue_compressor_in_rack_c:
-            fx3_bus = self.glue_compressor_c.process(fx3_bus)
-        if self.bit_crusher_in_rack_c:
-            fx3_bus = self.bit_crusher_c.process(fx3_bus)
-        if self.tube_overdrive_in_rack_c:
-            fx3_bus = self.tube_overdrive_c.process(fx3_bus)
-        if self.exciter_in_rack_c:
-            fx3_bus = self.exciter_c.process(fx3_bus)
-        if self.transient_shaper_in_rack_c:
-            fx3_bus = self.transient_shaper_c.process(fx3_bus)
-        if self.ether_drift_in_rack_c:
-            fx3_bus = self.ether_drift_c.process(fx3_bus)
-        if self.harmonizer_in_rack_c:
-            fx3_bus = self.harmonizer_c.process(fx3_bus)
-        if self.rotary_in_rack_c:
-            fx3_bus = self.rotary_c.process(fx3_bus)
-        if self.stereo_widener_in_rack_c:
-            fx3_bus = self.stereo_widener_c.process(fx3_bus)
-        if self.freq_shifter_in_rack_c:
-            fx3_bus = self.freq_shifter_c.process(fx3_bus)
-        if self.ring_mod_in_rack_c:
-            fx3_bus = self.ring_mod_c.process(fx3_bus)
-        if self.simple_eq_in_rack_c:
-            fx3_bus = self.simple_eq_c.process(fx3_bus)
-        if self.ping_pong_delay_in_rack_c:
-            fx3_bus = self.ping_pong_delay_c.process(fx3_bus)
-        if self.shimmer_reverb_in_rack_c:
-            fx3_bus = self.shimmer_reverb_c.process(fx3_bus)
-        if self.lofi_radio_in_rack_c:
-            fx3_bus = self.lofi_radio_c.process(fx3_bus)
-        if self.auto_pan_in_rack_c:
-            fx3_bus = self.auto_pan_c.process(fx3_bus)
-        if self.fuzz_in_rack_c:
-            fx3_bus = self.fuzz_c.process(fx3_bus)
-        if self.granular_freeze_in_rack_c:
-            fx3_bus = self.granular_freeze_c.process(fx3_bus)
-        if self.gate_reverb_in_rack_c:
-            fx3_bus = self.gate_reverb_c.process(fx3_bus)
-        if self.stutter_in_rack_c:
-            fx3_bus = self.stutter_c.process(fx3_bus)
+        fx3_bus = self._process_fx_chain(fx3_bus, 'c', frames)
 
         # --- FX Processing Chain D (rack D → FX4) ---
-        if self.noise_gate_in_rack_d:
-            fx4_bus = self.noise_gate_d.process(fx4_bus)
-        if self.tremolo_in_rack_d:
-            fx4_bus = self.tremolo_d.process(fx4_bus)
-        if self.auto_wah_in_rack_d:
-            fx4_bus = self.auto_wah_d.process(fx4_bus)
-        if self.fet_limiter_in_rack_d:
-            fx4_bus = self.fet_limiter_d.process(fx4_bus)
-        if self.filter_a_in_rack_d and self.filter_a_d.state.enabled:
-            fx4_bus = self.filter_a_d.process(fx4_bus)
-        if self.filter_b_in_rack_d and self.filter_b_d.state.enabled:
-            fx4_bus = self.filter_b_d.process(fx4_bus)
-        if self.mod_in_rack_d:
-            fx4_bus = self.fx_bus_d.process_mod_only(fx4_bus)
-        if self.delay_in_rack_d and self.delay_d.state.enabled:
-            fx4_bus = self.delay_d.process(fx4_bus)
-        if self.tape_delay_in_rack_d and self.tape_delay_d.state.enabled:
-            fx4_bus = self.tape_delay_d.process(fx4_bus)
-        if self.reel_to_reel_in_rack_d:
-            fx4_bus = self.reel_to_reel_d.process(fx4_bus)
-        if self.cassette_tape_in_rack_d:
-            fx4_bus = self.cassette_tape_d.process(fx4_bus)
-        if self.vhs_in_rack_d:
-            fx4_bus = self.vhs_d.process(fx4_bus)
-        if self.vinyl_in_rack_d:
-            fx4_bus = self.vinyl_d.process(fx4_bus)
-        if self.hall_reverb_in_rack_d:
-            fx4_bus = self.hall_reverb_d.process(fx4_bus)
-        if self.plate_reverb_in_rack_d:
-            fx4_bus = self.plate_reverb_d.process(fx4_bus)
-        if self.compressor_in_rack_d:
-            sc_d = self._get_compressor_sidechain(self.compressor_d, fx4_bus, frames)
-            fx4_bus = self.compressor_d.process(fx4_bus, sc_d)
-        if self.glue_compressor_in_rack_d:
-            fx4_bus = self.glue_compressor_d.process(fx4_bus)
-        if self.bit_crusher_in_rack_d:
-            fx4_bus = self.bit_crusher_d.process(fx4_bus)
-        if self.tube_overdrive_in_rack_d:
-            fx4_bus = self.tube_overdrive_d.process(fx4_bus)
-        if self.exciter_in_rack_d:
-            fx4_bus = self.exciter_d.process(fx4_bus)
-        if self.transient_shaper_in_rack_d:
-            fx4_bus = self.transient_shaper_d.process(fx4_bus)
-        if self.ether_drift_in_rack_d:
-            fx4_bus = self.ether_drift_d.process(fx4_bus)
-        if self.harmonizer_in_rack_d:
-            fx4_bus = self.harmonizer_d.process(fx4_bus)
-        if self.rotary_in_rack_d:
-            fx4_bus = self.rotary_d.process(fx4_bus)
-        if self.stereo_widener_in_rack_d:
-            fx4_bus = self.stereo_widener_d.process(fx4_bus)
-        if self.freq_shifter_in_rack_d:
-            fx4_bus = self.freq_shifter_d.process(fx4_bus)
-        if self.ring_mod_in_rack_d:
-            fx4_bus = self.ring_mod_d.process(fx4_bus)
-        if self.simple_eq_in_rack_d:
-            fx4_bus = self.simple_eq_d.process(fx4_bus)
-        if self.ping_pong_delay_in_rack_d:
-            fx4_bus = self.ping_pong_delay_d.process(fx4_bus)
-        if self.shimmer_reverb_in_rack_d:
-            fx4_bus = self.shimmer_reverb_d.process(fx4_bus)
-        if self.lofi_radio_in_rack_d:
-            fx4_bus = self.lofi_radio_d.process(fx4_bus)
-        if self.auto_pan_in_rack_d:
-            fx4_bus = self.auto_pan_d.process(fx4_bus)
-        if self.fuzz_in_rack_d:
-            fx4_bus = self.fuzz_d.process(fx4_bus)
-        if self.granular_freeze_in_rack_d:
-            fx4_bus = self.granular_freeze_d.process(fx4_bus)
-        if self.gate_reverb_in_rack_d:
-            fx4_bus = self.gate_reverb_d.process(fx4_bus)
-        if self.stutter_in_rack_d:
-            fx4_bus = self.stutter_d.process(fx4_bus)
+        fx4_bus = self._process_fx_chain(fx4_bus, 'd', frames)
 
         # Track FX bus peaks before summing (for per-rack metering)
         # Use pre-allocated stereo abs buffer to avoid per-column view allocs
@@ -1488,79 +1281,7 @@ class AudioEngine:
             dsp_output = self._master_lp.process(dsp_output)
 
         # --- FX Group M (Master rack) — post-master-trim chain ---
-        if self.noise_gate_in_rack_m:
-            dsp_output = self.noise_gate_m.process(dsp_output)
-        if self.tremolo_in_rack_m:
-            dsp_output = self.tremolo_m.process(dsp_output)
-        if self.auto_wah_in_rack_m:
-            dsp_output = self.auto_wah_m.process(dsp_output)
-        if self.fet_limiter_in_rack_m:
-            dsp_output = self.fet_limiter_m.process(dsp_output)
-        if self.filter_a_in_rack_m and self.filter_a_m.state.enabled:
-            dsp_output = self.filter_a_m.process(dsp_output)
-        if self.filter_b_in_rack_m and self.filter_b_m.state.enabled:
-            dsp_output = self.filter_b_m.process(dsp_output)
-        if self.mod_in_rack_m:
-            dsp_output = self.fx_bus_m.process_mod_only(dsp_output)
-        if self.delay_in_rack_m and self.delay_m.state.enabled:
-            dsp_output = self.delay_m.process(dsp_output)
-        if self.tape_delay_in_rack_m and self.tape_delay_m.state.enabled:
-            dsp_output = self.tape_delay_m.process(dsp_output)
-        if self.reel_to_reel_in_rack_m:
-            dsp_output = self.reel_to_reel_m.process(dsp_output)
-        if self.cassette_tape_in_rack_m:
-            dsp_output = self.cassette_tape_m.process(dsp_output)
-        if self.vhs_in_rack_m:
-            dsp_output = self.vhs_m.process(dsp_output)
-        if self.vinyl_in_rack_m:
-            dsp_output = self.vinyl_m.process(dsp_output)
-        if self.hall_reverb_in_rack_m:
-            dsp_output = self.hall_reverb_m.process(dsp_output)
-        if self.plate_reverb_in_rack_m:
-            dsp_output = self.plate_reverb_m.process(dsp_output)
-        if self.compressor_in_rack_m:
-            sc_m = self._get_compressor_sidechain(self.compressor_m, dsp_output, frames)
-            dsp_output = self.compressor_m.process(dsp_output, sc_m)
-        if self.glue_compressor_in_rack_m:
-            dsp_output = self.glue_compressor_m.process(dsp_output)
-        if self.bit_crusher_in_rack_m:
-            dsp_output = self.bit_crusher_m.process(dsp_output)
-        if self.tube_overdrive_in_rack_m:
-            dsp_output = self.tube_overdrive_m.process(dsp_output)
-        if self.exciter_in_rack_m:
-            dsp_output = self.exciter_m.process(dsp_output)
-        if self.transient_shaper_in_rack_m:
-            dsp_output = self.transient_shaper_m.process(dsp_output)
-        if self.ether_drift_in_rack_m:
-            dsp_output = self.ether_drift_m.process(dsp_output)
-        if self.harmonizer_in_rack_m:
-            dsp_output = self.harmonizer_m.process(dsp_output)
-        if self.rotary_in_rack_m:
-            dsp_output = self.rotary_m.process(dsp_output)
-        if self.stereo_widener_in_rack_m:
-            dsp_output = self.stereo_widener_m.process(dsp_output)
-        if self.freq_shifter_in_rack_m:
-            dsp_output = self.freq_shifter_m.process(dsp_output)
-        if self.ring_mod_in_rack_m:
-            dsp_output = self.ring_mod_m.process(dsp_output)
-        if self.simple_eq_in_rack_m:
-            dsp_output = self.simple_eq_m.process(dsp_output)
-        if self.ping_pong_delay_in_rack_m:
-            dsp_output = self.ping_pong_delay_m.process(dsp_output)
-        if self.shimmer_reverb_in_rack_m:
-            dsp_output = self.shimmer_reverb_m.process(dsp_output)
-        if self.lofi_radio_in_rack_m:
-            dsp_output = self.lofi_radio_m.process(dsp_output)
-        if self.auto_pan_in_rack_m:
-            dsp_output = self.auto_pan_m.process(dsp_output)
-        if self.fuzz_in_rack_m:
-            dsp_output = self.fuzz_m.process(dsp_output)
-        if self.granular_freeze_in_rack_m:
-            dsp_output = self.granular_freeze_m.process(dsp_output)
-        if self.gate_reverb_in_rack_m:
-            dsp_output = self.gate_reverb_m.process(dsp_output)
-        if self.stutter_in_rack_m:
-            dsp_output = self.stutter_m.process(dsp_output)
+        dsp_output = self._process_fx_chain(dsp_output, 'm', frames)
 
         if _prof:
             _t4 = time.perf_counter()
@@ -1785,6 +1506,59 @@ class AudioEngine:
             return self.mixer._group_audio[grp_idx][:frames]
         return None
 
+    def _process_fx_chain(self, bus_audio: np.ndarray, bus_key: str,
+                          frames: int) -> np.ndarray:
+        """Process an FX bus through its ordered effect chain.
+
+        Args:
+            bus_audio: stereo audio buffer for this bus
+            bus_key: bus suffix letter ('a', 'b', 'c', 'd', 'm')
+            frames: number of audio frames
+
+        Returns:
+            Processed stereo audio buffer
+        """
+        order = self._fx_order_map[bus_key]
+        if not order:
+            return bus_audio
+        # Snapshot the order list so GUI-thread mutations during iteration
+        # cannot cause skipped/duplicated effects in this audio block.
+        order = tuple(order)
+        procs = self._fx_processors[bus_key]
+        needs_enabled = self._FX_NEEDS_ENABLED_CHECK
+        mod_types = self._FX_MOD_TYPES
+        # Track which mod sub-effects we've already processed via a single
+        # FXBus.process_mod_only call, to avoid running it multiple times.
+        mod_processed = False
+        for fx_type in order:
+            proc = procs.get(fx_type)
+            if proc is None:
+                continue
+            try:
+                # Mod effects (phaser/chorus/flanger) share a single FXBus instance.
+                # Process all active mod effects once at the position of the first
+                # mod effect encountered in the chain.
+                if fx_type in mod_types:
+                    if not mod_processed:
+                        mod_processed = True
+                        bus_audio = proc.process_mod_only(bus_audio)
+                    continue
+                # Effects that gate on .state.enabled
+                if fx_type in needs_enabled:
+                    if not proc.state.enabled:
+                        continue
+                # Compressor needs sidechain routing
+                if fx_type == 'compressor':
+                    sc = self._get_compressor_sidechain(proc, bus_audio, frames)
+                    bus_audio = proc.process(bus_audio, sc)
+                    continue
+                bus_audio = proc.process(bus_audio)
+            except Exception:
+                # A single bad effect must not kill the entire bus chain.
+                # Skip this effect and continue with the current audio.
+                pass
+        return bus_audio
+
     # --- Thread-safe control methods ---
 
     def set_effect_in_rack(self, effect_type: str, bus: int, in_rack: bool):
@@ -1820,6 +1594,120 @@ class AudioEngine:
         flag_name = f"{effect_type}_in_rack{suffix}"
         if hasattr(self, flag_name):
             setattr(self, flag_name, in_rack)
+
+    def set_rack_order(self, bus: int, order: list[str]):
+        """Set the processing order for an FX bus.
+
+        Args:
+            bus: 1=Rack A/FX1, 2=Rack B/FX2, 3=Master, 4=Rack C/FX3, 5=Rack D/FX4.
+            order: Ordered list of effect_type strings (e.g. ["compressor", "delay"]).
+        """
+        _KEY = {1: 'a', 2: 'b', 3: 'm', 4: 'c', 5: 'd'}
+        key = _KEY.get(bus)
+        if key is None:
+            return
+        # Atomic reference swap — the DSP thread reads via tuple() which
+        # iterates whatever list the reference currently points to.
+        # Swapping the dict value is a single STORE_SUBSCR bytecode, which
+        # is atomic under CPython's GIL.
+        self._fx_order_map[key] = list(order)
+
+    # --- External plugin slot management (Foreign Exchange) ---
+
+    _BUS_KEY_NORM = {
+        'fx_bus_1': 'a', 'fx_bus_2': 'b', 'fx_bus_m': 'm',
+        'fx_bus_c': 'c', 'fx_bus_d': 'd',
+        'a': 'a', 'b': 'b', 'm': 'm', 'c': 'c', 'd': 'd',
+    }
+
+    def _get_stowaway(self, bus_key: str, slot_idx: int) -> Optional[StowawayProcessor]:
+        key = self._BUS_KEY_NORM.get(bus_key, bus_key)
+        pool = self._stowaway_pool.get(key)
+        if pool is None or not (0 <= slot_idx < len(pool)):
+            return None
+        return pool[slot_idx]
+
+    def load_plugin_slot(self, bus_key: str, slot_idx: int,
+                         path: str, fmt: str = "vst3") -> bool:
+        """Load a plugin into a stowaway slot.  Call from background thread."""
+        proc = self._get_stowaway(bus_key, slot_idx)
+        if proc is None:
+            return False
+        return proc.load(path, fmt)
+
+    def unload_plugin_slot(self, bus_key: str, slot_idx: int) -> None:
+        """Unload a plugin from a stowaway slot."""
+        proc = self._get_stowaway(bus_key, slot_idx)
+        if proc is not None:
+            proc.unload()
+
+    def set_plugin_slot_param(self, bus_key: str, slot_idx: int,
+                              name: str, value: float) -> None:
+        proc = self._get_stowaway(bus_key, slot_idx)
+        if proc is not None:
+            proc.set_param(name, value)
+
+    def set_plugin_slot_wet_dry(self, bus_key: str, slot_idx: int,
+                                value: float) -> None:
+        proc = self._get_stowaway(bus_key, slot_idx)
+        if proc is not None:
+            proc._wet_dry = max(0.0, min(1.0, value))
+
+    def set_plugin_slot_enabled(self, bus_key: str, slot_idx: int,
+                                enabled: bool) -> None:
+        proc = self._get_stowaway(bus_key, slot_idx)
+        if proc is not None:
+            proc._enabled = enabled
+
+    def get_plugin_slot_params(self, bus_key: str, slot_idx: int) -> dict:
+        """Read all params from a plugin slot.  Main thread only."""
+        proc = self._get_stowaway(bus_key, slot_idx)
+        if proc is None:
+            return {}
+        return proc.get_params()
+
+    def get_plugin_slot_param_names(self, bus_key: str, slot_idx: int) -> list:
+        proc = self._get_stowaway(bus_key, slot_idx)
+        if proc is None:
+            return []
+        return proc.get_param_names()
+
+    def show_plugin_slot_editor(self, bus_key: str, slot_idx: int,
+                               close_event=None) -> bool:
+        """Open the native editor for a plugin slot.  Main thread only."""
+        proc = self._get_stowaway(bus_key, slot_idx)
+        if proc is None:
+            return False
+        return proc.show_editor(close_event)
+
+    def get_plugin_slot_state_b64(self, bus_key: str, slot_idx: int) -> str:
+        proc = self._get_stowaway(bus_key, slot_idx)
+        if proc is None:
+            return ""
+        return proc.get_state_b64()
+
+    def set_plugin_slot_state_b64(self, bus_key: str, slot_idx: int,
+                                  state_b64: str) -> bool:
+        proc = self._get_stowaway(bus_key, slot_idx)
+        if proc is None:
+            return False
+        return proc.set_state_b64(state_b64)
+
+    def get_stowaway_states(self) -> dict[str, list[dict]]:
+        """Return serialisable state for all stowaway slots across all buses."""
+        result: dict[str, list[dict]] = {}
+        for bus_key, pool in self._stowaway_pool.items():
+            bus_states = []
+            for i, proc in enumerate(pool):
+                bus_states.append({
+                    "slot_index": i,
+                    "loaded": proc._loaded,
+                    "enabled": proc._enabled,
+                    "wet_dry": proc._wet_dry,
+                    "state_b64": proc.get_state_b64(),
+                })
+            result[bus_key] = bus_states
+        return result
 
     def set_master_hp(self, freq: float):
         """Set master highpass trim frequency (20-500 Hz).

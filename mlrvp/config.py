@@ -584,6 +584,44 @@ class StutterState:
 
 
 @dataclass
+class StowawayState:
+    """State for the Foreign Exchange external plugin host (VST3/AU)."""
+    plugin_path: str = ""
+    plugin_format: str = "vst3"     # "vst3" | "au"
+    enabled: bool = True
+    wet_dry: float = 1.0
+    quick_map_params: list = field(default_factory=lambda: [None, None, None, None])
+    plugin_state_b64: str = ""      # pedalboard binary state, base64-encoded
+    param_overrides: dict = field(default_factory=dict)  # fallback float values
+    slot_index: int = 0             # which pool slot (0–3) this module claims
+
+    def to_dict(self) -> dict:
+        return {
+            "plugin_path": self.plugin_path,
+            "plugin_format": self.plugin_format,
+            "enabled": self.enabled,
+            "wet_dry": self.wet_dry,
+            "quick_map_params": list(self.quick_map_params),
+            "plugin_state_b64": self.plugin_state_b64,
+            "param_overrides": dict(self.param_overrides),
+            "slot_index": self.slot_index,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "StowawayState":
+        return cls(
+            plugin_path=d.get("plugin_path", ""),
+            plugin_format=d.get("plugin_format", "vst3"),
+            enabled=d.get("enabled", True),
+            wet_dry=d.get("wet_dry", 1.0),
+            quick_map_params=d.get("quick_map_params", [None, None, None, None]),
+            plugin_state_b64=d.get("plugin_state_b64", ""),
+            param_overrides=d.get("param_overrides", {}),
+            slot_index=d.get("slot_index", 0),
+        )
+
+
+@dataclass
 class SlicerState:
     """State for the slicer tool (cue preview, chop workflow, export)."""
     cue_volume: float = 1.0              # 0.0–2.0 preview gain (linear)
@@ -883,6 +921,11 @@ class AppConfig:
 
     # Slicer tool
     slicer: SlicerState = field(default_factory=SlicerState)
+
+    # Foreign Exchange (stowaway) plugin slots — 20 total (5 buses × 4 slots)
+    stowaway_slots: list = field(default_factory=lambda: [
+        StowawayState(slot_index=i) for i in range(20)
+    ])
 
     # Recorder
     recorder: RecorderState = field(default_factory=RecorderState)

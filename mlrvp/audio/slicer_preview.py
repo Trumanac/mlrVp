@@ -209,17 +209,23 @@ class SlicerPreviewService:
             written = 0
             while written < frames:
                 chunk_start = pos % len(buf)
-                # Check for pending buffer swap at loop boundary
-                if chunk_start == 0 and pos > 0 and pending is not None:
+                # Check for pending buffer swap at loop boundary.
+                # Re-read pending under lock so a newer buffer queued mid-callback
+                # isn't lost, and only clear _pending_buf if it's the one we
+                # actually swap in (avoids clobbering an even-newer queued buf).
+                if chunk_start == 0 and pos > 0:
                     with self._lock:
-                        self._pending_buf = None
-                        self._buf = pending
-                        self._buf_generation += 1
-                    buf = pending
-                    src_ch = buf.shape[1]
-                    pos = 0
-                    chunk_start = 0
-                    pending = None  # consumed
+                        latest_pending = self._pending_buf
+                        if latest_pending is not None:
+                            self._buf = latest_pending
+                            self._pending_buf = None
+                            self._buf_generation += 1
+                    if latest_pending is not None:
+                        buf = latest_pending
+                        src_ch = buf.shape[1]
+                        pos = 0
+                        chunk_start = 0
+                        pending = None  # consumed
                 avail = len(buf) - chunk_start
                 need = frames - written
                 n = min(avail, need)

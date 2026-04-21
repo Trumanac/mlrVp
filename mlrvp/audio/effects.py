@@ -34,6 +34,68 @@ except ImportError:
     _HAS_NUMBA = False
 
 
+class _FlutterReadBuffers:
+    """Pre-allocated scratch buffers for lo-fi pitch-flutter modulated reads.
+
+    Used by ReelToReel/CassetteTape/VHS/Vinyl to avoid per-block allocations
+    of rd_floor/rd_frac/rd_i/rd_j and the two fancy-index reads.
+    """
+
+    __slots__ = ("rd_floor", "rd_frac", "rd_i", "rd_j", "a_buf", "b_buf",
+                 "floor_f64", "size")
+
+    def __init__(self, size: int):
+        self.rd_floor = np.empty(size, dtype=np.int64)
+        self.rd_frac = np.empty(size, dtype=np.float32)
+        self.rd_i = np.empty(size, dtype=np.int64)
+        self.rd_j = np.empty(size, dtype=np.int64)
+        self.a_buf = np.empty((size, 2), dtype=np.float32)
+        self.b_buf = np.empty((size, 2), dtype=np.float32)
+        self.floor_f64 = np.empty(size, dtype=np.float64)
+        self.size = size
+
+    def grow(self, n: int):
+        if n > self.size:
+            self.rd_floor = np.empty(n, dtype=np.int64)
+            self.rd_frac = np.empty(n, dtype=np.float32)
+            self.rd_i = np.empty(n, dtype=np.int64)
+            self.rd_j = np.empty(n, dtype=np.int64)
+            self.a_buf = np.empty((n, 2), dtype=np.float32)
+            self.b_buf = np.empty((n, 2), dtype=np.float32)
+            self.floor_f64 = np.empty(n, dtype=np.float64)
+            self.size = n
+
+
+def _flutter_read_into(wet, buf, read_pos, buf_len, fb: _FlutterReadBuffers):
+    """In-place modulated-delay read: wet[:] = lerp(buf[i], buf[j], frac).
+
+    Eliminates per-block allocations from
+        wet = buf[i] * (1 - frac) + buf[j] * frac
+    by reusing pre-allocated scratch buffers in ``fb``.
+    """
+    n = wet.shape[0]
+    fb.grow(n)
+    floor_f64 = fb.floor_f64[:n]
+    np.floor(read_pos, out=floor_f64)
+    rd_floor = fb.rd_floor[:n]
+    np.copyto(rd_floor, floor_f64, casting='unsafe')
+    np.subtract(read_pos, floor_f64, out=floor_f64)  # frac in floor_f64
+    rd_frac = fb.rd_frac[:n]
+    np.copyto(rd_frac, floor_f64, casting='unsafe')
+    rd_i = fb.rd_i[:n]
+    np.mod(rd_floor, buf_len, out=rd_i)
+    rd_j = fb.rd_j[:n]
+    np.add(rd_floor, 1, out=rd_j)
+    np.mod(rd_j, buf_len, out=rd_j)
+    a_buf = fb.a_buf[:n]
+    b_buf = fb.b_buf[:n]
+    np.take(buf, rd_i, axis=0, out=a_buf)
+    np.take(buf, rd_j, axis=0, out=b_buf)
+    np.subtract(b_buf, a_buf, out=wet)
+    wet *= rd_frac[:, np.newaxis]
+    wet += a_buf
+
+
 class BiquadFilter:
     """Simple biquad filter for LP/HP in the delay feedback path."""
 
@@ -791,7 +853,7 @@ class Chorus:
         self.depth = 0.5
         self.mix = 0.5
         self._phase = 0.0
-        max_delay = int(0.03 * sample_rate)  # 30ms max
+        max_delay = max(int(0.03 * sample_rate), buffer_size + 64)  # 30ms or block+64
         self._buf = np.zeros((max_delay + 1, 2), dtype=np.float32)
         self._buf_len = max_delay + 1
         self._write_pos = 0
@@ -1209,6 +1271,8 @@ class ReelToReelProcessor:
         self._last_tone: float = -1.0
         # Pre-allocated wet buffer
         self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
+        # Pre-allocated scratch buffers for pitch-flutter modulated read
+        self._flutter_bufs = _FlutterReadBuffers(buffer_size)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         if not self.state.enabled:
@@ -1244,11 +1308,7 @@ class ReelToReelProcessor:
             # Read from circular buffer with pitch-modulated delay
             delay_samps = base_delay + lfo * mod_depth
             read_pos = (wp + idx) - delay_samps
-            rd_floor = np.floor(read_pos).astype(np.int64)
-            rd_frac = (read_pos - rd_floor).astype(np.float32)
-            rd_i = rd_floor % buf_len
-            rd_j = (rd_floor + 1) % buf_len
-            wet = buf[rd_i] * (1.0 - rd_frac[:, np.newaxis]) + buf[rd_j] * rd_frac[:, np.newaxis]
+            _flutter_read_into(wet, buf, read_pos, buf_len, self._flutter_bufs)
             self._flutter_phase = math.fmod(self._flutter_phase + n / self.sr, 1000.0)
         self._buf_pos = (wp + n) % buf_len
 
@@ -1316,6 +1376,8 @@ class CassetteTapeProcessor:
         self._last_punch: float = -1.0
         # Pre-allocated wet buffer
         self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
+        # Pre-allocated scratch buffers for pitch-warp modulated read
+        self._flutter_bufs = _FlutterReadBuffers(buffer_size)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         if not self.state.enabled:
@@ -1348,11 +1410,7 @@ class CassetteTapeProcessor:
             lfo = lfo / 1.75  # normalize to [-1, 1]
             delay_samps = base_delay + lfo * mod_depth
             read_pos = (wp + idx) - delay_samps
-            rd_floor = np.floor(read_pos).astype(np.int64)
-            rd_frac = (read_pos - rd_floor).astype(np.float32)
-            rd_i = rd_floor % buf_len
-            rd_j = (rd_floor + 1) % buf_len
-            wet = buf[rd_i] * (1.0 - rd_frac[:, np.newaxis]) + buf[rd_j] * rd_frac[:, np.newaxis]
+            _flutter_read_into(wet, buf, read_pos, buf_len, self._flutter_bufs)
             self._warp_phase = math.fmod(self._warp_phase + n / self.sr, 1000.0)
         self._buf_pos = (wp + n) % buf_len
 
@@ -1636,6 +1694,8 @@ class VHSProcessor:
         self._last_worn: float = -1.0
         # Pre-allocated wet buffer
         self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
+        # Pre-allocated scratch buffers for pitch-wobble modulated read
+        self._flutter_bufs = _FlutterReadBuffers(buffer_size)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         if not self.state.enabled:
@@ -1669,11 +1729,7 @@ class VHSProcessor:
             lfo = lfo / 2.1  # normalize to [-1, 1]
             delay_samps = base_delay + lfo * mod_depth
             read_pos = (wp + idx) - delay_samps
-            rd_floor = np.floor(read_pos).astype(np.int64)
-            rd_frac = (read_pos - rd_floor).astype(np.float32)
-            rd_i = rd_floor % buf_len
-            rd_j = (rd_floor + 1) % buf_len
-            wet = buf[rd_i] * (1.0 - rd_frac[:, np.newaxis]) + buf[rd_j] * rd_frac[:, np.newaxis]
+            _flutter_read_into(wet, buf, read_pos, buf_len, self._flutter_bufs)
             self._wobble_phase = math.fmod(self._wobble_phase + n / self.sr, 1000.0)
         self._buf_pos = (wp + n) % buf_len
 
@@ -1756,6 +1812,8 @@ class VinylProcessor:
         self._last_warmth_freq: float = -1.0
         # Pre-allocated wet buffer
         self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
+        # Pre-allocated scratch buffers for pitch-wow modulated read
+        self._flutter_bufs = _FlutterReadBuffers(buffer_size)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         if not self.state.enabled:
@@ -1792,11 +1850,7 @@ class VinylProcessor:
             lfo = lfo / 1.3  # normalize to [-1, 1]
             delay_samps = base_delay + lfo * mod_depth
             read_pos = (wp + idx) - delay_samps
-            rd_floor = np.floor(read_pos).astype(np.int64)
-            rd_frac = (read_pos - rd_floor).astype(np.float32)
-            rd_i = rd_floor % buf_len
-            rd_j = (rd_floor + 1) % buf_len
-            wet = buf[rd_i] * (1.0 - rd_frac[:, np.newaxis]) + buf[rd_j] * rd_frac[:, np.newaxis]
+            _flutter_read_into(wet, buf, read_pos, buf_len, self._flutter_bufs)
             self._wow_phase = math.fmod(self._wow_phase + n / self.sr, 1000.0)
         self._buf_pos = (wp + n) % buf_len
 
@@ -2575,6 +2629,9 @@ class NoiseGateProcessor:
         self._sc_abs1 = np.empty(buffer_size, dtype=np.float32)
         self._sc_peaks = np.empty(buffer_size, dtype=np.float32)
         self._sc_peak_size = buffer_size
+        # Pre-allocated per-sample gain array (was np.empty per block)
+        self._gain_arr = np.empty(buffer_size, dtype=np.float32)
+        self._gain_arr_size = buffer_size
 
     def _update_key_filter(self, ftype: int, freq: float):
         """Recalculate key filter biquad coefficients if params changed."""
@@ -2675,7 +2732,10 @@ class NoiseGateProcessor:
         CLOSED = self._GATE_CLOSED
 
         # Build gain array in tight scalar loop (no numpy indexing per sample)
-        gain_arr = np.empty(n, dtype=np.float32)
+        if n > self._gain_arr_size:
+            self._gain_arr = np.empty(n, dtype=np.float32)
+            self._gain_arr_size = n
+        gain_arr = self._gain_arr[:n]
 
         for i in range(n):
             peak = float(sc_peaks[i])
@@ -2843,6 +2903,9 @@ class AutoWahProcessor:
         self._rect_f64_size = buffer_size
         self._out_f64 = np.empty((buffer_size, 2), dtype=np.float64)
         self._out_f64_size = buffer_size
+        # Pre-allocated per-sample cutoff buffer (was np.empty per block)
+        self._cutoffs = np.empty(buffer_size, dtype=np.float64)
+        self._cutoffs_size = buffer_size
 
     def _calc_biquad(self, cutoff_hz: float, ftype: int, q: float):
         """Recalculate biquad coefficients for LP/BP/HP."""
@@ -2893,7 +2956,10 @@ class AutoWahProcessor:
 
         # 1. Compute envelope for entire block (per-sample, lightweight)
         env = self._env.copy()
-        cutoffs = np.empty(n, dtype=np.float64)
+        if n > self._cutoffs_size:
+            self._cutoffs = np.empty(n, dtype=np.float64)
+            self._cutoffs_size = n
+        cutoffs = self._cutoffs[:n]
         min_f = self._min_freq
         max_f = self._max_freq
         f_range = max_f - min_f
@@ -2984,6 +3050,11 @@ class FETLimiterProcessor:
         from mlrvp.config import BUFFER_SIZE as _BS
         self._driven_buf = np.empty((_BS, 2), dtype=np.float32)
         self._driven_size = _BS
+        # Pre-allocated envelope/abs buffers (was np.empty/np.abs per block)
+        self._env_arr = np.empty(_BS, dtype=np.float64)
+        self._abs_l = np.empty(_BS, dtype=np.float64)
+        self._abs_r = np.empty(_BS, dtype=np.float64)
+        self._fet_buf_size = _BS
 
     def process(self, data: np.ndarray) -> np.ndarray:
         if not self.state.enabled:
@@ -3030,12 +3101,19 @@ class FETLimiterProcessor:
         half_knee = knee_db / 2.0
         slope = 1.0 - 1.0 / ratio
         abi_mult = 1.15 if is_abi else 1.0
-        abs_l = np.abs(driven[:, 0])
-        abs_r = np.abs(driven[:, 1])
+        if n > self._fet_buf_size:
+            self._env_arr = np.empty(n, dtype=np.float64)
+            self._abs_l = np.empty(n, dtype=np.float64)
+            self._abs_r = np.empty(n, dtype=np.float64)
+            self._fet_buf_size = n
+        abs_l = self._abs_l[:n]
+        abs_r = self._abs_r[:n]
+        np.abs(driven[:, 0], out=abs_l, casting='unsafe')
+        np.abs(driven[:, 1], out=abs_r, casting='unsafe')
 
         # Envelope follower — sequential (IIR), but tight scalar loop
         # only computing envelopes, no log/gain computation per sample
-        env_arr = np.empty(n, dtype=np.float64)
+        env_arr = self._env_arr[:n]
         env0 = float(self._env[0])
         env1 = float(self._env[1])
 
@@ -3612,6 +3690,28 @@ class HarmonizerProcessor:
         self._interp_fl = np.empty(4096, dtype=np.int64)
         self._interp_frac = np.empty((4096, 1), dtype=np.float32)
         self._interp_out = np.empty((4096, max_channels), dtype=np.float32)
+        # Pre-allocated process()-level buffers (grow-only)
+        # Replace per-block: data.copy(), np.zeros((n,ch)) per voice,
+        # np.arange(wr, wr+n) % blen, audio*win temporaries.
+        from mlrvp.config import BUFFER_SIZE as _BS
+        self._proc_size = _BS
+        self._work_buf = np.empty((_BS, max_channels), dtype=np.float32)
+        self._voice_out_a = np.empty((_BS, max_channels), dtype=np.float32)
+        self._voice_out_b = np.empty((_BS, max_channels), dtype=np.float32)
+        self._grain_tmp = np.empty((_BS, max_channels), dtype=np.float32)
+        self._idx_base = np.arange(_BS, dtype=np.int64)
+        self._idx_buf = np.empty(_BS, dtype=np.int64)
+
+    def _ensure_proc_bufs(self, n: int):
+        if n > self._proc_size:
+            self._proc_size = n
+            mc = self._max_ch
+            self._work_buf = np.empty((n, mc), dtype=np.float32)
+            self._voice_out_a = np.empty((n, mc), dtype=np.float32)
+            self._voice_out_b = np.empty((n, mc), dtype=np.float32)
+            self._grain_tmp = np.empty((n, mc), dtype=np.float32)
+            self._idx_base = np.arange(n, dtype=np.int64)
+            self._idx_buf = np.empty(n, dtype=np.int64)
 
     def _ensure_interp_bufs(self, n):
         if n > self._interp_size:
@@ -3659,10 +3759,15 @@ class HarmonizerProcessor:
     # ---- per-voice overlap-add ---------------------------------------------
 
     def _process_voice(self, vi: int, ratio: float, delay: int,
-                       n_samples: int, channels: int) -> np.ndarray:
-        """Process one voice through its two overlapping Hann-windowed grains."""
-        out = np.zeros((n_samples, channels), dtype=np.float32)
+                       n_samples: int, channels: int,
+                       out: np.ndarray) -> np.ndarray:
+        """Process one voice through its two overlapping Hann-windowed grains.
+
+        Writes into pre-allocated ``out`` (zeroed on entry).
+        """
+        out.fill(0.0)
         wr = self._wr         # write cursor (already advanced past input)
+        grain_tmp = self._grain_tmp[:n_samples, :channels]
 
         for h in range(2):
             phase = self._ph[vi][h]
@@ -3674,7 +3779,8 @@ class HarmonizerProcessor:
                 audio, new_rd = self._interp_read(rd, ratio,
                                                   n_samples, channels)
                 win = self._win[phase:end_phase, np.newaxis]
-                out += audio * win
+                np.multiply(audio, win, out=grain_tmp)
+                out += grain_tmp
                 self._rd[vi][h] = new_rd
                 if end_phase == self.GRAIN:
                     # Exactly at boundary — resync for next call
@@ -3690,7 +3796,9 @@ class HarmonizerProcessor:
                 # ── Finish current grain ──
                 a1, _ = self._interp_read(rd, ratio, first, channels)
                 w1 = self._win[phase:self.GRAIN, np.newaxis]
-                out[:first] += a1 * w1
+                tmp1 = grain_tmp[:first]
+                np.multiply(a1, w1, out=tmp1)
+                out[:first] += tmp1
 
                 # ── Re-sync head to write cursor AT THE BOUNDARY POINT ──
                 # The write cursor at sample 'first' was wr - second
@@ -3698,7 +3806,9 @@ class HarmonizerProcessor:
                 a2, new_rd = self._interp_read(sync_rd, ratio,
                                                second, channels)
                 w2 = self._win[:second, np.newaxis]
-                out[first:] += a2 * w2
+                tmp2 = grain_tmp[:second]
+                np.multiply(a2, w2, out=tmp2)
+                out[first:] += tmp2
 
                 self._ph[vi][h] = second
                 self._rd[vi][h] = new_rd
@@ -3713,13 +3823,22 @@ class HarmonizerProcessor:
             return data
 
         is_mono = data.ndim == 1
-        work = data[:, np.newaxis].copy() if is_mono else data.copy()
-        n, ch = work.shape
+        n = data.shape[0]
+        ch = 1 if is_mono else data.shape[1]
+        self._ensure_proc_bufs(n)
+        work = self._work_buf[:n, :ch]
+        if is_mono:
+            work[:, 0] = data
+        else:
+            np.copyto(work, data)
 
         # ── Write input (+ feedback) into ring buffer ──
         blen = self._blen
         fb_amt = max(0.0, min(0.9, float(st.feedback)))
-        idx = np.arange(self._wr, self._wr + n) % blen
+        idx_buf = self._idx_buf[:n]
+        np.add(self._idx_base[:n], self._wr, out=idx_buf)
+        np.mod(idx_buf, blen, out=idx_buf)
+        idx = idx_buf
         if fb_amt > 0.001:
             self._buf[idx] = work + fb_amt * self._fb[:n, :ch]
         else:
@@ -3762,10 +3881,13 @@ class HarmonizerProcessor:
         da = int(st.voice_a_delay_ms * 0.001 * self.sr)
         db = int(st.voice_b_delay_ms * 0.001 * self.sr)
 
-        va = self._process_voice(0, ratio_a, da, n, ch)
-        vb = self._process_voice(1, ratio_b, db, n, ch)
+        va = self._process_voice(0, ratio_a, da, n, ch, self._voice_out_a[:n, :ch])
+        vb = self._process_voice(1, ratio_b, db, n, ch, self._voice_out_b[:n, :ch])
 
-        wet = (va + vb) * 0.5
+        # wet = (va + vb) * 0.5  — accumulate in-place into va to avoid allocs
+        wet = va
+        wet += vb
+        wet *= 0.5
 
         # ── Store wet for feedback next block ──
         self._fb[:n, :ch] = wet
@@ -5704,3 +5826,244 @@ class StutterProcessor:
         self._filling = False
         self._fill_pos = 0
         self._target_cap = 0
+
+
+# ===================================================================
+# External plugin host — "Foreign Exchange" (VST3 / AU)
+# ===================================================================
+
+import base64
+import threading
+from collections import deque
+
+_HAS_PEDALBOARD = False
+try:
+    import pedalboard as _pb
+    _HAS_PEDALBOARD = True
+except ImportError:
+    pass
+
+
+class StowawayProcessor:
+    """Host a single external VST3/AU plugin within the FX chain.
+
+    - Zero-allocation passthrough when no plugin is loaded.
+    - Thread-safe param updates via lock-free deque.
+    - Wet/dry mix blend.
+    """
+
+    def __init__(self, sample_rate: int = 44100, buffer_size: int = 512):
+        self._sr = sample_rate
+        self._buf_size = buffer_size
+        self._plugin = None          # pedalboard.Plugin | None
+        self._loaded = False
+        self._enabled = True
+        self._wet_dry: float = 1.0   # 0 = fully dry, 1 = fully wet
+        self._lock = threading.Lock()
+        self._param_queue: deque = deque(maxlen=64)
+
+        # Pre-allocated passthrough buffer (grow-only)
+        self._passthru_buf = np.empty((buffer_size, 2), dtype=np.float32)
+        # Pre-allocated wet buffer for mix blending
+        self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
+
+    # ---- Loading / unloading (call from MAIN thread) ----
+
+    _LOAD_TIMEOUT = 15.0  # seconds — passed to pedalboard initialization_timeout
+
+    def load(self, path: str, fmt: str = "vst3") -> bool:
+        """Load a plugin from disk.  Returns True on success.
+
+        **Must be called from the main thread** so that the plugin's
+        native GUI (``show_editor``) works afterwards.  Native Windows
+        error-mode dialogs are suppressed via SetErrorMode.
+        """
+        if not _HAS_PEDALBOARD:
+            return False
+
+        from mlrvp.audio.plugin_scanner import suppress_plugin_dialogs, resolve_vst3_binary
+        import logging
+        _log = logging.getLogger(__name__)
+
+        # Fully release the previous plugin before loading a new one.
+        # Some VST3 plugins hold exclusive native resources that prevent
+        # a second instance from initialising while the first is alive.
+        self.unload()
+
+        # Resolve bundle directories to their inner binary (pedalboard
+        # cannot load a VST3 bundle directory, only the actual DLL).
+        if fmt == "vst3":
+            path = resolve_vst3_binary(path)
+
+        try:
+            with suppress_plugin_dialogs():
+                plugin = _pb.load_plugin(
+                    path, initialization_timeout=self._LOAD_TIMEOUT,
+                )
+        except Exception as exc:
+            _log.error("StowawayProcessor.load failed for %s: %s", path, exc)
+            return False
+
+        with self._lock:
+            self._plugin = plugin
+            self._loaded = True
+        return True
+
+    def unload(self) -> None:
+        """Remove the currently loaded plugin."""
+        with self._lock:
+            old = self._plugin
+            self._plugin = None
+            self._loaded = False
+        if old is not None:
+            try:
+                old.reset()
+            except Exception:
+                pass
+            # Force release native resources now instead of waiting for GC.
+            try:
+                del old
+            except Exception:
+                pass
+        # Drain pending param changes
+        self._param_queue.clear()
+
+    # ---- DSP (call from DSP thread ONLY) ----
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        """Process an audio block through the hosted plugin."""
+        if not self._loaded or not self._enabled:
+            return data
+
+        n = data.shape[0]
+        plugin = self._plugin
+        if plugin is None:
+            return data
+
+        # Drain queued param changes (lock-free reads from deque)
+        while self._param_queue:
+            try:
+                name, value = self._param_queue.popleft()
+                param = getattr(plugin, name, None)
+                if param is not None:
+                    setattr(plugin, name, value)
+            except IndexError:
+                break
+            except Exception:
+                pass
+
+        # Process through pedalboard
+        try:
+            wet = plugin.process(
+                data, sample_rate=self._sr, reset=False
+            )
+        except Exception:
+            return data
+
+        # Wet/dry blend
+        mix = self._wet_dry
+        if mix >= 0.999:
+            return wet
+
+        # Grow wet_buf if needed
+        if self._wet_buf.shape[0] < n:
+            self._wet_buf = np.empty((n, 2), dtype=np.float32)
+
+        np.multiply(wet[:n], mix, out=self._wet_buf[:n])
+        # Grow passthru_buf BEFORE the multiply to avoid wasted temporaries
+        if self._passthru_buf.shape[0] < n:
+            self._passthru_buf = np.empty((n, 2), dtype=np.float32)
+        np.multiply(data[:n], 1.0 - mix, out=self._passthru_buf[:n])
+        np.add(self._wet_buf[:n], self._passthru_buf[:n],
+               out=self._wet_buf[:n])
+        return self._wet_buf[:n]
+
+    # ---- Parameter access (call from main/GUI thread) ----
+
+    def set_param(self, name: str, value: float) -> None:
+        """Queue a parameter change (applied at start of next process())."""
+        self._param_queue.append((name, value))
+
+    def get_params(self) -> dict[str, float]:
+        """Read all plugin parameters.  Main thread only."""
+        plugin = self._plugin
+        if plugin is None:
+            return {}
+        result = {}
+        try:
+            for name in plugin.parameters.keys():
+                param = getattr(plugin, name, None)
+                if isinstance(param, (int, float)):
+                    result[name] = float(param)
+        except Exception:
+            pass
+        return result
+
+    def get_param_names(self) -> list[str]:
+        """Return ordered list of parameter names.  Main thread only."""
+        plugin = self._plugin
+        if plugin is None:
+            return []
+        try:
+            return list(plugin.parameters.keys())
+        except Exception:
+            return []
+
+    # ---- Editor (call from main thread ONLY) ----
+
+    def show_editor(self, close_event=None) -> bool:
+        """Open the plugin's native GUI editor.  Returns False if unavailable.
+
+        *close_event* may be a ``threading.Event``; calling ``.set()``
+        on it from another thread will close the editor window.
+        ``show_editor`` **blocks** until the user (or the event) closes
+        the window.  Must be called from the main thread.
+        """
+        plugin = self._plugin
+        if plugin is None:
+            return False
+        if hasattr(plugin, "show_editor"):
+            try:
+                plugin.show_editor(close_event)
+                return True
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "show_editor failed: %s", exc,
+                )
+                return False
+        return False
+
+    # ---- State persistence ----
+
+    def get_state_b64(self) -> str:
+        """Return plugin state as a base64 string, or empty string."""
+        plugin = self._plugin
+        if plugin is None:
+            return ""
+        try:
+            raw = bytes(plugin.raw_state)
+            return base64.b64encode(raw).decode("ascii")
+        except Exception:
+            return ""
+
+    def set_state_b64(self, state_b64: str) -> bool:
+        """Restore plugin state from a base64 string."""
+        plugin = self._plugin
+        if plugin is None or not state_b64:
+            return False
+        try:
+            raw = base64.b64decode(state_b64)
+            plugin.raw_state = raw
+            return True
+        except Exception:
+            return False
+
+    def reset(self):
+        """Reset the hosted plugin (if loaded)."""
+        plugin = self._plugin
+        if plugin is not None:
+            try:
+                plugin.reset()
+            except Exception:
+                pass

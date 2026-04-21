@@ -32,11 +32,15 @@ class Recorder:
         """Arm the recorder for the next trigger. Creates the buffer."""
         if tempo <= 0:
             return
+        # Allocate the new buffer OUTSIDE the lock so the DSP thread isn't
+        # blocked during a multi-MB malloc + zero-fill (can spike multi-ms
+        # under page faults / antivirus).
+        beats_total = bars * 4 + beats  # bars in 4/4 time + extra beats
+        duration_sec = beats_total * (60.0 / tempo)
+        new_buf = create_empty_buffer(duration_sec, num_channels=2, sample_rate=self.sr)
         with self._lock:
-            beats_total = bars * 4 + beats  # bars in 4/4 time + extra beats
-            duration_sec = beats_total * (60.0 / tempo)
-            self._buffer = create_empty_buffer(duration_sec, num_channels=2, sample_rate=self.sr)
-            self._target_frames = self._buffer.num_frames
+            self._buffer = new_buf
+            self._target_frames = new_buf.num_frames
             self._write_pos = 0
             self._armed = True
             self._recording = False

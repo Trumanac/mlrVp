@@ -134,10 +134,11 @@ class RackContainer(QScrollArea):
         self._layout.insertWidget(idx, module)
         self.rack_changed.emit()
         # Auto-sync current power state so the engine enables the effect immediately.
-        # Default _power_on is True, but set_power() skips emit when state unchanged,
-        # so we emit directly to ensure the engine sees the new module as active.
+        # Default _power_on is True, but set_power() skips emit when state unchanged.
+        # Force a power cycle to guarantee the emit fires for the new module.
         if module.enabled:
-            module.param_changed.emit(module._enabled_param, True)
+            module._power_on = False
+            module.set_power(True, emit=True)
         return True
 
     def remove_module(self, module: RackModuleBase):
@@ -179,7 +180,7 @@ class RackContainer(QScrollArea):
         self._layout.addStretch()
 
     def _show_add_menu(self):
-        at_local_limit = len(self._modules) > MAX_MODULES_PER_RACK
+        at_local_limit = len(self._modules) >= MAX_MODULES_PER_RACK
         at_global_limit = self._global_limit_fn and self._global_limit_fn()
 
         menu = QMenu(self)
@@ -200,13 +201,41 @@ class RackContainer(QScrollArea):
         menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().center()))
 
     def _add_from_menu(self, cls: type):
-        module = cls()
+        # Foreign Exchange modules need a unique stowaway slot index (0–3)
+        from mlrvp.gui.rack_modules.stowaway import ForeignExchangeModule
+        if cls is ForeignExchangeModule:
+            slot = self._get_next_stowaway_slot()
+            if slot is None:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, "Slot Limit",
+                    "Maximum of 4 Foreign Exchange modules per rack.",
+                )
+                return
+            module = cls(slot_index=slot)
+        else:
+            module = cls()
         self.add_module(module)
 
     def _on_module_param(self, module: RackModuleBase, param: str, value):
         """Relay module param changes with module type info."""
         type_name = type(module).__name__
         self.module_param_changed.emit(type_name, param, value)
+
+    def _get_next_stowaway_slot(self) -> int | None:
+        """Return lowest unused stowaway index (0–3), or None if all taken."""
+        used = set()
+        for mod in self._modules:
+            et = getattr(mod, "effect_type", "")
+            if et.startswith("stowaway_"):
+                try:
+                    used.add(int(et.split("_", 1)[1]))
+                except (ValueError, IndexError):
+                    pass
+        for i in range(4):
+            if i not in used:
+                return i
+        return None
 
     # --- drag-drop reorder ----------------------------------------
 

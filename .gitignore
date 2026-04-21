@@ -44,6 +44,9 @@ data/presets/*.json
 data/setlists/*.json
 data/setlists/*/
 
+# Runtime-generated plugin data (machine-specific paths)
+data/defaults/plugin_cache.json
+
 # Dev/planning files not for end users
 FX_RACK_PLAN.md
 SLICER_UPGRADE_SPEC.md
@@ -54,6 +57,8 @@ stress_results.txt
 stress_output.txt
 stress_out.txt
 build_local.log
+_test_editor.py
+_test_load.py
 
 # Local dev backups
 _backup/
