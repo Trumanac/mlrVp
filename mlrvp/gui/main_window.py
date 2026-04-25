@@ -14,282 +14,24 @@ from mlrvp.gui.views.mixer_view import MixerView
 from mlrvp.gui.views.effects_view import EffectsView
 from mlrvp.gui.views.transport_view import TransportView
 from mlrvp.gui.views.setup_view import SetupView
-from mlrvp.gui.views.tools_view import ToolsView
+from mlrvp.gui.views.tools_view import ToolsView, LibraryPanel
 from mlrvp.gui.views.master_filter_view import MasterFilterView
 from mlrvp.gui.widgets.virtual_grid import VirtualGridWidget
 from mlrvp.gui.widgets.fader import ControlDisplaySettings
 from mlrvp.gui.styles import get_stylesheet, BG_BLACK
 
 
-_HOWTO_HTML = """
-<style>
-body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; color: #ddd; background: #1a1a1a; }
-h1 { color: #e6b84d; font-size: 20px; }
-h2 { color: #4ea8d9; font-size: 15px; margin-top: 18px; border-bottom: 1px solid #333; padding-bottom: 4px; }
-h3 { color: #ccc; font-size: 13px; margin-top: 12px; }
-code { background: #2a2a2a; color: #e6b84d; padding: 1px 4px; }
-ul { margin-left: 16px; }
-li { margin-bottom: 4px; }
-td, th { padding: 2px 8px; }
-</style>
+def _load_howto_html() -> str:
+    """Load the How-to-Use HTML from the bundled resources file.
 
-<h1>mlrVp — User Guide</h1>
-
-<h2>Overview</h2>
-<p>mlrVp is a grid-based sample looping instrument inspired by the original mlrV2.2 for monome.
-Load audio, trigger and loop samples from a grid controller (or the on-screen virtual grid),
-apply modular effects, and build setlists for live performance.</p>
-
-<h2>Getting Started</h2>
-<ol>
-<li>Open <b>Setup → Audio</b> and select your output device, then click <b>Start Engine</b>.</li>
-<li><b>Drag a WAV/AIFF/FLAC/OGG file</b> onto any channel row's waveform area to load it.</li>
-<li><b>Set BPM</b> in the transport bar to match your material.</li>
-<li>Click a cell on the <b>virtual grid</b> (or press a hardware grid button) to trigger playback.</li>
-<li>Hit <b>SAVE</b> in the transport to store the current state as a preset.</li>
-</ol>
-
-<h2>Channel Strips (Left Panel)</h2>
-<ul>
-<li>Each row is one sample channel. The waveform shows playback position, active selection (bright), out-of-loop content (dim), and grid column dividers.</li>
-<li><b>Drag a file</b> onto the waveform to load it. Dragging onto a <i>playing</i> row stages the new sample — the old audio keeps looping until the next trigger.</li>
-<li><b>Mode</b> (LOOP / PTCH / RVRS / SHOT / SLCE / SQNC / STEP, alphabetical) — Loop: continuous loop; Pitch: each grid column plays at a different pitch based on the selected scale map using <b>duration-preserving pitch shifting</b> (the sample plays at its original speed regardless of pitch); Reverse: reverse loop; Shot: one-shot to end; Slice: hold a button to play, hold two to latch a sub-loop; Sequence: step sequencer — toggle grid buttons to define active steps, the sample is divided into equal slices and each active step triggers its slice in sync with the clock; <b>Step</b>: press a button to play exactly the one slice it covers, once then stop — great for triggering individual hits or phrases without looping.</li>
-<li><b>Group</b> (G1–G4) — only one row per group plays at a time. Triggering a new row in the same group auto-stops the current one.</li>
-<li><b>Speed</b> spinner — playback rate (0.00–8.00×). <b>−½</b> halves, <b>+2×</b> doubles. Snap Speed to Rate (Setup → Grid) rounds to the nearest ½×/2× step on load.</li>
-<li><b>Pitch</b> spinner — transpose in semitones (−24 to +24 st). Uses time-stretch pitch shifting so playback speed is unaffected. Computed in the background; audio switches seamlessly once ready.</li>
-<li><b>Pitch mode controls</b> (visible in PTCH mode only):<br>
-  &nbsp;&nbsp;• <b>PITCH</b> spinner — root offset in semitones (−24 to +24 st), shifts all scale pitches up or down.<br>
-  &nbsp;&nbsp;• <b>SCALE</b> selector — choose from Major, Minor, Pentatonic, Chord, or Chromatic scale maps (defines the pitch per grid column).<br>
-  &nbsp;&nbsp;• <b>HOLD</b> button — when active, the sample loops continuously on each pitch trigger instead of playing as a one-shot.</li>
-</ul>
-<p><b>How it works:</b> When entering Pitch mode (or changing scale/root/transpose/sample), mlrVp pre-computes
-pitch-shifted audio for each scale degree in the background using a phase vocoder. Each grid button triggers
-instantly from cache with zero real-time DSP cost. A rate-based fallback plays immediately if the cache
-entry is not yet ready. Only the columns your grid actually uses are computed (e.g. 8 for an 8-column grid).</p>
-
-<h3>Pitch Scale Maps</h3>
-<p>The SCALE selector determines which semitone intervals are assigned across the grid columns. All values are relative to the root (0 = unison). On an 8-column grid the first 8 entries are used; on 16 columns all 16 are used.</p>
-<table>
-<tr><th>Scale</th><th>Columns 1–8</th><th>Columns 9–16</th><th>Character</th></tr>
-<tr><td><b>MAJOR</b></td><td>0, 2, 4, 5, 7, 9, 11, 12</td><td>14, 16, 17, 19, 21, 23, 24, 26</td><td>Two octaves of the major scale. Bright and familiar.</td></tr>
-<tr><td><b>MINOR</b></td><td>0, 2, 3, 5, 7, 8, 10, 12</td><td>14, 15, 17, 19, 20, 22, 24, 26</td><td>Natural minor (Aeolian). Darker, moody tonality.</td></tr>
-<tr><td><b>PENTA</b></td><td>0, 2, 4, 7, 9, 12, 14, 16</td><td>19, 21, 24, 26, 28, 31, 33, 36</td><td>Major pentatonic spanning ~3 octaves. No dissonance.</td></tr>
-<tr><td><b>CHORD</b></td><td>0, 1, 2, 3, 5, 7, 9, 10</td><td>12, 13, 14, 15, 17, 19, 21, 22</td><td>Dense cluster spreading into wider intervals. Good for chord voicings.</td></tr>
-<tr><td><b>CHROM</b></td><td>0, 1, 2, 3, 4, 5, 6, 7</td><td>8, 9, 10, 11, 12, 13, 14, 15</td><td>Every semitone in order. Maximum pitch resolution.</td></tr>
-</table>
-<p>The <b>root offset</b> (PITCH spinner, −24 to +24 st) shifts every column's pitch by a fixed amount, transposing the entire keyboard.
-Changing the root, scale, transpose, or loading a new sample automatically rebuilds the pitch cache in the background.</p>
-
-<ul>
-<li><b>Step</b> spinner — number of equal slices (1–32) the sample is divided into for grid triggering. Locked to grid column count in SEQ mode.</li>
-<li><b>Gain</b> fader sets per-channel volume. Drag the waveform's start/end handles to set the active playback/loop region.</li>
-<li><b>MUTE</b> silences the channel without stopping it. <b>STOP</b> immediately ends playback.</li>
-</ul>
-
-<h2>Mixer (Right Panel → Mixer Tab)</h2>
-<ul>
-<li><b>G1–G4 faders</b> — volume per group. <b>Send fader</b> — wet/dry amount sent to the FX bus.</li>
-<li><b>FX route</b> (OFF / FX1 / FX2 / FX3 / FX4) — choose which of the four independent send buses the group feeds. The button cycles through all options and displays the active bus in its group color.</li>
-<li><b>AUX</b> — aux send bus volume, mute, and FX route.</li>
-<li><b>Master fader</b> — final output level with stereo VU meter.</li>
-<li><b>MUTE</b> and <b>STOP</b> per group. Transport bar <b>G1–G4</b> buttons are group stops; <b>ALL</b> stops everything.</li>
-</ul>
-
-<h2>Effects — FX Rack (Right Panel → Effects Tab)</h2>
-<p>The Effects tab contains a modular <b>FX Rack</b> with five independent effect groups: <b>FX 1</b>, <b>FX 2</b>, <b>FX 3</b>, <b>FX 4</b>, and <b>MASTER</b>.
-Click the tab buttons to switch between them. Each group can hold up to 8 modules (40 total across all five groups).</p>
-<p>Default loadouts: <b>FX 1</b> — Clean Studio (Compressor → Filter → Delay); <b>FX 2</b> — Tape Warmth (Glue Compressor → Reel-to-Reel → Tape Delay); <b>FX 3</b> — Space &amp; Mod (Hall Reverb → Plate Reverb → Chorus); <b>FX 4</b> — Lo-Fi / Destroy (Bit Crusher → Tube Overdrive → Vinyl); <b>Master</b> — Mastering (Glue Compressor → Multiband Filter → Oscilloscope).</p>
-
-<h3>Adding / Removing Modules</h3>
-<ul>
-<li>Click <b>＋ ADD EFFECT</b> at the bottom of a rack. The menu shows all 40 modules with their effect type in parentheses — e.g. <i>Byte Me (Bit Crusher)</i>.</li>
-<li>Each module's <b>right rack ear</b> has two icons:<br>
-  &nbsp;&nbsp;• <b>Power button</b> (circle icon, top) — green = active, grey = bypassed. Click to toggle.<br>
-  &nbsp;&nbsp;• <b>Remove ✕</b> (below power) — permanently removes the module.</li>
-<li>Drag modules up/down to reorder them in the signal chain.</li>
-</ul>
-
-<h3>Available Modules</h3>
-<ul>
-<li><b>Déjà Vu Delay</b> — stereo digital delay, tempo-synced or free ms, feedback envelope, LP/HP filter</li>
-<li><b>Rewind</b> — tape delay with wow/flutter, saturation, tone, sync</li>
-<li><b>Band Practice</b> — 5-band multiband EQ</li>
-<li><b>The Ladder</b> — 24 dB/oct resonant Moog-style ladder filter</li>
-<li><b>Snake Charmer</b> — phaser | <b>Parrot Talk</b> — chorus | <b>Jet Stream</b> — flanger</li>
-<li><b>Byte Me</b> — bit crusher with bit depth dial, sample rate reduction, and mix</li>
-<li><b>Hot Snake</b> — tube overdrive with drive, tone, bias, and mix; glowing tube vent tracks drive level</li>
-<li><b>Spring Fling</b> — plate/spring reverb with decay, pre-delay, damping, and mix</li>
-<li><b>Echo Chamber</b> — hall/room reverb with room size, decay, diffusion, mix, and room type selector (jog wheel)</li>
-<li><b>Reel Deal</b> — studio reel-to-reel tape emulation with saturation, flutter, bias, tone, tape speed selector</li>
-<li><b>Mixtape</b> — cassette tape character: saturation, hiss, punch, warp, tone, mix</li>
-<li><b>Tracking Shot</b> — VHS tape degradation: wobble, dropout, worn-tape character, noise, mix</li>
-<li><b>Wax Poetic</b> — vinyl record character: crackle, pops, warmth, groove wear, mix</li>
-<li><b>Thrust Issues</b> — sidechain-capable compressor with THRUST HPF circuit; threshold, ratio, attack, release, makeup gain, sidechain HPF frequency, SC source selector</li>
-<li><b>Group Hug</b> — SSL G-Bus style glue compressor: threshold, ratio (2/4/10:1), attack (stepped ms), release (stepped), makeup gain, switchable sidechain HPF</li>
-<li><b>Twin Peaks</b> — dual VU meter (VU / PEAK / RMS mode selector); reads per-FX-bus signal</li>
-<li><b>CRT:// Scope</b> — oscilloscope; reads per-FX-bus waveform</li>
-<li><b>Ether Drift</b> — bipolar infinite phaser. RATE sets sweep speed, DEPTH sets sweep range, FDBK adds resonance, SPREAD widens the stereo image, MIX blends dry/wet. SYNC locks both sweep directions to the same rate; ROUTE selects BOTH chains, RISE ↑ only, or FALL ↓ only.</li>
-<li><b>The Velvet Rope</b> — noise gate with THRESH sets threshold, ATK attack time, HOLD hold time, REL release time, RANGE sets depth of gating, KEY sets sidechain filter frequency</li>
-<li><b>Heartquake</b> — tremolo with RATE speed, DEPTH intensity, SPREAD stereo width, and MIX</li>
-<li><b>Funk Doctor</b> — envelope auto-wah filter (Mutron III-style) with SENS sensitivity, FREQ center frequency, DEPTH sweep range, SPEED envelope speed, and MIX</li>
-<li><b>All Buttons In</b> — FET limiter with INPUT drive, OUTPUT level, ATK attack, REL release, and MIX</li>
-<li><b>Vitamin E</b> — aural exciter with TUNE high-frequency harmonics, LO TUNE low-frequency enhancement, OUTPUT level, and MIX</li>
-<li><b>Punch Card</b> — transient shaper with ATK attack boost/cut, SUS sustain boost/cut, OUTPUT level, and MIX</li>
-<li><b>The Bode Plot</b> — single-sideband frequency shifter with SHIFT amount in Hz, FDBK feedback, and MIX</li>
-<li><b>Ring Leader</b> — ring modulator with FREQ carrier frequency, SHAPE waveform morph, and MIX</li>
-<li><b>Spin Cycle</b> — rotary speaker simulator with SPEED motor rate, DRIVE saturation, BAL horn/drum balance, and MIX</li>
-<li><b>Personal Space</b> — stereo widener with WIDTH stereo spread, CENTER mid-side balance, LO MONO low-frequency mono crossover, and MIX</li>
-<li><b>Wrong Lane</b> — dual harmonizer with SEMI A/B semitone shift, FINE A/B detune, DLY A/B delay, FDBK feedback, and MIX</li>
-<li><b>Golden Ears</b> — 3-band parametric EQ with LOW, MID, and HIGH gain controls and MIX</li>
-<li><b>Table Tennis</b> — ping-pong stereo delay with PING left time, PONG right time, FDBK feedback, and MIX</li>
-<li><b>Stained Glass</b> — shimmer reverb with DECAY tail length, SHIMMER pitch-shift intensity, DAMP high-frequency damping, and MIX</li>
-<li><b>Tin Can</b> — lo-fi radio emulation with NOISE static, WOBBLE tuning drift, LO CUT / HI CUT bandwidth filters, and MIX</li>
-<li><b>Pendulum</b> — auto-panner with RATE speed, DEPTH intensity, SHAPE waveform, and MIX</li>
-<li><b>Wool Over</b> — fuzz with DRIVE gain, TONE brightness, GATE noise gate threshold, and MIX</li>
-<li><b>Snow Globe</b> — granular freeze processor with GRAIN size, SCATTER randomisation, SPREAD pitch variation, DENSITY grain count, FREEZE toggle, and MIX</li>
-<li><b>Gate Crasher</b> — gated/reverse reverb with ROOM size, GATE duration, SLOPE fade shape, PRE pre-delay, MODE toggle (GATE/REVERSE), and MIX</li>
-<li><b>Broken Record</b> — stutter/glitch buffer looper with SIZE loop length, RATE retrigger speed, CHAOS random jumps, SMEAR crossfade, TRIGGER toggle, and MIX</li>
-</ul>
-
-<h3>FX Routing</h3>
-<ul>
-<li>Each mixer group routes to <b>OFF</b>, <b>FX1</b>, <b>FX2</b>, <b>FX3</b>, or <b>FX4</b>. Each FX rack processes its own independent pre-mix send bus. The <b>Master</b> rack sits after all FX buses and processes the full mixed output — ideal for glue compression, EQ, and metering.</li>
-<li>The <b>Master Filter</b> (HP/LP with resonance and response curve) sits above the mixer and applies to the master output.</li>
-</ul>
-
-<h3>MIDI MAP Mode</h3>
-<p>Click <b>MIDI MAP</b> in the FX Rack header to highlight all mappable controls (blue border).
-Click any highlighted control then move a hardware knob/fader to create a mapping.
-This is the same as Setup → MIDI → Learn — both stay in sync.</p>
-
-<h2>Tools (Right Panel → Tools Tab)</h2>
-
-<h3>Record</h3>
-<p>Select a target <b>Channel</b> (1–16), input device, and length in bars (1–128). Enable <b>Loop recording</b> to overdub continuously or <b>Input thru</b> to monitor while armed.
-Click <b>ARM</b> and recording starts on the next beat, writing directly into the selected channel's sample buffer.</p>
-
-<h3>Sample Slicer</h3>
-<ol>
-<li><b>Drag an audio file</b> onto the waveform (or use the file dropdown).</li>
-<li>Select a <b>bar count</b> (1, 2, 4, 8, 16) and optionally enter a BPM (or leave on auto-detect).</li>
-<li>Click <b>AUTO</b> with <b>FIT</b> checked (default): start snaps to the nearest transient, end snaps to the nearest transient near the ideal bar boundary, both aligned to zero-crossings.</li>
-<li>Click <b>SLICE + SAVE</b>: the region is resampled to the exact sample count for the chosen bar length and saved to <code>data/slices/</code>. Every slice at the same BPM and bar count will be exactly the same duration — perfect for seamless looping at 1.0× speed.</li>
-<li>Uncheck <b>FIT</b> for classic mode: start snaps to a transient, end is calculated from BPM math only.</li>
-<li>Use <b>▶ Sel</b> to preview the selected region through your cue (headphone) output. With <b>Loop</b> checked, moving the selection while playing queues the new region — it takes effect when the current loop finishes, so you hear a seamless transition. Stop and press ▶ Sel again to jump straight to the new selection.</li>
-<li>The <b>SLICES</b> library panel at the bottom lists all saved slices. Drag any entry onto a channel waveform to load it, or onto the slicer waveform to open it for editing. Click <b>✕</b> to delete (confirmation required).</li>
-</ol>
-
-<h2>Transport Bar</h2>
-<ul>
-<li><b>BPM</b> — type a value or use the spinbox arrows (20–300 BPM).</li>
-<li><b>SYNC</b> — auto-detects BPM from the loaded samples and updates the tempo spinner.</li>
-<li><b>TAP</b> — tap repeatedly to set BPM by feel. Shows current beat position (e.g. <code>2.3</code>) when idle.</li>
-<li><b>Quantize</b> — Off, 1/4, 1/8, 1/16, Bar. Controls when grid triggers fire.</li>
-<li><b>P1–P4 pattern recorders</b> — click to cycle idle → recording → playing. Click <b>−</b> / <b>+</b> arrows to change bar count freely between 1 and 32 bars (defaults: 4, 8, 16, 32). Hold the label 3 seconds to erase the pattern.</li>
-<li><b>G1–G4 GROUP STOP</b> buttons — stop all channels in that group. <b>ALL</b> stops all channels.</li>
-</ul>
-
-<h2>Presets and Setlists</h2>
-<ul>
-<li>Type a name in the <b>PRESET</b> box and click <b>SAVE</b> (flashes green on success).</li>
-<li>Click <b>◀ / ▶</b> to step through the current setlist. Click <b>NEW</b> to clear everything.</li>
-<li>Click the <b>⚙</b> gear button to open the <b>Setlist Editor</b>: reorder presets by dragging, add from the library, rename, or delete. Switch between named setlists from the dropdown.</li>
-<li>Presets store the full state: channels, samples, effects, mixer, MIDI mappings, routing.</li>
-</ul>
-
-<h2>Setup (Right Panel → Setup Tab)</h2>
-<ul>
-<li><b>Audio tab</b> — configure your audio hardware:
-  <ul>
-    <li><b>Driver Type</b> — filter the device lists by host API (ASIO, WASAPI, CoreAudio, ALSA). Select a specific driver to see only its devices, or leave on <i>All Drivers</i>. On Windows, choose ASIO for lowest latency.</li>
-    <li><b>Output Device</b> — your main audio output (speakers / interface).</li>
-    <li><b>Input Device</b> — audio input for recording.</li>
-    <li><b>Sample Rate / Buffer Size</b> — lower buffer = lower latency, higher CPU load.</li>
-    <li>Click <b>Start Engine</b> to open the audio stream. Use <b>File → Restart</b> to reinitialize after changing settings.</li>
-  </ul>
-</li>
-<li><b>Grid tab</b> — connect Launchpad or monome, set active rows and columns, toggle virtual grid, enable tilt mapping.</li>
-<li><b>MIDI tab</b> — add MIDI input controllers, click <b>Learn</b> to enter mapping mode. Each mapping row has Min/Max range and a Toggle checkbox. Tilt axis assignments appear here when a monome with accelerometer is connected.</li>
-</ul>
-
-<h2>Keyboard Shortcuts</h2>
-<ul>
-<li><code>Escape</code> — exit MIDI learn mode</li>
-<li><code>Ctrl+Shift+S</code> — stop all audio</li>
-<li><code>Ctrl+O</code> — open preset file</li>
-<li><code>Ctrl+S</code> — save preset file</li>
-<li><code>Ctrl+Q</code> — quit</li>
-</ul>
-<h3>Slicer Keyboard Shortcuts (while the Slice panel has focus)</h3>
-<ul>
-<li><code>Space</code> — audition the region under the cursor (or toggle play if no auto-chop regions)</li>
-<li><code>Enter</code> — play from current playhead position to end of selection</li>
-<li><code>← / →</code> — step through auto-chop regions and audition each one</li>
-<li><code>Shift+← / Shift+→</code> — nudge the active marker ±1 ms</li>
-<li><code>Ctrl+Shift+← / Ctrl+Shift+→</code> — nudge the active marker ±1 sample</li>
-<li><code>Ctrl+Z</code> — undo last marker move</li>
-<li><code>Ctrl+Shift+Z</code> — redo last undone marker move</li>
-</ul>
-<p>The <b>active marker</b> is whichever start or end handle was last dragged or edited via a spinbox.</p>
-
-<h2>File Menu</h2>
-<ul>
-<li><b>File → Open Preset File…</b> — load a preset from any location on disk.</li>
-<li><b>File → Save Preset File…</b> — export the current state as a standalone JSON preset file for sharing.</li>
-<li><b>File → Restart</b> — reinitialize the audio engine and reload all settings. Use this after changing audio device settings or to recover from an audio dropout.</li>
-<li><b>File → Stop All Audio</b> — immediately stop all playing channels and pattern recorders.</li>
-<li><b>File → Quit</b> — close mlrVp.</li>
-</ul>
-
-<h2>View Menu</h2>
-<ul>
-<li><b>Show Virtual Grid</b> — opens the on-screen grid controller in a separate moveable window.</li>
-<li><b>UI Scale</b> — resize the entire interface (50%–200%) to suit your monitor. The selected scale is saved and restored on next launch.</li>
-<li><b>Lock Control Displays</b> — keeps the value overlay permanently visible on every knob and fader. Useful when you want a live read of all parameters at a glance. Off by default.</li>
-<li><b>Disable Control Displays</b> — hides all value overlays entirely, including any you have latched on. Turning this off restores normal behaviour. Off by default.</li>
-</ul>
-
-<h2>Control Value Displays</h2>
-<p>Every knob and fader in mlrVp shows a floating value overlay when you interact with it:</p>
-<ul>
-<li><b>Left-click and drag</b> — overlay appears while you hold and drag, then fades after 1.2 seconds on release.</li>
-<li><b>MIDI CC change</b> — the knob or fader position updates visually and the value flashes for 1.2 seconds.</li>
-<li><b>Right-click</b> — toggles a per-control latch: the overlay stays on permanently until you right-click again to dismiss it. Useful for monitoring a single parameter during a performance.</li>
-<li>Use <b>View → Lock Control Displays</b> to latch all controls at once, or <b>View → Disable Control Displays</b> to turn them all off.</li>
-</ul>
-
-<h2>Tips</h2>
-<ul>
-<li>Use FIT mode in the slicer to chop a track into perfectly looping 2-bar or 4-bar segments — they all land on the grid at 1.0× speed.</li>
-<li>Drag a sample onto a <i>playing</i> row to stage it: the old audio keeps looping until you press a grid button on that row.</li>
-<li>Power-bypass an FX module by clicking the green circle icon on its right rack ear — keeps the knob settings intact without removing the module.</li>
-<li>The Twin Peaks VU meter has a mode selector: VU (ballistic needle), PEAK (fast attack/slow decay), or RMS (power average).</li>
-<li>Both MIDI MAP buttons (FX Rack header and Setup → MIDI → Learn) are the same mode and stay in sync.</li>
-</ul>
-
-<h2>Slicer &amp; Cue</h2>
-<p>The Slice tab (Tools panel) includes a dedicated <b>cue output</b> for headphone monitoring
-and advanced chopping tools:</p>
-<ul>
-<li><b>Cue device</b> — select a separate audio interface for preview. Choose a channel pair and set the
-cue volume (VOL fader) independently.</li>
-<li><b>CUE ONLY / CUE+MAIN / OFF</b> — controls whether preview audio goes to cue only, both outputs, or is muted.</li>
-<li><b>▶ Sel</b> — play the selected region through the cue output. With <b>Loop</b> enabled, moving the selection
-queues the new region — it transitions seamlessly when the current loop iteration ends. Stop and re-press
-to jump directly to the new selection.</li>
-<li><b>Slice mode</b>: Manual (hand-placed markers), Transient (sensitivity-adjustable auto-detection),
-Equal (N divisions), and BPM Grid (beat boundaries). Click CHOP to create regions, audition each one,
-and EXPORT ALL to batch-save.</li>
-<li><b>ZX snap</b> — toggle zero-crossing snap so markers always land on a zero-crossing (eliminates clicks/pops at edit points).</li>
-<li><b>GRID snap</b> — toggle beat-grid snap so markers land on quarter-note boundaries based on the BPM setting.</li>
-<li><b>Numeric spinboxes</b> — type exact start/end/duration values in seconds (3 decimal places).</li>
-<li><b>Undo / Redo</b> — <code>Ctrl+Z</code> / <code>Ctrl+Shift+Z</code> to step through marker position history (up to 50 levels).</li>
-<li><b>Marker nudge</b> — <code>Shift+Arrow</code> = ±1 ms, <code>Ctrl+Shift+Arrow</code> = ±1 sample.</li>
-</ul>
-<p>The <b>Slices Library</b> at the bottom lists all saved slices with search, sort, BPM badges, and
-right-click "Load to channel N". Hold Ctrl to multi-select, then batch delete.</p>
-<p><b>Tip:</b> Hover over any control in the slicer for a tooltip describing what it does.</p>
-"""
+    Reads on demand (only when the user opens the dialog) so we don't
+    pay the file-read cost or pin ~22 KB of HTML in memory at import time.
+    """
+    try:
+        from importlib.resources import files
+        return files("mlrvp.resources").joinpath("howto.html").read_text(encoding="utf-8")
+    except Exception as exc:
+        return f"<h2>Error loading help</h2><p>{exc}</p>"
 
 
 class VirtualGridWindow(QDialog):
@@ -378,6 +120,9 @@ class MainWindow(QMainWindow):
         self._effects_view = EffectsView()
         self._side_tabs.addTab(self._effects_view, "Effects")
 
+        self._library_panel = LibraryPanel()
+        self._side_tabs.addTab(self._library_panel, "Library")
+
         self._tools_view = ToolsView()
         self._side_tabs.addTab(self._tools_view, "Tools")
 
@@ -447,7 +192,11 @@ class MainWindow(QMainWindow):
             s1 = self._channel_view.get_strip(1)
             row_h = s1.y() - s0.y()  # pixel distance between row starts = 1 row
             if row_h > 0:
-                self._mixer_view.setFixedHeight(row_h * 3)
+                target = row_h * 3
+                # Guard against recursive resize: setFixedHeight triggers a
+                # relayout which can re-fire resizeEvent -> _sync_mixer_height.
+                if self._mixer_view.maximumHeight() != target:
+                    self._mixer_view.setFixedHeight(target)
         except Exception:
             pass
 
@@ -612,7 +361,7 @@ class MainWindow(QMainWindow):
 
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)
-        browser.setHtml(_HOWTO_HTML)
+        browser.setHtml(_load_howto_html())
         layout.addWidget(browser)
 
         self._howto_dialog = dlg
@@ -639,6 +388,10 @@ class MainWindow(QMainWindow):
     @property
     def effects_view(self) -> EffectsView:
         return self._effects_view
+
+    @property
+    def library_panel(self) -> LibraryPanel:
+        return self._library_panel
 
     @property
     def tools_view(self) -> ToolsView:

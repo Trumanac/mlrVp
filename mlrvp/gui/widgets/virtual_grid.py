@@ -68,44 +68,67 @@ class VirtualGridWidget(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Antialiasing on rectangles is wasted (sharp pixel edges only),
+        # and turning it off cuts paint cost noticeably for many cells.
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setPen(Qt.PenStyle.NoPen)
 
         # Background — dark, matching monome hardware surround
-        painter.fillRect(self.rect(), QColor(BG_BLACK))
+        bg = QColor(BG_BLACK)
+        painter.fillRect(self.rect(), bg)
 
-        for y in range(self.rows):
-            group_idx = self._row_colors[y] % len(GROUP_COLORS)
-            group_color = QColor(GROUP_COLORS[group_idx])
+        # Pre-build the press-overlay brush once
+        press_overlay = QColor(255, 255, 255, 60)
+        off_color = QColor(GRID_BUTTON_BG)
 
-            for x in range(self.columns):
-                rect = self._button_rect(x, y)
-                brightness = self._led_state[y][x] if y < len(self._led_state) and x < len(self._led_state[y]) else 0
+        # Local aliases (saves attribute lookups inside the inner loop)
+        led_state = self._led_state
+        led_rows = len(led_state)
+        pressed = self._pressed
+        bs = self.button_size
+        sp = self.button_spacing
+        step = bs + sp
+        n_groups = len(GROUP_COLORS)
+        cols = self.columns
+        rows = self.rows
+        draw_rect = painter.drawRect
+        set_brush = painter.setBrush
 
-                # Determine button color based on LED brightness
+        for y in range(rows):
+            row_leds = led_state[y] if y < led_rows else None
+            row_len = len(row_leds) if row_leds is not None else 0
+
+            # Cache one QColor per brightness tier for THIS row
+            base = QColor(GROUP_COLORS[self._row_colors[y] % n_groups])
+            r, g, b = base.red(), base.green(), base.blue()
+            tier_full = QColor(r, g, b, 255)
+            tier_high = QColor(r, g, b, 180)
+            tier_mid  = QColor(r, g, b, 100)
+            tier_low  = QColor(r, g, b, 50)
+
+            py = sp + y * step
+            for x in range(cols):
+                brightness = row_leds[x] if (row_leds is not None and x < row_len) else 0
+
                 if brightness >= 12:
-                    color = QColor(group_color)
-                    color.setAlpha(255)
+                    color = tier_full
                 elif brightness >= 8:
-                    color = QColor(group_color)
-                    color.setAlpha(180)
+                    color = tier_high
                 elif brightness >= 4:
-                    color = QColor(group_color)
-                    color.setAlpha(100)
+                    color = tier_mid
                 elif brightness > 0:
-                    color = QColor(group_color)
-                    color.setAlpha(50)
+                    color = tier_low
                 else:
-                    color = QColor(GRID_BUTTON_BG)
+                    color = off_color
 
-                # Draw button — sharp corners (no border-radius)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(color)
-                painter.drawRect(rect)
+                px = sp + x * step
+                rect = QRect(px, py, bs, bs)
+                set_brush(color)
+                draw_rect(rect)
 
-                # Pressed state
-                if (x, y) in self._pressed:
-                    painter.setBrush(QColor(255, 255, 255, 60))
-                    painter.drawRect(rect)
+                if (x, y) in pressed:
+                    set_brush(press_overlay)
+                    draw_rect(rect)
 
         painter.end()
 

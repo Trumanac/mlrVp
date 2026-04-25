@@ -61,8 +61,9 @@ from mlrvp.audio.effects import (
     StutterProcessor,
     StowawayProcessor,
 )
-from mlrvp.audio.recorder import Recorder
+from mlrvp.audio.recorder import Recorder, PreRollBuffer
 from mlrvp.audio.sample import SampleBuffer
+from mlrvp.audio.live_loop import LiveLoopRecorder
 
 # Check Numba status from effects module
 try:
@@ -326,6 +327,20 @@ class AudioEngine:
 
         # Recorder
         self.recorder = Recorder(self.sample_rate)
+        # Pre-roll ring buffer (always-on, holds last N seconds of input)
+        self.pre_roll = PreRollBuffer(self.sample_rate, max_seconds=30.0, num_channels=2)
+
+        # LIVE-mode looper — single recorder instance shared across rows
+        # (only one row can record at a time). Set by start_live_recording(),
+        # cleared after finalize. _live_recorder_row tracks which row owns it.
+        self._live_recorder: Optional[LiveLoopRecorder] = None
+        self._live_recorder_row: int = -1
+        self._live_recorder_trim: float = 1.0
+        # Callback fired (from audio thread) when a live recording finishes.
+        # Signature: callback(row: int, buffer: SampleBuffer) -> None
+        # The callback MUST be thread-safe (e.g. enqueue a Qt signal via
+        # QMetaObject.invokeMethod). Set by app.py after construction.
+        self._live_recorded_callback: Optional[Callable[[int, SampleBuffer], None]] = None
 
         # Per-bus in-rack flags — True when the module is present in that rack.
         # Rack A → FX1 (Clean Studio): gate → compressor → multiband EQ → delay → stereo widener
@@ -1122,25 +1137,59 @@ class AudioEngine:
             elif cmd == 'reset_fx':
                 self._do_reset_all_fx()
 
-        # Capture input audio only when needed (recording or AUX monitoring)
-        _need_input = self.recorder.recording or not self.mixer.aux_mute
+        # Capture input audio whenever a device frame is available — needed for
+        # pre-roll ring buffer, input level metering, and any active recorder/AUX.
+        _live_active = self._live_recorder is not None and self._live_recorder.is_recording
         ri = self._input_read_idx
-        if _need_input and ri >= 0:
+        if ri >= 0:
             input_audio = self._input_copy[:frames]
             input_audio[:] = self._input_bufs[ri][:frames]
-            # Only clear if callback hasn't published a new frame since we read
             if self._input_read_idx == ri:
                 self._input_read_idx = -1
         else:
-            if ri >= 0 and self._input_read_idx == ri:
-                self._input_read_idx = -1  # discard unused frame
             input_audio = None
 
-        # Process recording input
-        if input_audio is not None and self.recorder.recording:
-            thru = self.recorder.process(input_audio)
+        # Always feed the pre-roll ring buffer when input is available
+        if input_audio is not None:
+            self.pre_roll.process(input_audio)
+
+        # Process recording input — skip here if loopback mode (handled post-master)
+        rec_trim = float(self.config.recorder.input_trim)
+        if (input_audio is not None and self.recorder.recording
+                and not self.recorder.use_loopback):
+            thru = self.recorder.process(input_audio, rec_trim)
+        elif input_audio is not None and not self.recorder.recording:
+            # Run process() even when not recording so input_peak/rms update
+            # and thru-monitor (if enabled) still mixes through.
+            thru = self.recorder.process(input_audio, rec_trim)
         else:
             thru = None
+
+        # Process LIVE-mode looper input (separate from main recorder).
+        # If thru monitoring is on, mix into main bus alongside recorder thru.
+        if input_audio is not None and _live_active:
+            live_thru = self._live_recorder.process(input_audio, self._live_recorder_trim)
+            if live_thru is not None:
+                if thru is None:
+                    thru = live_thru
+                else:
+                    thru = thru + live_thru
+            # Hand off completed recorder to GUI thread WITHOUT calling
+            # finalize() here — finalize allocates a new MB-sized buffer
+            # and runs a crossfade loop, which would risk an audio underrun.
+            # The callback receives the recorder; GUI thread finalizes.
+            if self._live_recorder.is_done:
+                row = self._live_recorder_row
+                done_rec = self._live_recorder
+                cb = self._live_recorded_callback
+                self._live_recorder = None
+                self._live_recorder_row = -1
+                self._live_recorder_trim = 1.0
+                if cb is not None:
+                    try:
+                        cb(row, done_rec)
+                    except Exception:
+                        pass
 
         # Process all active channels — reuse pre-allocated output slot list
         # to avoid creating (group, audio) tuples every block.
@@ -1289,6 +1338,13 @@ class AudioEngine:
         # Flush any NaN/Inf that crept through the FX chain to silence.
         # Cheaper than checking every effect — one pass at the end.
         np.nan_to_num(dsp_output, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Loopback: capture the final, NaN-cleaned master output into the
+        # recorder (allows resampling the live mix without external routing).
+        # Must run AFTER nan_to_num so a transient FX NaN doesn't poison the
+        # recording buffer permanently.
+        if self.recorder.recording and self.recorder.use_loopback:
+            self.recorder.process(dsp_output, rec_trim)
 
         # Peak metering — use stereo abs buffer to avoid column view allocs
         _pt = self._peak_tmp2[:len(dsp_output)]
@@ -1755,6 +1811,70 @@ class AudioEngine:
         """Queue a sample load — processed on the audio thread."""
         if 0 <= row < MAX_ROWS:
             self._event_queue.append(('load_sample', row, sample))
+
+    # ── LIVE looper API ──────────────────────────────────────────────────
+
+    def set_live_recorded_callback(self, callback: Callable[[int, SampleBuffer], None]):
+        """Register a callback fired (from audio thread) when a live recording finishes.
+
+        The callback receives (row, buffer). It MUST be thread-safe.
+        Typically the app uses QMetaObject.invokeMethod to marshal back to GUI thread.
+        """
+        self._live_recorded_callback = callback
+
+    def start_live_recording(self, row: int, bars: int, tempo: float,
+                             input_trim: float = 1.0,
+                             thru: bool = False,
+                             overdub_buffer: Optional[np.ndarray] = None) -> bool:
+        """Arm and start a LIVE-mode recording for a row.
+
+        Returns True if recording started; False if another row is already
+        recording (busy). Caller should check return value and update UI accordingly.
+
+        Recording starts immediately on the next audio block. For quantized
+        starts, the caller (app) is responsible for delaying the call until
+        the desired beat/bar boundary.
+        """
+        if not (0 <= row < MAX_ROWS):
+            return False
+        # Single-row constraint
+        if self._live_recorder is not None and self._live_recorder.is_recording:
+            return False
+        rec = LiveLoopRecorder(row=row, sample_rate=self.sample_rate)
+        rec.arm(bars=bars, tempo=tempo, overdub_buffer=overdub_buffer, thru=thru)
+        rec.start()
+        self._live_recorder = rec
+        self._live_recorder_row = row
+        self._live_recorder_trim = float(input_trim)
+        return True
+
+    def cancel_live_recording(self):
+        """Abort any in-progress live recording (no callback fired)."""
+        if self._live_recorder is not None:
+            self._live_recorder.cancel()
+        self._live_recorder = None
+        self._live_recorder_row = -1
+        self._live_recorder_trim = 1.0
+
+    def set_live_input_trim(self, trim: float):
+        """Update input trim for the active live recorder (if any)."""
+        self._live_recorder_trim = float(trim)
+
+    @property
+    def live_recording_row(self) -> int:
+        """Row currently recording, or -1 if none."""
+        rec = self._live_recorder
+        if rec is None or not rec.is_recording:
+            return -1
+        return self._live_recorder_row
+
+    @property
+    def live_recording_progress(self) -> float:
+        """0.0-1.0 progress of active live recording (0.0 if none)."""
+        rec = self._live_recorder
+        if rec is None:
+            return 0.0
+        return rec.progress
 
     def reset_all_fx(self):
         """Queue a full FX buffer reset — processed on the audio thread."""

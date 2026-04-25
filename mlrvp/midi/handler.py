@@ -160,8 +160,9 @@ class MidiHandler(QObject):
         approach is to connect to the ``learn_completed`` signal which is
         emitted on the Qt main thread.
         """
-        self._learning = True
-        self._learn_param = param_path
+        with self._lock:
+            self._learning = True
+            self._learn_param = param_path
         if callback:
             # Connect one-shot via signal so it fires on gui thread
             def _once(pp, ch, cc, cb=callback):
@@ -173,8 +174,9 @@ class MidiHandler(QObject):
             self.learn_completed.connect(_once)
 
     def stop_learn(self):
-        self._learning = False
-        self._learn_param = ""
+        with self._lock:
+            self._learning = False
+            self._learn_param = ""
 
     def inject_message(self, message: list):
         """Process a raw MIDI message (forwarded from another source like a grid adapter)."""
@@ -202,7 +204,11 @@ class MidiHandler(QObject):
         data2 = message[2]
 
         # ------ MIDI learn mode ------
-        if self._learning:
+        # Atomically check-and-claim the learn slot so two near-simultaneous
+        # CCs (or a CC racing with stop_learn) cannot both finish learn.
+        with self._lock:
+            in_learn = self._learning
+        if in_learn:
             # Accept CC, Note On (with velocity > 0)
             if msg_type == 0xB0:
                 # CC message
@@ -274,15 +280,22 @@ class MidiHandler(QObject):
 
     def _finish_learn(self, channel: int, cc: int):
         """Complete a MIDI learn — creates mapping and emits signal on Qt thread."""
-        param_path = self._learn_param
+        # Atomically capture-and-clear the learn slot so a second near-
+        # simultaneous message cannot also fire _finish_learn.
+        with self._lock:
+            if not self._learning:
+                return
+            param_path = self._learn_param
+            self._learning = False
+            self._learn_param = ""
+        if not param_path:
+            return
         mapping = MidiMapping(
             channel=channel,
             cc=cc,
             param_path=param_path,
         )
         self.add_mapping(param_path, mapping)
-        self._learning = False
-        self._learn_param = ""
         # Emit signal — Qt marshals this to the main thread
         self.learn_completed.emit(param_path, channel, cc)
 

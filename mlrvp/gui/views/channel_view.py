@@ -12,10 +12,15 @@ from PySide6.QtWidgets import (
     QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QFileDialog,
     QScrollArea, QFrame, QSizePolicy, QMenu
 )
-from PySide6.QtCore import Qt, Signal, QMimeData
+from PySide6.QtCore import Qt, Signal, QMimeData, QTimer
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QAction
 
-from mlrvp.config import ChannelState, PlaybackMode, NUM_GROUPS, MAX_ROWS, PITCH_SCALE_NAMES
+from mlrvp.config import (
+    ChannelState, PlaybackMode, NUM_GROUPS, MAX_ROWS, PITCH_SCALE_NAMES,
+    LIVE_STATE_EMPTY, LIVE_STATE_COUNTING_IN, LIVE_STATE_RECORDING,
+    LIVE_STATE_OVERDUBBING, LIVE_STATE_ARMED_RERECORD, LIVE_STATE_PLAYING,
+    LIVE_QUANTIZE_NAMES,
+)
 from mlrvp.gui.styles import (
     GROUP_COLORS, BG_PANEL, BG_BLACK, BG_MAIN, SEPARATOR,
     ACCENT_GOLD, TEXT_PRIMARY, TEXT_SECONDARY,
@@ -73,6 +78,9 @@ class ChannelStrip(QFrame):
     sample_load_requested = Signal(int, str)  # row, filepath
     sample_clear_requested = Signal(int)       # row
     param_changed = Signal(int, str, object)  # row, param_name, value
+    live_param_changed = Signal(int, str, object)  # row, param, value (LIVE-mode params)
+    live_rec_requested = Signal(int, bool)        # row, is_hold (False=click, True=2s hold)
+    live_export_requested = Signal(int)           # row
 
     # Class-level sample library shared across all strips
     _sample_library: list[str] = []  # list of filepaths
@@ -135,6 +143,8 @@ class ChannelStrip(QFrame):
         self._group_bar.setFixedSize(4, 20)
         self._group_bar.setStyleSheet(f"background: {GROUP_COLORS[0]};")
         top_row.addWidget(self._group_bar)
+        self._current_group_idx = 0
+        self._live_is_playing = False
 
         # Row number
         self._row_label = QLabel(f"{row + 1}")
@@ -193,6 +203,7 @@ class ChannelStrip(QFrame):
         # Alphabetically sorted mode labels with their PlaybackMode values
         self._mode_map = [
             ("LOOP", PlaybackMode.LOOP),
+            ("LIVE", PlaybackMode.LIVE),
             ("PTCH", PlaybackMode.PITCH),
             ("RVRS", PlaybackMode.REVERSE),
             ("SHOT", PlaybackMode.ONESHOT),
@@ -466,7 +477,19 @@ class ChannelStrip(QFrame):
         top_row.addWidget(_section("CONTROL", self._mute_btn, self._stop_btn))
         top_row.addWidget(_vdiv())
 
+        # ── LIVE looper section (visible only in LIVE mode) ──
+        self._live_section = self._build_live_section(_section, _vdiv)
+        self._live_section.setVisible(False)
+        top_row.addWidget(self._live_section)
+
         layout.addLayout(top_row)
+
+        # ── LIVE config row (collapsible, between control row and waveform) ──
+        self._live_config_row = self._build_live_config_row(_section, _vdiv)
+        self._live_config_row.setVisible(False)
+        layout.addWidget(self._live_config_row)
+        # Wire CFG toggle → config row visibility (both widgets now exist)
+        self._live_cfg_btn.toggled.connect(self._live_config_row.setVisible)
 
         # ── Waveform display (full width below controls) ──
         self._waveform = WaveformWidget()
@@ -475,6 +498,216 @@ class ChannelStrip(QFrame):
             lambda s, e: self.param_changed.emit(self._row, "selection", (s, e))
         )
         layout.addWidget(self._waveform, stretch=1)
+
+    def _build_live_section(self, _section, _vdiv) -> QWidget:
+        """Build the compact LIVE-mode inline controls: CFG toggle, REC, EXP, STATE.
+
+        The heavier settings (BARS, QNTZ, OPTS, TRIM) live in a separate
+        collapsible row built by _build_live_config_row() and wired in __init__.
+        """
+        container = QWidget()
+        hl = QHBoxLayout(container)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(2)
+
+        # CFG toggle — shows/hides the per-strip LIVE settings panel
+        self._live_cfg_btn = QPushButton("CFG")
+        self._live_cfg_btn.setCheckable(True)
+        self._live_cfg_btn.setFixedSize(30, 20)
+        self._live_cfg_btn.setToolTip(
+            "Show / hide LIVE settings (bars, quantize, options, input trim)"
+        )
+        self._live_cfg_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"border: 1px solid {SEPARATOR}; font-size: 8px; font-weight: bold; "
+            f"padding: 0px; }}"
+            f"QPushButton:checked {{ background: #1a2000; color: {ACCENT_GOLD}; "
+            f"border: 1px solid {ACCENT_GOLD}; }}"
+        )
+        hl.addWidget(_section("LIVE", self._live_cfg_btn))
+        hl.addWidget(_vdiv())
+
+        # REC button (with hold-to-arm-rerecord detection)
+        self._live_rec_btn = QPushButton("●REC")
+        self._live_rec_btn.setFixedSize(44, 20)
+        self._live_rec_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: #ff6666; "
+            f"border: 1px solid #ff6666; font-size: 9px; font-weight: bold; "
+            f"padding: 0px; }}"
+            f"QPushButton:hover {{ background: #221111; }}"
+            f"QPushButton:pressed {{ background: #441111; }}"
+        )
+        self._live_rec_btn.setToolTip(
+            "Click: start/cancel recording or overdub\n"
+            "Hold 2s while playing: arm re-record"
+        )
+        # Track press time for hold detection (reuse one QTimer per strip)
+        self._live_rec_held = False
+        self._live_rec_hold_timer = QTimer(self)
+        self._live_rec_hold_timer.setSingleShot(True)
+        self._live_rec_hold_timer.timeout.connect(self._on_live_rec_hold_fired)
+        self._live_rec_btn.pressed.connect(self._on_live_rec_pressed)
+        self._live_rec_btn.released.connect(self._on_live_rec_released)
+        hl.addWidget(_section("REC", self._live_rec_btn))
+
+        # Status badge label
+        self._live_status_label = QLabel("EMPTY")
+        self._live_status_label.setFixedHeight(20)
+        self._live_status_label.setMinimumWidth(72)
+        self._live_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._live_status_label.setStyleSheet(
+            f"QLabel {{ color: {TEXT_SECONDARY}; background: {BG_BLACK}; "
+            f"border: 1px solid {SEPARATOR}; font-size: 9px; font-weight: bold; "
+            f"padding: 0px 4px; }}"
+        )
+        hl.addWidget(_section("STATE", self._live_status_label))
+        hl.addWidget(_vdiv())
+
+        return container
+
+    def _build_live_config_row(self, _section, _vdiv) -> QWidget:
+        """Build the collapsible LIVE settings panel (BARS, QNTZ, OPTS, TRIM).
+
+        Inserted between the main control row and the waveform. Hidden by
+        default; shown when the CFG toggle in the inline LIVE section is active.
+        """
+        row = QWidget()
+        row.setObjectName("liveConfigRow")
+        row.setStyleSheet(
+            f"QWidget#liveConfigRow {{ background: {BG_BLACK}; "
+            f"border-bottom: 1px solid {SEPARATOR}; }}"
+        )
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(0, 1, 6, 1)
+        hl.setSpacing(2)
+        hl.addWidget(_vdiv())
+
+        # BARS spin
+        self._live_bars_spin = QSpinBox()
+        self._live_bars_spin.setRange(1, 32)
+        self._live_bars_spin.setValue(4)
+        self._live_bars_spin.setFixedWidth(48)
+        self._live_bars_spin.setFixedHeight(20)
+        self._live_bars_spin.setToolTip("Loop length in bars")
+        self._live_bars_spin.setStyleSheet(
+            f"QSpinBox {{ font-size: 10px; color: {TEXT_PRIMARY}; "
+            f"padding-left: 2px; background: {BG_BLACK}; border: 1px solid {SEPARATOR}; }}"
+            f"QSpinBox::up-button {{ width: 14px; background: {BG_BLACK}; "
+            f"border: none; border-left: 1px solid {SEPARATOR}; "
+            f"subcontrol-origin: border; subcontrol-position: top right; }}"
+            f"QSpinBox::down-button {{ width: 14px; background: {BG_BLACK}; "
+            f"border: none; border-left: 1px solid {SEPARATOR}; "
+            f"subcontrol-origin: border; subcontrol-position: bottom right; }}"
+            f"QSpinBox::up-arrow {{ image: url({_ARROW_UP}); width: 8px; height: 5px; }}"
+            f"QSpinBox::down-arrow {{ image: url({_ARROW_DOWN}); width: 8px; height: 5px; }}"
+        )
+        self._live_bars_spin.valueChanged.connect(
+            lambda v: self.live_param_changed.emit(self._row, "bars", v)
+        )
+        hl.addWidget(_section("BARS", self._live_bars_spin))
+        hl.addWidget(_vdiv())
+
+        # QUANTIZE combo
+        self._live_quant_combo = QComboBox()
+        self._live_quant_combo.addItems(LIVE_QUANTIZE_NAMES)
+        self._live_quant_combo.setFixedHeight(20)
+        self._live_quant_combo.setMaximumWidth(72)
+        self._live_quant_combo.setStyleSheet(
+            f"QComboBox {{ font-size: 9px; padding: 2px 4px; color: {TEXT_PRIMARY}; }}"
+        )
+        self._live_quant_combo.currentIndexChanged.connect(
+            lambda idx: self.live_param_changed.emit(self._row, "quantize", idx)
+        )
+        hl.addWidget(_section("QNTZ", self._live_quant_combo))
+        hl.addWidget(_vdiv())
+
+        # THRU + COUNT-IN checkboxes
+        self._live_thru_cb = QCheckBox("THRU")
+        self._live_countin_cb = QCheckBox("CNTI")
+        for cb in (self._live_thru_cb, self._live_countin_cb):
+            cb.setStyleSheet(
+                f"QCheckBox {{ color: {TEXT_SECONDARY}; font-size: 9px; "
+                f"background: transparent; }}"
+            )
+        self._live_thru_cb.setToolTip("Monitor input through the channel while recording")
+        self._live_countin_cb.setToolTip("Wait 4 beats before recording starts")
+        self._live_thru_cb.toggled.connect(
+            lambda v: self.live_param_changed.emit(self._row, "thru", v)
+        )
+        self._live_countin_cb.toggled.connect(
+            lambda v: self.live_param_changed.emit(self._row, "count_in", v)
+        )
+        hl.addWidget(_section("OPTS", self._live_thru_cb, self._live_countin_cb))
+        hl.addWidget(_vdiv())
+
+        # INPUT TRIM fader (0-2.0 → mapped from 0-1 fader position)
+        self._live_trim_fader = HorizontalFader(default_value=0.5)  # 0.5 = 1.0 trim
+        self._live_trim_fader.setFixedWidth(80)
+        self._live_trim_fader.set_formatter(
+            lambda pos: f"{pos * 2.0:.2f}x"
+        )
+        self._live_trim_fader.value_changed.connect(
+            lambda v: self.live_param_changed.emit(self._row, "input_trim", v * 2.0)
+        )
+        hl.addWidget(_section("TRIM", self._live_trim_fader))
+        hl.addWidget(_vdiv())
+
+        # EXPORT button
+        self._live_export_btn = QPushButton("EXP")
+        self._live_export_btn.setFixedSize(36, 20)
+        self._live_export_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"border: 1px solid {SEPARATOR}; font-size: 9px; font-weight: bold; "
+            f"padding: 0px; }}"
+            f"QPushButton:hover {{ color: {ACCENT_GOLD}; border-color: {ACCENT_GOLD}; }}"
+        )
+        self._live_export_btn.setToolTip("Export current loop to data/slices/")
+        self._live_export_btn.clicked.connect(
+            lambda: self.live_export_requested.emit(self._row)
+        )
+        hl.addWidget(_section("EXP", self._live_export_btn))
+        hl.addWidget(_vdiv())
+
+        hl.addStretch()
+        return row
+
+    def _on_live_rec_pressed(self):
+        """REC button pressed — start hold-detection timer."""
+        self._live_rec_held = False
+        self._live_rec_hold_timer.start(2000)  # 2 seconds
+
+    def _on_live_rec_hold_fired(self):
+        """2-second hold detected — emit hold signal and mark held."""
+        self._live_rec_held = True
+        self.live_rec_requested.emit(self._row, True)
+
+    def _on_live_rec_released(self):
+        """REC button released — emit click signal if not already fired as hold."""
+        self._live_rec_hold_timer.stop()
+        if not self._live_rec_held:
+            self.live_rec_requested.emit(self._row, False)
+        self._live_rec_held = False
+
+    def set_live_loop_state(self, loop_state: str):
+        """Update the LIVE status badge, REC button color, and group bar from app."""
+        labels = {
+            LIVE_STATE_EMPTY: ("EMPTY", TEXT_SECONDARY, BG_BLACK),
+            LIVE_STATE_COUNTING_IN: ("CNT-IN", "#ffcc44", BG_BLACK),
+            LIVE_STATE_RECORDING: ("REC", "#ff4444", "#330000"),
+            LIVE_STATE_OVERDUBBING: ("OVERDUB", "#ff8844", "#331100"),
+            LIVE_STATE_ARMED_RERECORD: ("RE-ARM", "#ffcc44", "#332200"),
+            LIVE_STATE_PLAYING: ("PLAY", "#44ff44", BG_BLACK),
+        }
+        label, fg, bg = labels.get(loop_state, ("?", TEXT_SECONDARY, BG_BLACK))
+        if hasattr(self, "_live_status_label"):
+            self._live_status_label.setText(label)
+            self._live_status_label.setStyleSheet(
+                f"QLabel {{ color: {fg}; background: {bg}; "
+                f"border: 1px solid {fg}; font-size: 9px; font-weight: bold; "
+                f"padding: 0px 4px; }}"
+            )
+        self._live_is_playing = (loop_state == LIVE_STATE_PLAYING)
+        self._refresh_group_bar()
 
     def _on_load_click(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -523,6 +756,7 @@ class ChannelStrip(QFrame):
         _, mode = self._mode_map[idx]
         is_pitch = mode == PlaybackMode.PITCH
         is_shot = mode == PlaybackMode.ONESHOT
+        is_live = mode == PlaybackMode.LIVE
         # Show SCALE and ROOT sections only in PTCH mode
         self._scale_section.setVisible(is_pitch)
         self._pitch_mode_root.setVisible(is_pitch)
@@ -532,6 +766,20 @@ class ChannelStrip(QFrame):
         # REV toggle only in SHOT mode
         self._rev_btn.setVisible(is_shot)
         self._hold_btn.setVisible(is_shot)
+        # LIVE section only in LIVE mode; auto-expand config row on entry, collapse on exit
+        if hasattr(self, "_live_section"):
+            self._live_section.setVisible(is_live)
+        if hasattr(self, "_live_config_row"):
+            if is_live:
+                self._live_cfg_btn.blockSignals(True)
+                self._live_cfg_btn.setChecked(True)
+                self._live_cfg_btn.blockSignals(False)
+                self._live_config_row.setVisible(True)
+            else:
+                self._live_cfg_btn.blockSignals(True)
+                self._live_cfg_btn.setChecked(False)
+                self._live_cfg_btn.blockSignals(False)
+                self._live_config_row.setVisible(False)
         if not is_shot:
             self._rev_btn.blockSignals(True)
             self._rev_btn.setChecked(False)
@@ -555,10 +803,22 @@ class ChannelStrip(QFrame):
         self._on_group_changed(idx)
 
     def _on_group_changed(self, idx):
-        color = GROUP_COLORS[idx % len(GROUP_COLORS)]
-        self._group_bar.setStyleSheet(f"background: {color};")
+        self._current_group_idx = idx
+        self._refresh_group_bar()
         self._waveform.set_group_color(idx)
         self.param_changed.emit(self._row, "group", idx)
+
+    def _refresh_group_bar(self):
+        """Apply the group bar style, lit up when the live loop is playing."""
+        color = GROUP_COLORS[self._current_group_idx % len(GROUP_COLORS)]
+        if self._live_is_playing:
+            self._group_bar.setFixedWidth(6)
+            self._group_bar.setStyleSheet(
+                f"background: {color}; border-right: 2px solid #ffffff;"
+            )
+        else:
+            self._group_bar.setFixedWidth(4)
+            self._group_bar.setStyleSheet(f"background: {color};")
 
     def _on_speed_spin_changed(self, v):
         """Manual spinner edit — sync true speed to displayed value."""
@@ -674,6 +934,30 @@ class ChannelStrip(QFrame):
         self._pitch_section.setVisible(not is_pitch)
         self._steps_section.setVisible(not is_pitch)
 
+        # LIVE mode controls — sync from state.live
+        is_live = state.mode == PlaybackMode.LIVE
+        if hasattr(self, "_live_section"):
+            self._live_section.setVisible(is_live)
+            live = state.live
+            self._live_bars_spin.blockSignals(True)
+            self._live_bars_spin.setValue(int(live.bars))
+            self._live_bars_spin.blockSignals(False)
+            self._live_quant_combo.blockSignals(True)
+            self._live_quant_combo.setCurrentIndex(
+                max(0, min(len(LIVE_QUANTIZE_NAMES) - 1, int(live.quantize)))
+            )
+            self._live_quant_combo.blockSignals(False)
+            self._live_thru_cb.blockSignals(True)
+            self._live_thru_cb.setChecked(bool(live.thru))
+            self._live_thru_cb.blockSignals(False)
+            self._live_countin_cb.blockSignals(True)
+            self._live_countin_cb.setChecked(bool(live.count_in))
+            self._live_countin_cb.blockSignals(False)
+            self._live_trim_fader.set_value(
+                max(0.0, min(1.0, float(live.input_trim) / 2.0))
+            )
+            self.set_live_loop_state(str(live.loop_state))
+
         self._mute_btn.blockSignals(True)
         self._mute_btn.setChecked(state.mute)
         self._mute_btn.blockSignals(False)
@@ -714,6 +998,9 @@ class ChannelView(QWidget):
     sample_load_requested = Signal(int, str)
     sample_clear_requested = Signal(int)  # row
     param_changed = Signal(int, str, object)
+    live_param_changed = Signal(int, str, object)
+    live_rec_requested = Signal(int, bool)
+    live_export_requested = Signal(int)
 
     def __init__(self, num_rows: int = 7, parent=None):
         super().__init__(parent)
@@ -737,6 +1024,9 @@ class ChannelView(QWidget):
             strip.sample_load_requested.connect(self.sample_load_requested.emit)
             strip.sample_clear_requested.connect(self.sample_clear_requested.emit)
             strip.param_changed.connect(self.param_changed.emit)
+            strip.live_param_changed.connect(self.live_param_changed.emit)
+            strip.live_rec_requested.connect(self.live_rec_requested.emit)
+            strip.live_export_requested.connect(self.live_export_requested.emit)
             self._strips.append(strip)
             self._strip_layout.addWidget(strip)
 

@@ -1123,9 +1123,14 @@ class BitCrusherProcessor:
         from mlrvp.config import BitCrusherState
         self.state = BitCrusherState()
         self._idx_int = np.arange(buffer_size, dtype=np.intp)
-        # Pre-allocated wet buffer
-        self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
-        self._take_buf = np.empty((buffer_size, 2), dtype=np.float32)
+        # Pre-allocated wet buffers — size to max(buffer_size, 4096) so the
+        # `else np.empty(...)` fallback in process() is dead in practice
+        # (audio engine block size is fixed at buffer_size, but defensive
+        # sizing matches the convention used elsewhere and keeps the
+        # fast path branch-predictable).
+        _bs = max(buffer_size, 4096)
+        self._wet_buf = np.empty((_bs, 2), dtype=np.float32)
+        self._take_buf = np.empty((_bs, 2), dtype=np.float32)
 
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
@@ -1269,8 +1274,8 @@ class ReelToReelProcessor:
         self._buf_pos = 0
         # Cache last tone value to avoid rebuilding filter every block
         self._last_tone: float = -1.0
-        # Pre-allocated wet buffer
-        self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
+        # Pre-allocated wet buffer (oversized so process() fallback is dead)
+        self._wet_buf = np.empty((max(buffer_size, 4096), 2), dtype=np.float32)
         # Pre-allocated scratch buffers for pitch-flutter modulated read
         self._flutter_bufs = _FlutterReadBuffers(buffer_size)
 
@@ -1374,8 +1379,8 @@ class CassetteTapeProcessor:
         # Cache last filter params to avoid rebuilding coefficients every block
         self._last_tone: float = -1.0
         self._last_punch: float = -1.0
-        # Pre-allocated wet buffer
-        self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
+        # Pre-allocated wet buffer (oversized so process() fallback is dead)
+        self._wet_buf = np.empty((max(buffer_size, 4096), 2), dtype=np.float32)
         # Pre-allocated scratch buffers for pitch-warp modulated read
         self._flutter_bufs = _FlutterReadBuffers(buffer_size)
 
@@ -1692,8 +1697,8 @@ class VHSProcessor:
         self._rng = np.random.default_rng()
         # Cache last worn value to avoid rebuilding filter every block
         self._last_worn: float = -1.0
-        # Pre-allocated wet buffer
-        self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
+        # Pre-allocated wet buffer (oversized so process() fallback is dead)
+        self._wet_buf = np.empty((max(buffer_size, 4096), 2), dtype=np.float32)
         # Pre-allocated scratch buffers for pitch-wobble modulated read
         self._flutter_bufs = _FlutterReadBuffers(buffer_size)
 
@@ -1810,8 +1815,8 @@ class VinylProcessor:
         # Cache last filter param values
         self._last_wear: float = -1.0
         self._last_warmth_freq: float = -1.0
-        # Pre-allocated wet buffer
-        self._wet_buf = np.empty((buffer_size, 2), dtype=np.float32)
+        # Pre-allocated wet buffer (oversized so process() fallback is dead)
+        self._wet_buf = np.empty((max(buffer_size, 4096), 2), dtype=np.float32)
         # Pre-allocated scratch buffers for pitch-wow modulated read
         self._flutter_bufs = _FlutterReadBuffers(buffer_size)
 

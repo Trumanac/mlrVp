@@ -71,8 +71,19 @@ class OscHandler:
             self._server_thread = None
 
     def add_handler(self, address: str, handler: Callable):
-        """Register an OSC address handler."""
+        """Register an OSC address handler.
+
+        If the server is already running, the dispatcher is updated live
+        so the handler takes effect immediately (otherwise it would be
+        silently shadowed by the default handler until restart).
+        """
         self._handlers[address] = handler
+        if self._server is not None:
+            try:
+                self._server.dispatcher.map(address, handler)
+            except Exception as e:
+                import logging
+                logging.getLogger("mlrvp").debug("OSC live map failed for %s: %s", address, e)
 
     def send(self, address: str, *args):
         """Send an OSC message."""
@@ -93,4 +104,5 @@ class OscHandler:
 
     def _default_handler(self, address, *args):
         """Default handler for unmapped OSC addresses."""
-        pass
+        import logging
+        logging.getLogger("mlrvp").debug("Unhandled OSC: %s %r", address, args)

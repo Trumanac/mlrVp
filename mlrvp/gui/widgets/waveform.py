@@ -251,5 +251,7 @@ class WaveformWidget(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent):
         if self._dragging:
             self.selection_changed.emit(self._sel_start, self._sel_end)
-            self._dragging = None
             self.update()
+        # Always clear drag state so a non-left release after a left press
+        # (multi-button mice / tablets) cannot leave us stuck mid-drag.
+        self._dragging = None

@@ -106,6 +106,80 @@ def _atomic_write_json(fp: Path, data: dict, cls=None):
         raise
 
 
+# ---------------------------------------------------------------------- #
+#  Preset schema version + migrations                                    #
+# ---------------------------------------------------------------------- #
+# Bump CURRENT_PRESET_VERSION whenever the on-disk preset format changes
+# in a way that requires a transformation (renamed key, removed key,
+# split/merged value, etc.).  Just adding a new field with a safe default
+# does NOT need a bump — apply_preset already falls back to current config
+# values for missing keys.
+#
+# Migration functions take and return a preset dict ({"version": ...,
+# "config": {...}, ...}) and may mutate in place.  Register them in
+# _MIGRATIONS keyed by the *source* version they upgrade FROM.
+CURRENT_PRESET_VERSION = "4.0.0"
+
+
+def _parse_version(v) -> tuple:
+    """Parse 'X.Y.Z' into (X, Y, Z) tuple. Unknown/garbage -> (0, 0, 0)."""
+    if not isinstance(v, str):
+        return (0, 0, 0)
+    parts = v.split(".")
+    out = []
+    for p in parts[:3]:
+        try:
+            out.append(int(p))
+        except (ValueError, TypeError):
+            out.append(0)
+    while len(out) < 3:
+        out.append(0)
+    return tuple(out)
+
+
+# Map of source_version -> migration callable.
+# Add entries here when bumping CURRENT_PRESET_VERSION.
+_MIGRATIONS: dict = {}
+
+
+def migrate_preset(data: dict) -> dict:
+    """Upgrade preset data from any older schema to CURRENT_PRESET_VERSION.
+
+    - Missing version is treated as legacy (0.0.0) and run through every
+      migration in order.
+    - Newer-than-current is logged and returned as-is (best-effort load).
+    - Mutates and returns the same dict.
+    """
+    src = data.get("version", "0.0.0")
+    src_tup = _parse_version(src)
+    cur_tup = _parse_version(CURRENT_PRESET_VERSION)
+
+    if src_tup > cur_tup:
+        log.warning(
+            "Preset schema %s is newer than supported %s — loading best-effort",
+            src, CURRENT_PRESET_VERSION,
+        )
+        return data
+
+    if src_tup == cur_tup:
+        return data
+
+    applied = []
+    for from_ver in sorted(_MIGRATIONS, key=_parse_version):
+        if _parse_version(from_ver) >= src_tup:
+            try:
+                data = _MIGRATIONS[from_ver](data) or data
+                applied.append(from_ver)
+            except Exception as exc:
+                log.warning("Preset migration from %s failed: %s", from_ver, exc)
+
+    data["version"] = CURRENT_PRESET_VERSION
+    if applied:
+        log.info("Migrated preset %s -> %s (steps: %s)",
+                 src, CURRENT_PRESET_VERSION, ", ".join(applied))
+    return data
+
+
 class PresetManager:
     """Manages a global preset library and ordered setlists.
 
@@ -163,7 +237,7 @@ class PresetManager:
         """
         fp = get_presets_dir() / f"{_sanitize_name(name)}.json"
         data = {
-            "version": "4.0.0",
+            "version": CURRENT_PRESET_VERSION,
             "name": name,
             "config": self._serialize_config(config),
             "midi_mappings": midi_mappings or [],
@@ -179,14 +253,18 @@ class PresetManager:
         threading.Thread(target=_write, daemon=False).start()
 
     def load_preset(self, name: str) -> Optional[dict]:
-        """Load a preset from the library by name."""
+        """Load a preset from the library by name.
+
+        Old-schema files are migrated in-memory before being returned.
+        """
         fp = get_presets_dir() / f"{_sanitize_name(name)}.json"
         if not fp.exists():
             return None
         try:
             with self._io_lock:
                 with open(fp) as f:
-                    return json.load(f)
+                    data = json.load(f)
+            return migrate_preset(data)
         except Exception as e:
             log.error("Preset load error: %s", e)
             return None
@@ -356,7 +434,15 @@ class PresetManager:
         """
         if 0 <= index < len(self.setlist_presets):
             self.setlist_presets.pop(index)
-            if self.active_index >= len(self.setlist_presets):
+            # Maintain selection across the removed slot:
+            #   - removing BEFORE active: shift active down by 1 to keep
+            #     pointing at the same preset (was: silently shifted to a
+            #     different preset).
+            #   - removing AT active: clamp to last (or -1 if empty).
+            #   - removing AFTER active: no change.
+            if index < self.active_index:
+                self.active_index -= 1
+            elif self.active_index >= len(self.setlist_presets):
                 self.active_index = max(-1, len(self.setlist_presets) - 1)
             if auto_save:
                 self.save_setlist()
@@ -405,11 +491,11 @@ class PresetManager:
         except (ValueError, TypeError):
             pass
         try:
-            config.master_hp = max(20.0, min(500.0, float(cfg_data.get("master_hp", 20.0))))
+            config.master_hp = max(20.0, min(500.0, float(cfg_data.get("master_hp", config.master_hp))))
         except (ValueError, TypeError):
             pass
         try:
-            config.master_lp = max(200.0, min(20000.0, float(cfg_data.get("master_lp", 20000.0))))
+            config.master_lp = max(200.0, min(20000.0, float(cfg_data.get("master_lp", config.master_lp))))
         except (ValueError, TypeError):
             pass
         try:
@@ -462,6 +548,20 @@ class PresetManager:
                 except (ValueError, TypeError):
                     pass
                 ch.pitch_loop = bool(ch_data.get("pitch_loop", ch_data.get("pitch_hold", ch.pitch_loop)))
+
+                # LIVE looper state
+                live_data = ch_data.get("live")
+                if isinstance(live_data, dict):
+                    try:
+                        ch.live.bars = max(1, min(32, int(live_data.get("bars", ch.live.bars))))
+                        ch.live.quantize = int(live_data.get("quantize", ch.live.quantize))
+                        ch.live.thru = bool(live_data.get("thru", ch.live.thru))
+                        ch.live.count_in = bool(live_data.get("count_in", ch.live.count_in))
+                        ch.live.input_trim = max(0.0, min(2.0, float(live_data.get("input_trim", ch.live.input_trim))))
+                        ch.live.loop_state = str(live_data.get("loop_state", ch.live.loop_state))
+                        ch.live.exported_path = str(live_data.get("exported_path", ch.live.exported_path))
+                    except (ValueError, TypeError):
+                        pass
 
         # Groups
         groups_data = cfg_data.get("groups", [])
@@ -670,19 +770,29 @@ class PresetManager:
         config.osc_recv_port = cfg_data.get("osc_recv_port", config.osc_recv_port)
 
         # Aux bus
-        config.aux_volume = max(0.0, min(2.0, float(cfg_data.get("aux_volume", config.aux_volume))))
-        config.aux_mute = cfg_data.get("aux_mute", config.aux_mute)
-        config.aux_fx_route = max(0, min(4, int(cfg_data.get("aux_fx_route", config.aux_fx_route))))
+        try:
+            config.aux_volume = max(0.0, min(2.0, float(cfg_data.get("aux_volume", config.aux_volume))))
+        except (ValueError, TypeError):
+            pass
+        config.aux_mute = bool(cfg_data.get("aux_mute", config.aux_mute))
+        try:
+            config.aux_fx_route = max(0, min(4, int(cfg_data.get("aux_fx_route", config.aux_fx_route))))
+        except (ValueError, TypeError):
+            pass
         # Support both new float key and legacy bool key from older presets
-        if "aux_send_level" in cfg_data:
-            config.aux_send_level = max(0.0, min(1.0, float(cfg_data["aux_send_level"])))
-        elif "aux_send_toggle" in cfg_data:
-            config.aux_send_level = 1.0 if cfg_data["aux_send_toggle"] else 0.0
-        else:
-            config.aux_send_level = config.aux_send_level
+        try:
+            if "aux_send_level" in cfg_data:
+                config.aux_send_level = max(0.0, min(1.0, float(cfg_data["aux_send_level"])))
+            elif "aux_send_toggle" in cfg_data:
+                config.aux_send_level = 1.0 if cfg_data["aux_send_toggle"] else 0.0
+        except (ValueError, TypeError):
+            pass
 
         # Grid
-        config.grid_columns = max(1, min(16, int(cfg_data.get("grid_columns", config.grid_columns))))
+        try:
+            config.grid_columns = max(1, min(16, int(cfg_data.get("grid_columns", config.grid_columns))))
+        except (ValueError, TypeError):
+            pass
 
         # Per-effect routing
         # Backward compat: old presets stored delay_route at top level
@@ -747,6 +857,15 @@ class PresetManager:
                     "pitch_scale": ch.pitch_scale,
                     "pitch_root": ch.pitch_root,
                     "pitch_loop": ch.pitch_loop,
+                    "live": {
+                        "bars": ch.live.bars,
+                        "quantize": ch.live.quantize,
+                        "thru": ch.live.thru,
+                        "count_in": ch.live.count_in,
+                        "input_trim": ch.live.input_trim,
+                        "loop_state": ch.live.loop_state,
+                        "exported_path": ch.live.exported_path,
+                    },
                 }
                 for ch in config.channels
             ],

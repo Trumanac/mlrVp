@@ -14,6 +14,19 @@ class PlaybackMode(IntEnum):
     SEQ = 4        # step sequencer — grid buttons toggle steps, sample triggers per step
     PITCH = 5      # pitched one-shot — each button plays the sample at a different pitch
     STEP = 6       # play the slice under the pressed button once then stop
+    LIVE = 7       # live looper — record from input, auto-load and loop the recording
+
+
+# LIVE-mode loop state strings (stored on LiveLoopState.loop_state)
+LIVE_STATE_EMPTY = "EMPTY"
+LIVE_STATE_COUNTING_IN = "COUNTING_IN"
+LIVE_STATE_RECORDING = "RECORDING"
+LIVE_STATE_OVERDUBBING = "OVERDUBBING"
+LIVE_STATE_ARMED_RERECORD = "ARMED_RERECORD"
+LIVE_STATE_PLAYING = "PLAYING"
+
+# LIVE-mode quantize options (subset of QuantizeMode — maps directly to QuantizeMode values)
+LIVE_QUANTIZE_NAMES = ["IMMEDIATE", "BEAT", "BAR"]
 
 
 class QuantizeMode(IntEnum):
@@ -87,6 +100,20 @@ class ChannelState:
     pitch_loop: bool = False  # True = loop in PITCH mode, False = one-shot
     playing: bool = False
     playback_pos: float = 0.0
+    # LIVE mode — live looper state (only used when mode == PlaybackMode.LIVE)
+    live: "LiveLoopState" = field(default_factory=lambda: LiveLoopState())
+
+
+@dataclass
+class LiveLoopState:
+    """Per-channel state for LIVE looper mode."""
+    bars: int = 4                       # loop length in bars (1-32)
+    quantize: int = 2                   # combo index: 0=IMMEDIATE, 1=BEAT, 2=BAR (matches LIVE_QUANTIZE_NAMES)
+    thru: bool = False                  # input monitoring while recording
+    count_in: bool = False              # 4-beat LED count-in before recording
+    input_trim: float = 1.0             # input gain applied before writing to record buffer (0.0-2.0)
+    loop_state: str = LIVE_STATE_EMPTY  # current state machine position
+    exported_path: str = ""             # filepath of exported WAV (empty if not exported)
 
 
 @dataclass
@@ -644,6 +671,22 @@ class RecorderState:
     length_beats: int = 1
     loop: bool = False
     recording: bool = False
+    # Capture timing
+    quantize: int = 0          # 0=IMMEDIATE, 1=BEAT, 2=BAR (matches LIVE_QUANTIZE_NAMES)
+    count_in: int = 0          # bars of count-in before start (0 = off)
+    free_length: bool = False  # if True, ignore length_bars and record until stopped
+    # Input
+    input_trim: float = 1.0    # pre-record gain (0.0-2.0)
+    loopback: bool = False     # record main output instead of device input
+    # Pre-roll ring buffer
+    pre_roll_sec: float = 5.0  # seconds of input audio kept for retroactive capture
+    # Workflow
+    auto_load: bool = True     # load buffer to target channel automatically on complete
+    takes: int = 1             # number of take slots (1-4)
+    # Post-capture processing
+    normalize: bool = True     # peak normalize to -0.1 dBFS
+    trim_silence: bool = False # strip leading/trailing silence
+    fade_ms: int = 10          # fade in/out length in ms (0 = off)
 
 
 @dataclass
@@ -1013,3 +1056,57 @@ def set_ui_scale(factor: float):
     """Persist UI scale factor."""
     p = get_config_dir() / "ui_scale.txt"
     p.write_text(str(factor))
+
+
+# ---------------------------------------------------------------------------
+# Sample Library — watched directories & metadata cache
+# ---------------------------------------------------------------------------
+
+SAMPLE_PATHS_FILE = "sample_paths.json"
+SAMPLE_METADATA_CACHE_FILE = "sample_metadata_cache.json"
+
+
+def get_sample_paths() -> list[str]:
+    """Return list of watched sample directories for the Library tab."""
+    p = get_defaults_dir() / SAMPLE_PATHS_FILE
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        dirs = data.get("watched_dirs", [])
+        return [str(d) for d in dirs if isinstance(d, str)]
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def save_sample_paths(paths: list[str]) -> None:
+    """Persist the list of watched sample directories."""
+    p = get_defaults_dir() / SAMPLE_PATHS_FILE
+    try:
+        p.write_text(
+            json.dumps({"watched_dirs": list(paths)}, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def get_sample_metadata_cache() -> dict:
+    """Return BPM/Key metadata cache for samples (filepath -> metadata dict)."""
+    p = get_defaults_dir() / SAMPLE_METADATA_CACHE_FILE
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def save_sample_metadata_cache(cache: dict) -> None:
+    """Persist the sample metadata cache."""
+    p = get_defaults_dir() / SAMPLE_METADATA_CACHE_FILE
+    try:
+        p.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    except OSError:
+        pass

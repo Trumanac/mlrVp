@@ -10,10 +10,13 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QFrame, QComboBox, QSpinBox, QDoubleSpinBox,
     QLineEdit, QCheckBox, QGridLayout, QSizePolicy, QFileDialog,
-    QMenu, QScrollArea, QMessageBox
+    QMenu, QScrollArea, QMessageBox, QTableWidget, QTableWidgetItem,
+    QHeaderView, QProgressBar, QListWidget, QAbstractItemView
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QMimeData, QUrl
-from PySide6.QtGui import QPainter, QColor, QPen, QMouseEvent, QWheelEvent, QDrag
+from PySide6.QtCore import Qt, Signal, QTimer, QMimeData, QUrl, QThread
+from PySide6.QtGui import (
+    QPainter, QColor, QPen, QMouseEvent, QWheelEvent, QDrag
+)
 
 from mlrvp.gui.styles import (
     ACCENT_GOLD, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY,
@@ -22,6 +25,48 @@ from mlrvp.gui.styles import (
 from mlrvp.gui.widgets.fader import HorizontalFader
 
 AUDIO_EXTENSIONS = {'.wav', '.aiff', '.aif', '.flac', '.ogg', '.mp3'}
+
+
+class _AnalysisWorker(QThread):
+    """Background worker that runs BPM + Key detection on a list of files.
+
+    Emits `result(filepath, bpm, key)` per file (bpm may be NaN if undetected,
+    key may be empty string). Emits `progress(done, total)` after each file
+    and `finished()` when complete or cancelled.
+    """
+
+    progress = Signal(int, int)        # current, total
+    result = Signal(str, float, str)   # filepath, bpm, key
+    error = Signal(str, str)           # filepath, message
+
+    def __init__(self, files: list[str], parent=None):
+        super().__init__(parent)
+        self._files = list(files)
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            from mlrvp.audio.analysis import detect_bpm_and_key
+        except Exception:
+            return
+        total = len(self._files)
+        for i, fp in enumerate(self._files):
+            if self._cancelled:
+                break
+            try:
+                bpm, key = detect_bpm_and_key(fp)
+            except Exception as e:
+                self.error.emit(fp, str(e))
+                bpm, key = None, None
+            self.result.emit(
+                fp,
+                float(bpm) if bpm is not None else float("nan"),
+                key or "",
+            )
+            self.progress.emit(i + 1, total)
 
 
 class SliceWaveformWidget(QWidget):
@@ -2099,6 +2144,8 @@ class _SliceLibraryRow(QWidget):
         super().__init__(parent)
         self._filepath = filepath
         self._selected = False
+        self._bpm: float | None = None
+        self._key: str | None = None
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedHeight(22)
         self.setAcceptDrops(False)
@@ -2123,6 +2170,14 @@ class _SliceLibraryRow(QWidget):
             f"color: {ACCENT_GOLD}; font-size: 8px; font-weight: bold; background: transparent;"
         )
         hl.addWidget(self._bpm_lbl)
+
+        # Key badge (shown if metadata sidecar has a key)
+        self._key_lbl = QLabel("")
+        self._key_lbl.setFixedWidth(40)
+        self._key_lbl.setStyleSheet(
+            f"color: {ACCENT_BLUE}; font-size: 8px; font-weight: bold; background: transparent;"
+        )
+        hl.addWidget(self._key_lbl)
         self._load_metadata(metadata)
 
         del_btn = QPushButton("\u2715")
@@ -2139,7 +2194,7 @@ class _SliceLibraryRow(QWidget):
         self._update_bg()
 
     def _load_metadata(self, cached: dict | None = None):
-        """Apply BPM badge from pre-loaded metadata or read companion .json sidecar."""
+        """Apply BPM + Key badges from pre-loaded metadata or read companion .json sidecar."""
         meta = cached
         if meta is None:
             import json
@@ -2153,7 +2208,23 @@ class _SliceLibraryRow(QWidget):
         if meta:
             bpm = meta.get("bpm")
             if bpm and bpm > 0:
+                self._bpm = float(bpm)
                 self._bpm_lbl.setText(f"{bpm:.0f}bpm")
+            else:
+                self._bpm = None
+                self._bpm_lbl.setText("")
+            key = meta.get("key")
+            if key and isinstance(key, str):
+                self._key = key
+                self._key_lbl.setText(key)
+            else:
+                self._key = None
+                self._key_lbl.setText("")
+        else:
+            self._bpm = None
+            self._key = None
+            self._bpm_lbl.setText("")
+            self._key_lbl.setText("")
 
     @property
     def selected(self) -> bool:
@@ -2225,9 +2296,20 @@ class _SliceLibraryRow(QWidget):
         dist = (event.position().toPoint() - self._drag_start).manhattanLength()
         if dist < 8:
             return
+        # Collect all selected filepaths from parent panel (multi-file drag)
+        urls = [QUrl.fromLocalFile(self._filepath)]
+        parent = self.parent()
+        while parent and not isinstance(parent, SliceLibraryPanel):
+            parent = parent.parent()
+        if parent is not None:
+            selected = [r._filepath for r in parent._rows if r.selected and r._filepath != self._filepath]
+            if selected:
+                urls = [QUrl.fromLocalFile(self._filepath)] + [
+                    QUrl.fromLocalFile(p) for p in selected
+                ]
         drag = QDrag(self)
         mime = QMimeData()
-        mime.setUrls([QUrl.fromLocalFile(self._filepath)])
+        mime.setUrls(urls)
         drag.setMimeData(mime)
         drag.exec(Qt.DropAction.CopyAction)
 
@@ -2314,9 +2396,25 @@ class SliceLibraryPanel(QFrame):
         self._sort_combo.addItem("Name Z-A", 1)
         self._sort_combo.addItem("Newest", 2)
         self._sort_combo.addItem("Oldest", 3)
+        self._sort_combo.addItem("BPM \u2191", 4)
+        self._sort_combo.addItem("BPM \u2193", 5)
+        self._sort_combo.addItem("Key A-Z", 6)
+        self._sort_combo.addItem("Key Z-A", 7)
         self._sort_combo.setCurrentIndex(2)  # Default: Newest
         self._sort_combo.currentIndexChanged.connect(self._on_sort_changed)
         filter_row.addWidget(self._sort_combo)
+
+        # Scan BPM + Key button
+        self._scan_btn = QPushButton("Scan")
+        self._scan_btn.setFixedHeight(20)
+        self._scan_btn.setToolTip("Scan BPM + Key for all slices missing data")
+        self._scan_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_BLUE}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
+            f"QPushButton:hover {{ background: {SEPARATOR}; }}"
+        )
+        self._scan_btn.clicked.connect(self._on_scan_clicked)
+        filter_row.addWidget(self._scan_btn)
 
         # Batch delete button
         self._batch_del_btn = QPushButton("Delete")
@@ -2331,6 +2429,94 @@ class SliceLibraryPanel(QFrame):
         filter_row.addWidget(self._batch_del_btn)
 
         vb.addLayout(filter_row)
+
+        # Filter row 2: Key + BPM range + Clear
+        filter_row2 = QHBoxLayout()
+        filter_row2.setContentsMargins(4, 0, 4, 2)
+        filter_row2.setSpacing(4)
+
+        _key_lbl = QLabel("Key:")
+        _key_lbl.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 8px; background: transparent;"
+        )
+        filter_row2.addWidget(_key_lbl)
+
+        self._key_filter = QComboBox()
+        self._key_filter.setFixedHeight(20)
+        self._key_filter.setStyleSheet(
+            f"QComboBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
+        )
+        self._key_filter.addItem("All Keys", "")
+        self._key_filter.currentIndexChanged.connect(lambda _i: self._apply_filter())
+        filter_row2.addWidget(self._key_filter, stretch=1)
+
+        _bpm_lbl = QLabel("BPM:")
+        _bpm_lbl.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 8px; background: transparent;"
+        )
+        filter_row2.addWidget(_bpm_lbl)
+
+        self._bpm_min = QDoubleSpinBox()
+        self._bpm_min.setRange(0.0, 400.0)
+        self._bpm_min.setDecimals(0)
+        self._bpm_min.setSingleStep(1)
+        self._bpm_min.setValue(0)
+        self._bpm_min.setSpecialValueText("Min")
+        self._bpm_min.setFixedHeight(20)
+        self._bpm_min.setFixedWidth(50)
+        self._bpm_min.setStyleSheet(
+            f"QDoubleSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 0px 2px; }}"
+        )
+        self._bpm_min.valueChanged.connect(lambda _v: self._apply_filter())
+        filter_row2.addWidget(self._bpm_min)
+
+        _dash = QLabel("\u2013")
+        _dash.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 8px; background: transparent;"
+        )
+        filter_row2.addWidget(_dash)
+
+        self._bpm_max = QDoubleSpinBox()
+        self._bpm_max.setRange(0.0, 400.0)
+        self._bpm_max.setDecimals(0)
+        self._bpm_max.setSingleStep(1)
+        self._bpm_max.setValue(0)
+        self._bpm_max.setSpecialValueText("Max")
+        self._bpm_max.setFixedHeight(20)
+        self._bpm_max.setFixedWidth(50)
+        self._bpm_max.setStyleSheet(
+            f"QDoubleSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 0px 2px; }}"
+        )
+        self._bpm_max.valueChanged.connect(lambda _v: self._apply_filter())
+        filter_row2.addWidget(self._bpm_max)
+
+        self._clear_filter_btn = QPushButton("\u2715")
+        self._clear_filter_btn.setFixedSize(20, 20)
+        self._clear_filter_btn.setToolTip("Clear filters")
+        self._clear_filter_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 9px; border: 1px solid {SEPARATOR}; }}"
+            f"QPushButton:hover {{ color: {ACCENT_GOLD}; }}"
+        )
+        self._clear_filter_btn.clicked.connect(self._clear_filters)
+        filter_row2.addWidget(self._clear_filter_btn)
+
+        vb.addLayout(filter_row2)
+
+        # Scan progress (hidden when idle)
+        self._scan_progress = QProgressBar()
+        self._scan_progress.setFixedHeight(8)
+        self._scan_progress.setTextVisible(False)
+        self._scan_progress.setStyleSheet(
+            f"QProgressBar {{ background: {BG_BLACK}; border: 1px solid {SEPARATOR}; }}"
+            f"QProgressBar::chunk {{ background: {ACCENT_BLUE}; }}"
+        )
+        self._scan_progress.setVisible(False)
+        vb.addWidget(self._scan_progress)
+        self._scan_worker: _AnalysisWorker | None = None
 
         # Scroll area
         self._scroll = QScrollArea()
@@ -2400,7 +2586,26 @@ class SliceLibraryPanel(QFrame):
             self._rows.append(row)
             self._inner_layout.insertWidget(self._inner_layout.count() - 1, row)
 
+        self._refresh_key_filter_options()
         self._apply_filter()
+
+    def _refresh_key_filter_options(self):
+        """Re-populate the key filter combo from currently loaded metadata."""
+        prev = self._key_filter.currentData() if self._key_filter.count() > 0 else ""
+        self._key_filter.blockSignals(True)
+        self._key_filter.clear()
+        self._key_filter.addItem("All Keys", "")
+        keys = sorted({
+            (m.get("key") or "").strip()
+            for m in self._meta_cache.values()
+            if m.get("key")
+        })
+        for k in keys:
+            self._key_filter.addItem(k, k)
+        # Restore previous selection if still present
+        idx = self._key_filter.findData(prev) if prev else 0
+        self._key_filter.setCurrentIndex(idx if idx >= 0 else 0)
+        self._key_filter.blockSignals(False)
 
     def _sort_files(self, files: list, slices_dir: str) -> list:
         def _safe_mtime(f):
@@ -2408,6 +2613,26 @@ class SliceLibraryPanel(QFrame):
                 return os.path.getmtime(os.path.join(slices_dir, f))
             except OSError:
                 return 0.0
+
+        def _bpm_of(f):
+            meta = self._meta_cache.get(os.path.join(slices_dir, f))
+            if meta:
+                bpm = meta.get("bpm")
+                if bpm is not None:
+                    try:
+                        return float(bpm)
+                    except (TypeError, ValueError):
+                        pass
+            return None
+
+        def _key_of(f):
+            meta = self._meta_cache.get(os.path.join(slices_dir, f))
+            if meta:
+                k = meta.get("key")
+                if k:
+                    return str(k)
+            return None
+
         if self._sort_mode == 0:
             return sorted(files, key=str.lower)
         elif self._sort_mode == 1:
@@ -2416,6 +2641,22 @@ class SliceLibraryPanel(QFrame):
             return sorted(files, key=_safe_mtime, reverse=True)
         elif self._sort_mode == 3:
             return sorted(files, key=_safe_mtime)
+        elif self._sort_mode == 4:
+            # BPM ascending; None last
+            return sorted(files, key=lambda f: (_bpm_of(f) is None, _bpm_of(f) or 0.0, f.lower()))
+        elif self._sort_mode == 5:
+            # BPM descending; None last
+            return sorted(files, key=lambda f: (_bpm_of(f) is None, -(_bpm_of(f) or 0.0), f.lower()))
+        elif self._sort_mode == 6:
+            # Key A-Z; None last
+            return sorted(files, key=lambda f: (_key_of(f) is None, (_key_of(f) or "").lower(), f.lower()))
+        elif self._sort_mode == 7:
+            # Key Z-A; None last (still after detected keys)
+            with_key = [f for f in files if _key_of(f)]
+            without = [f for f in files if not _key_of(f)]
+            with_key.sort(key=lambda f: ((_key_of(f) or "").lower(), f.lower()), reverse=True)
+            without.sort(key=str.lower)
+            return with_key + without
         return files
 
     def _on_sort_changed(self, _idx: int):
@@ -2426,11 +2667,104 @@ class SliceLibraryPanel(QFrame):
         self._search_debounce.start()
 
     def _apply_filter(self, _text: str = ""):
-        """Filter rows by search text (substring match on filename)."""
+        """Filter rows by name search + key + BPM range (AND-combined)."""
         query = self._search_edit.text().strip().lower()
+        key_filter = self._key_filter.currentData() if hasattr(self, "_key_filter") else ""
+        bpm_min = self._bpm_min.value() if hasattr(self, "_bpm_min") else 0.0
+        bpm_max = self._bpm_max.value() if hasattr(self, "_bpm_max") else 0.0
         for row in self._rows:
             name = os.path.basename(row._filepath).lower()
-            row.setVisible(not query or query in name)
+            visible = True
+            if query and query not in name:
+                visible = False
+            if visible and key_filter and row._key != key_filter:
+                visible = False
+            if visible and (bpm_min > 0 or bpm_max > 0):
+                if row._bpm is not None:
+                    if bpm_min > 0 and row._bpm < bpm_min:
+                        visible = False
+                    if bpm_max > 0 and row._bpm > bpm_max:
+                        visible = False
+                # Rows without BPM data always pass the BPM filter
+            row.setVisible(visible)
+
+    def _clear_filters(self):
+        """Reset all filter controls to defaults."""
+        self._search_edit.clear()
+        self._key_filter.setCurrentIndex(0)
+        self._bpm_min.setValue(0)
+        self._bpm_max.setValue(0)
+        self._apply_filter()
+
+    # ── BPM + Key scan ────────────────────────────────────────────────
+    def _on_scan_clicked(self):
+        """Launch a background BPM+Key scan on slices missing data."""
+        if self._scan_worker is not None and self._scan_worker.isRunning():
+            # Cancel running scan
+            self._scan_worker.cancel()
+            self._scan_btn.setText("Scan")
+            return
+        targets: list[str] = []
+        for row in self._rows:
+            meta = self._meta_cache.get(row._filepath, {}) or {}
+            if not meta.get("bpm") or not meta.get("key"):
+                targets.append(row._filepath)
+        if not targets:
+            self._scan_progress.setVisible(False)
+            return
+        self._scan_progress.setRange(0, len(targets))
+        self._scan_progress.setValue(0)
+        self._scan_progress.setVisible(True)
+        self._scan_btn.setText("Cancel")
+
+        worker = _AnalysisWorker(targets, parent=self)
+        worker.result.connect(self._on_scan_result)
+        worker.progress.connect(self._on_scan_progress)
+        worker.finished.connect(self._on_scan_finished)
+        self._scan_worker = worker
+        worker.start()
+
+    def _on_scan_result(self, filepath: str, bpm: float, key: str):
+        """Update sidecar JSON + cache + matching row badge."""
+        import json as _json
+        import math as _math
+        meta = dict(self._meta_cache.get(filepath, {}) or {})
+        if bpm is not None and not _math.isnan(bpm) and bpm > 0:
+            meta["bpm"] = float(bpm)
+        if key:
+            meta["key"] = key
+        self._meta_cache[filepath] = meta
+        # Persist to sidecar
+        try:
+            sidecar = os.path.splitext(filepath)[0] + ".json"
+            existing = {}
+            if os.path.isfile(sidecar):
+                try:
+                    with open(sidecar, "r", encoding="utf-8") as f:
+                        existing = _json.load(f) or {}
+                except (ValueError, OSError):
+                    existing = {}
+            existing.update(meta)
+            with open(sidecar, "w", encoding="utf-8") as f:
+                _json.dump(existing, f, indent=2)
+        except OSError:
+            pass
+        # Live-update matching row badge
+        for row in self._rows:
+            if row._filepath == filepath:
+                row._load_metadata(meta)
+                break
+
+    def _on_scan_progress(self, current: int, total: int):
+        self._scan_progress.setRange(0, total)
+        self._scan_progress.setValue(current)
+
+    def _on_scan_finished(self):
+        self._scan_progress.setVisible(False)
+        self._scan_btn.setText("Scan")
+        self._refresh_key_filter_options()
+        self._apply_filter()
+        self._scan_worker = None
 
     def _on_delete(self, filepath: str):
         # Also remove metadata sidecar
@@ -2510,8 +2844,1068 @@ class SliceLibraryPanel(QFrame):
         self.refresh()
 
 
+# ---------------------------------------------------------------------------
+# Library Tab — Slices + Samples explorer
+# ---------------------------------------------------------------------------
+
+
+class _NumericTableItem(QTableWidgetItem):
+    """QTableWidgetItem that sorts numerically by stored UserRole float."""
+
+    def __lt__(self, other):
+        try:
+            a = float(self.data(Qt.ItemDataRole.UserRole))
+            b = float(other.data(Qt.ItemDataRole.UserRole))
+            # NaN always sorts last regardless of direction
+            import math as _m
+            if _m.isnan(a) and _m.isnan(b):
+                return False
+            if _m.isnan(a):
+                return False
+            if _m.isnan(b):
+                return True
+            return a < b
+        except (TypeError, ValueError):
+            return super().__lt__(other)
+
+
+class _LibraryTable(QTableWidget):
+    """QTableWidget subclass with multi-file drag and Delete-key shortcut."""
+
+    delete_pressed = Signal()
+    rows_dragged = Signal(list)  # list[str] filepaths
+
+    def __init__(self, columns: list[str], parent=None):
+        super().__init__(0, len(columns), parent)
+        self.setHorizontalHeaderLabels(columns)
+        self.setSortingEnabled(True)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setAlternatingRowColors(True)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self.verticalHeader().setVisible(False)
+        self.verticalHeader().setDefaultSectionSize(20)
+        self.horizontalHeader().setStretchLastSection(True)
+        self.horizontalHeader().setSectionsMovable(False)
+        self.setShowGrid(False)
+        self.setStyleSheet(
+            f"QTableWidget {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 9px; gridline-color: {SEPARATOR}; "
+            f"alternate-background-color: #1a1a1a; }}"
+            f"QHeaderView::section {{ background: {BG_PANEL}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; font-weight: bold; padding: 2px 4px; "
+            f"border: 0px; border-right: 1px solid {SEPARATOR}; }}"
+            f"QTableWidget::item:selected {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
+        )
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.delete_pressed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def startDrag(self, supportedActions):
+        rows = sorted({i.row() for i in self.selectedIndexes()})
+        if not rows:
+            return
+        paths: list[str] = []
+        for r in rows:
+            # Filepath is always on column 1 (Name), never on the play column
+            name_item = self.item(r, 1)
+            if name_item is None:
+                continue
+            fp = name_item.data(Qt.ItemDataRole.UserRole + 1)
+            if fp:
+                paths.append(str(fp))
+        if not paths:
+            return
+        self.rows_dragged.emit(paths)
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
+        # Show a label so the user knows what they're dragging
+        from PySide6.QtGui import QPixmap, QPainter, QFont, QFontMetrics
+        label = os.path.basename(paths[0])
+        if len(paths) > 1:
+            label = f"{len(paths)} files"
+        fm_font = QFont()
+        fm_font.setPointSize(8)
+        fm = QFontMetrics(fm_font)
+        w = fm.horizontalAdvance(label) + 16
+        h = 18
+        pm = QPixmap(w, h)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setFont(fm_font)
+        p.fillRect(0, 0, w, h, QColor("#3a3a2a"))
+        p.setPen(QColor("#c8aa5a"))
+        p.drawText(8, 13, label)
+        p.end()
+        drag.setPixmap(pm)
+        drag.setHotSpot(pm.rect().center())
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
+
+    def sortByColumn(self, column: int, order):
+        """Prevent sorting by the play-button column (col 0)."""
+        if column == 0:
+            return
+        super().sortByColumn(column, order)
+
+
+class _LibraryTableBase(QWidget):
+    """Shared base for SLICES/SAMPLES sub-tabs.
+
+    Provides search + sort headers + Key/BPM filter row + scan progress.
+    Subclasses implement `_refresh()`, `_columns()`, `_build_context_menu()`,
+    `_on_delete_selected()`, and `_files_to_scan()`.
+    """
+
+    load_to_slicer = Signal(str)
+    load_to_channel = Signal(str, int)  # filepath, ch_idx (-1 = active)
+    preview_requested = Signal(str)
+
+    # Column-index constants for shared columns (subclasses define rest)
+    COL_NAME = 1
+    COL_BPM = 2
+    COL_KEY = 3
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scan_worker: _AnalysisWorker | None = None
+        self._row_filepaths: list[str] = []   # row_index → filepath (matches model order)
+        self._meta: dict[str, dict] = {}      # filepath → metadata dict
+
+        vb = QVBoxLayout(self)
+        vb.setContentsMargins(2, 2, 2, 2)
+        vb.setSpacing(2)
+
+        # Toolbar row 1: search + refresh + scan
+        row1 = QHBoxLayout()
+        row1.setSpacing(4)
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("Search\u2026")
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.setFixedHeight(20)
+        self._search_edit.setStyleSheet(
+            f"QLineEdit {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
+        )
+        self._search_edit.textChanged.connect(self._on_search_changed)
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(250)
+        self._search_debounce.timeout.connect(self._apply_filter)
+        row1.addWidget(self._search_edit, stretch=1)
+
+        self._refresh_btn = QPushButton("\u21BB")
+        self._refresh_btn.setFixedSize(22, 20)
+        self._refresh_btn.setToolTip("Refresh")
+        self._refresh_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 10px; border: 1px solid {SEPARATOR}; }}"
+            f"QPushButton:hover {{ color: {ACCENT_GOLD}; }}"
+        )
+        self._refresh_btn.clicked.connect(self.refresh)
+        row1.addWidget(self._refresh_btn)
+
+        self._scan_btn = QPushButton("Scan BPM + Key")
+        self._scan_btn.setFixedHeight(20)
+        self._scan_btn.setToolTip("Detect BPM and musical key for unscanned files")
+        self._scan_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_BLUE}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
+            f"QPushButton:hover {{ background: {SEPARATOR}; }}"
+        )
+        self._scan_btn.clicked.connect(self._on_scan_clicked)
+        row1.addWidget(self._scan_btn)
+
+        self._batch_del_btn = QPushButton("Delete")
+        self._batch_del_btn.setFixedHeight(20)
+        self._batch_del_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
+            f"QPushButton:hover {{ color: #ff6666; }}"
+        )
+        self._batch_del_btn.setVisible(False)
+        self._batch_del_btn.clicked.connect(self._on_delete_selected)
+        row1.addWidget(self._batch_del_btn)
+        vb.addLayout(row1)
+
+        # Filter row 2: Key + BPM range + Clear
+        row2 = QHBoxLayout()
+        row2.setSpacing(4)
+
+        _kl = QLabel("Key:")
+        _kl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 8px;")
+        row2.addWidget(_kl)
+        self._key_filter = QComboBox()
+        self._key_filter.setFixedHeight(20)
+        self._key_filter.setStyleSheet(
+            f"QComboBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
+        )
+        self._key_filter.addItem("All Keys", "")
+        self._key_filter.currentIndexChanged.connect(lambda _i: self._apply_filter())
+        row2.addWidget(self._key_filter, stretch=1)
+
+        _bl = QLabel("BPM:")
+        _bl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 8px;")
+        row2.addWidget(_bl)
+        self._bpm_min = QDoubleSpinBox()
+        self._bpm_min.setRange(0.0, 400.0)
+        self._bpm_min.setDecimals(0)
+        self._bpm_min.setSingleStep(1)
+        self._bpm_min.setSpecialValueText("Min")
+        self._bpm_min.setFixedHeight(20)
+        self._bpm_min.setFixedWidth(54)
+        self._bpm_min.setStyleSheet(
+            f"QDoubleSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 0px 2px; }}"
+        )
+        self._bpm_min.valueChanged.connect(lambda _v: self._apply_filter())
+        row2.addWidget(self._bpm_min)
+        _dash = QLabel("\u2013")
+        _dash.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 8px;")
+        row2.addWidget(_dash)
+        self._bpm_max = QDoubleSpinBox()
+        self._bpm_max.setRange(0.0, 400.0)
+        self._bpm_max.setDecimals(0)
+        self._bpm_max.setSingleStep(1)
+        self._bpm_max.setSpecialValueText("Max")
+        self._bpm_max.setFixedHeight(20)
+        self._bpm_max.setFixedWidth(54)
+        self._bpm_max.setStyleSheet(
+            f"QDoubleSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 0px 2px; }}"
+        )
+        self._bpm_max.valueChanged.connect(lambda _v: self._apply_filter())
+        row2.addWidget(self._bpm_max)
+        self._clear_filter_btn = QPushButton("\u2715")
+        self._clear_filter_btn.setFixedSize(20, 20)
+        self._clear_filter_btn.setToolTip("Clear filters")
+        self._clear_filter_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 9px; border: 1px solid {SEPARATOR}; }}"
+            f"QPushButton:hover {{ color: {ACCENT_GOLD}; }}"
+        )
+        self._clear_filter_btn.clicked.connect(self._clear_filters)
+        row2.addWidget(self._clear_filter_btn)
+        vb.addLayout(row2)
+
+        # Table
+        self._table = _LibraryTable(self._columns())
+        self._table.itemDoubleClicked.connect(self._on_double_click)
+        self._table.cellClicked.connect(self._on_cell_clicked)
+        self._table.itemSelectionChanged.connect(self._on_selection_changed)
+        self._table.delete_pressed.connect(self._on_delete_selected)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_context_menu)
+        vb.addWidget(self._table, stretch=1)
+
+        # Scan progress (hidden when idle)
+        self._scan_progress = QProgressBar()
+        self._scan_progress.setFixedHeight(8)
+        self._scan_progress.setTextVisible(False)
+        self._scan_progress.setStyleSheet(
+            f"QProgressBar {{ background: {BG_BLACK}; border: 1px solid {SEPARATOR}; }}"
+            f"QProgressBar::chunk {{ background: {ACCENT_BLUE}; }}"
+        )
+        self._scan_progress.setVisible(False)
+        vb.addWidget(self._scan_progress)
+
+    # ── Subclass overrides ────────────────────────────────────────────
+    def _columns(self) -> list[str]:
+        raise NotImplementedError
+
+    def refresh(self):
+        raise NotImplementedError
+
+    def _files_to_scan(self) -> list[str]:
+        """Return list of filepaths needing BPM/Key analysis (missing data)."""
+        out = []
+        for fp in self._row_filepaths:
+            meta = self._meta.get(fp, {}) or {}
+            if not meta.get("bpm") or not meta.get("key"):
+                out.append(fp)
+        return out
+
+    def _on_scan_result_persist(self, filepath: str, bpm: float, key: str):
+        """Subclass: persist BPM+Key for one file (sidecar JSON or shared cache)."""
+        raise NotImplementedError
+
+    def _build_context_menu(self, menu: QMenu, filepaths: list[str]) -> None:
+        """Subclass: populate context menu with actions for the given selection."""
+        raise NotImplementedError
+
+    # ── Search / filter ───────────────────────────────────────────────
+    def _on_search_changed(self, _text: str = ""):
+        self._search_debounce.start()
+
+    def _apply_filter(self):
+        query = self._search_edit.text().strip().lower()
+        key_filter = self._key_filter.currentData() or ""
+        bpm_min = self._bpm_min.value()
+        bpm_max = self._bpm_max.value()
+        for r in range(self._table.rowCount()):
+            visible = True
+            name_item = self._table.item(r, self.COL_NAME)
+            name = name_item.text().lower() if name_item else ""
+            if query and query not in name:
+                visible = False
+            if visible and key_filter:
+                key_item = self._table.item(r, self.COL_KEY)
+                key_val = key_item.text() if key_item else ""
+                if key_val != key_filter:
+                    visible = False
+            if visible and (bpm_min > 0 or bpm_max > 0):
+                bpm_item = self._table.item(r, self.COL_BPM)
+                if bpm_item is not None:
+                    try:
+                        bpm_val = float(bpm_item.data(Qt.ItemDataRole.UserRole))
+                        import math as _m
+                        if not _m.isnan(bpm_val):
+                            if bpm_min > 0 and bpm_val < bpm_min:
+                                visible = False
+                            if bpm_max > 0 and bpm_val > bpm_max:
+                                visible = False
+                    except (TypeError, ValueError):
+                        pass
+            self._table.setRowHidden(r, not visible)
+
+    def _clear_filters(self):
+        self._search_edit.clear()
+        self._key_filter.setCurrentIndex(0)
+        self._bpm_min.setValue(0)
+        self._bpm_max.setValue(0)
+        self._apply_filter()
+
+    def _refresh_key_filter_options(self):
+        prev = self._key_filter.currentData() or ""
+        self._key_filter.blockSignals(True)
+        self._key_filter.clear()
+        self._key_filter.addItem("All Keys", "")
+        keys = sorted({(m.get("key") or "").strip() for m in self._meta.values() if m.get("key")})
+        for k in keys:
+            self._key_filter.addItem(k, k)
+        idx = self._key_filter.findData(prev) if prev else 0
+        self._key_filter.setCurrentIndex(idx if idx >= 0 else 0)
+        self._key_filter.blockSignals(False)
+
+    # ── Selection / actions ───────────────────────────────────────────
+    def _selected_filepaths(self) -> list[str]:
+        rows = sorted({i.row() for i in self._table.selectedIndexes()})
+        out = []
+        for r in rows:
+            item = self._table.item(r, self.COL_NAME)
+            if item is None:
+                continue
+            fp = item.data(Qt.ItemDataRole.UserRole + 1)
+            if fp:
+                out.append(str(fp))
+        return out
+
+    def _on_selection_changed(self):
+        n = len({i.row() for i in self._table.selectedIndexes()})
+        if n > 1:
+            self._batch_del_btn.setText(f"Delete ({n})")
+            self._batch_del_btn.setVisible(True)
+        elif n == 1:
+            self._batch_del_btn.setText("Delete")
+            self._batch_del_btn.setVisible(True)
+        else:
+            self._batch_del_btn.setVisible(False)
+
+    def _on_cell_clicked(self, row: int, col: int):
+        if col == self.COL_PLAY:
+            name_item = self._table.item(row, self.COL_NAME)
+            if name_item:
+                fp = name_item.data(Qt.ItemDataRole.UserRole + 1)
+                if fp:
+                    self.preview_requested.emit(str(fp))
+
+    def _on_double_click(self, item: QTableWidgetItem):
+        r = item.row()
+        name_item = self._table.item(r, self.COL_NAME)
+        if name_item is None:
+            return
+        fp = name_item.data(Qt.ItemDataRole.UserRole + 1)
+        if fp:
+            self._handle_double_click(str(fp))
+
+    def _handle_double_click(self, filepath: str):
+        """Subclass: react to default double-click action."""
+        raise NotImplementedError
+
+    def _on_context_menu(self, pos):
+        paths = self._selected_filepaths()
+        # If right-click was on a row that's not in the current selection,
+        # use just that row instead.
+        idx = self._table.indexAt(pos)
+        if idx.isValid():
+            name_item = self._table.item(idx.row(), self.COL_NAME)
+            if name_item is not None:
+                clicked_fp = name_item.data(Qt.ItemDataRole.UserRole + 1)
+                if clicked_fp and clicked_fp not in paths:
+                    self._table.clearSelection()
+                    self._table.selectRow(idx.row())
+                    paths = [str(clicked_fp)]
+        if not paths:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background: rgba(30, 30, 30, 230); color: {TEXT_PRIMARY}; "
+            f"border: 1px solid {SEPARATOR}; font-size: 9px; }}"
+            f"QMenu::item {{ padding: 4px 16px; }}"
+            f"QMenu::item:selected {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
+        )
+        self._build_context_menu(menu, paths)
+        menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _on_delete_selected(self):
+        """Subclass implements actual delete behavior."""
+        pass
+
+    # ── Scan ──────────────────────────────────────────────────────────
+    def _on_scan_clicked(self):
+        if self._scan_worker is not None and self._scan_worker.isRunning():
+            self._scan_worker.cancel()
+            self._scan_btn.setText("Scan BPM + Key")
+            return
+        targets = self._files_to_scan()
+        if not targets:
+            return
+        self._scan_progress.setRange(0, len(targets))
+        self._scan_progress.setValue(0)
+        self._scan_progress.setVisible(True)
+        self._scan_btn.setText("Cancel Scan")
+        worker = _AnalysisWorker(targets, parent=self)
+        worker.result.connect(self._on_scan_result)
+        worker.progress.connect(self._on_scan_progress)
+        worker.finished.connect(self._on_scan_finished)
+        self._scan_worker = worker
+        worker.start()
+
+    def _on_scan_result(self, filepath: str, bpm: float, key: str):
+        import math as _m
+        meta = dict(self._meta.get(filepath, {}) or {})
+        if not _m.isnan(bpm) and bpm > 0:
+            meta["bpm"] = float(bpm)
+        if key:
+            meta["key"] = key
+        self._meta[filepath] = meta
+        self._on_scan_result_persist(filepath, bpm, key)
+        # Live-update matching row
+        for r in range(self._table.rowCount()):
+            name_item = self._table.item(r, self.COL_NAME)
+            if name_item is None:
+                continue
+            if name_item.data(Qt.ItemDataRole.UserRole + 1) == filepath:
+                if "bpm" in meta:
+                    bpm_item = self._table.item(r, self.COL_BPM)
+                    if bpm_item is not None:
+                        bpm_item.setText(f"{meta['bpm']:.0f}")
+                        bpm_item.setData(Qt.ItemDataRole.UserRole, float(meta["bpm"]))
+                if "key" in meta:
+                    key_item = self._table.item(r, self.COL_KEY)
+                    if key_item is not None:
+                        key_item.setText(meta["key"])
+                break
+
+    def _on_scan_progress(self, current: int, total: int):
+        self._scan_progress.setRange(0, total)
+        self._scan_progress.setValue(current)
+
+    def _on_scan_finished(self):
+        self._scan_progress.setVisible(False)
+        self._scan_btn.setText("Scan BPM + Key")
+        self._refresh_key_filter_options()
+        self._apply_filter()
+        self._scan_worker = None
+
+
+class _LibrarySlicesTab(_LibraryTableBase):
+    """SLICES sub-tab — scans data/slices/ directory."""
+
+    # Column indices: ▶ | Name | BPM | Key | Bars | Duration | Date
+    COL_PLAY = 0
+    COL_BARS = 4
+    COL_DUR = 5
+    COL_DATE = 6
+
+    def _columns(self) -> list[str]:
+        return ["▶", "Name", "BPM", "Key", "Bars", "Duration", "Date"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.refresh()
+
+    def refresh(self):
+        from mlrvp.config import get_slices_dir
+        slices_dir = str(get_slices_dir())
+        self._row_filepaths = []
+        self._meta = {}
+        self._table.setSortingEnabled(False)
+        self._table.setRowCount(0)
+        if not os.path.isdir(slices_dir):
+            self._table.setSortingEnabled(True)
+            return
+        try:
+            files = sorted(
+                f for f in os.listdir(slices_dir)
+                if os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS
+            )
+        except OSError:
+            files = []
+        import json as _json
+        for fname in files:
+            fpath = os.path.join(slices_dir, fname)
+            meta = {}
+            sidecar = os.path.splitext(fpath)[0] + ".json"
+            if os.path.isfile(sidecar):
+                try:
+                    with open(sidecar, "r", encoding="utf-8") as f:
+                        meta = _json.load(f) or {}
+                except (ValueError, OSError):
+                    meta = {}
+            try:
+                mtime = os.path.getmtime(fpath)
+            except OSError:
+                mtime = 0.0
+            try:
+                info = sf.info(fpath)
+                duration = info.frames / float(info.samplerate or 1)
+            except Exception:
+                duration = 0.0
+            meta["_duration"] = duration  # runtime-only, for bars computation
+            self._meta[fpath] = meta
+            self._row_filepaths.append(fpath)
+            self._add_row(fpath, fname, meta, duration, mtime)
+        self._table.setSortingEnabled(True)
+        self._refresh_key_filter_options()
+        self._apply_filter()
+        # All columns user-resizable; last column stretches to fill space
+        h = self._table.horizontalHeader()
+        h.setStretchLastSection(True)
+        for c in range(self._table.columnCount()):
+            h.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+        self._table.setColumnWidth(self.COL_PLAY, 24)
+        self._table.setColumnWidth(self.COL_NAME, 200)
+        self._table.setColumnWidth(self.COL_BPM, 55)
+        self._table.setColumnWidth(self.COL_KEY, 55)
+        self._table.setColumnWidth(self.COL_BARS, 45)
+        self._table.setColumnWidth(self.COL_DUR, 70)
+
+    def _add_row(self, fpath: str, fname: str, meta: dict, duration: float, mtime: float):
+        import math as _m
+        from datetime import datetime as _dt
+        r = self._table.rowCount()
+        self._table.insertRow(r)
+        # Play item (▶ text, click handled via cellClicked in base class)
+        play_item = QTableWidgetItem("▶")
+        play_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        play_item.setForeground(QColor(ACCENT_GOLD))
+        play_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        self._table.setItem(r, self.COL_PLAY, play_item)
+        # Name
+        name_item = QTableWidgetItem(fname)
+        name_item.setData(Qt.ItemDataRole.UserRole + 1, fpath)
+        name_item.setToolTip(fpath)
+        self._table.setItem(r, self.COL_NAME, name_item)
+        # BPM (numeric)
+        bpm_val = meta.get("bpm")
+        bpm_item = _NumericTableItem(f"{bpm_val:.0f}" if bpm_val else "")
+        bpm_item.setData(Qt.ItemDataRole.UserRole, float(bpm_val) if bpm_val else float("nan"))
+        bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(r, self.COL_BPM, bpm_item)
+        # Key
+        key_item = QTableWidgetItem(meta.get("key") or "")
+        key_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(r, self.COL_KEY, key_item)
+        # Bars (numeric) — from sidecar, or derived from BPM + duration
+        bars_val = meta.get("bars") or _snap_to_bars(duration, meta.get("bpm"))
+        bars_item = _NumericTableItem(str(int(bars_val)) if bars_val else "")
+        bars_item.setData(Qt.ItemDataRole.UserRole, float(bars_val) if bars_val else float("nan"))
+        bars_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(r, self.COL_BARS, bars_item)
+        # Duration (numeric, displayed mm:ss.s)
+        dur_text = f"{int(duration // 60)}:{duration % 60:04.1f}" if duration > 0 else ""
+        dur_item = _NumericTableItem(dur_text)
+        dur_item.setData(Qt.ItemDataRole.UserRole, float(duration) if duration > 0 else float("nan"))
+        dur_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(r, self.COL_DUR, dur_item)
+        # Date (numeric mtime, displayed YYYY-MM-DD)
+        try:
+            date_text = _dt.fromtimestamp(mtime).strftime("%Y-%m-%d") if mtime > 0 else ""
+        except (OSError, ValueError):
+            date_text = ""
+        date_item = _NumericTableItem(date_text)
+        date_item.setData(Qt.ItemDataRole.UserRole, float(mtime))
+        self._table.setItem(r, self.COL_DATE, date_item)
+
+    def _on_scan_result_persist(self, filepath: str, bpm: float, key: str):
+        import json as _json
+        import math as _m
+        sidecar = os.path.splitext(filepath)[0] + ".json"
+        existing = {}
+        if os.path.isfile(sidecar):
+            try:
+                with open(sidecar, "r", encoding="utf-8") as f:
+                    existing = _json.load(f) or {}
+            except (ValueError, OSError):
+                existing = {}
+        if not _m.isnan(bpm) and bpm > 0:
+            existing["bpm"] = float(bpm)
+            # Compute bars from BPM + duration and persist
+            duration = self._meta.get(filepath, {}).get("_duration", 0.0)
+            bars = _snap_to_bars(duration, bpm)
+            if bars:
+                existing["bars"] = bars
+        if key:
+            existing["key"] = key
+        try:
+            with open(sidecar, "w", encoding="utf-8") as f:
+                _json.dump(existing, f, indent=2)
+        except OSError:
+            pass
+
+    def _handle_double_click(self, filepath: str):
+        self.load_to_slicer.emit(filepath)
+
+    def _build_context_menu(self, menu: QMenu, filepaths: list[str]) -> None:
+        n = len(filepaths)
+        if n == 1:
+            act_load = menu.addAction("Load to Slicer")
+            act_load.triggered.connect(lambda: self.load_to_slicer.emit(filepaths[0]))
+            ch_menu = menu.addMenu("Load to Channel")
+            for ch in range(8):
+                a = ch_menu.addAction(f"Channel {ch + 1}")
+                a.triggered.connect(lambda _c=False, c=ch, p=filepaths[0]: self.load_to_channel.emit(p, c))
+            act_reveal = menu.addAction("Reveal in Explorer")
+            act_reveal.triggered.connect(lambda: _reveal_in_explorer(filepaths[0]))
+            menu.addSeparator()
+        act_del = menu.addAction(f"Delete Selected ({n})" if n > 1 else "Delete")
+        act_del.triggered.connect(self._on_delete_selected)
+
+    def _on_delete_selected(self):
+        paths = self._selected_filepaths()
+        if not paths:
+            return
+        names = [os.path.basename(p) for p in paths]
+        msg = f"Delete {len(paths)} slice(s)?\n" + "\n".join(names[:10])
+        if len(names) > 10:
+            msg += f"\n\u2026and {len(names) - 10} more"
+        reply = QMessageBox.question(
+            self, "Delete Slices", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        for p in paths:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+            sidecar = os.path.splitext(p)[0] + ".json"
+            if os.path.isfile(sidecar):
+                try:
+                    os.remove(sidecar)
+                except OSError:
+                    pass
+        self.refresh()
+
+
+def _snap_to_bars(duration_s: float, bpm) -> int | None:
+    """Return bars count (nearest power-of-2: 1/2/4/8/16/32) from duration + BPM."""
+    import math as _m
+    try:
+        bpm = float(bpm)
+        if not duration_s or bpm <= 0:
+            return None
+        bars_f = duration_s * bpm / (4.0 * 60.0)
+        if bars_f <= 0:
+            return None
+        exp = round(_m.log2(bars_f))
+        exp = max(0, min(exp, 5))  # clamp 1..32
+        return 2 ** exp
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _reveal_in_explorer(filepath: str):
+    """Open the OS file explorer with the given file selected."""
+    import sys
+    import subprocess
+    if not os.path.exists(filepath):
+        return
+    try:
+        if sys.platform.startswith("win"):
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(filepath)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", filepath])
+        else:
+            subprocess.Popen(["xdg-open", os.path.dirname(filepath)])
+    except OSError:
+        pass
+
+
+class _LibrarySamplesTab(_LibraryTableBase):
+    """SAMPLES sub-tab — scans user-defined watched directories."""
+
+    # Column indices: ▶ | Name | BPM | Key | Duration | Channels | SR | Size | Path
+    COL_PLAY = 0
+    COL_DUR = 4
+    COL_CH = 5
+    COL_SR = 6
+    COL_SIZE = 7
+    COL_PATH = 8
+
+    def _columns(self) -> list[str]:
+        return ["▶", "Name", "BPM", "Key", "Duration", "Ch", "SR", "Size", "Path"]
+
+    def __init__(self, parent=None):
+        from mlrvp.config import get_sample_paths, get_sample_metadata_cache
+        super().__init__(parent)
+        self._watched_dirs: list[str] = list(get_sample_paths())
+        self._cache: dict = dict(get_sample_metadata_cache())
+
+        # Watched dirs section (collapsible)
+        self._dirs_toggle = QPushButton("WATCHED DIRS \u25BE")
+        self._dirs_toggle.setCheckable(True)
+        self._dirs_toggle.setChecked(False)
+        self._dirs_toggle.setFixedHeight(20)
+        self._dirs_toggle.setStyleSheet(
+            f"QPushButton {{ background: {BG_PANEL}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; font-weight: bold; border: 1px solid {SEPARATOR}; "
+            f"padding: 1px 6px; text-align: left; }}"
+            f"QPushButton:checked {{ background: {SEPARATOR}; }}"
+        )
+        self._dirs_toggle.clicked.connect(self._on_toggle_dirs)
+        self.layout().addWidget(self._dirs_toggle)
+
+        self._dirs_panel = QWidget()
+        dvl = QVBoxLayout(self._dirs_panel)
+        dvl.setContentsMargins(2, 2, 2, 2)
+        dvl.setSpacing(2)
+        self._dirs_list = QListWidget()
+        self._dirs_list.setFixedHeight(80)
+        self._dirs_list.setStyleSheet(
+            f"QListWidget {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 9px; border: 1px solid {SEPARATOR}; }}"
+        )
+        for d in self._watched_dirs:
+            self._dirs_list.addItem(d)
+        dvl.addWidget(self._dirs_list)
+        dirs_btn_row = QHBoxLayout()
+        dirs_btn_row.setSpacing(4)
+        add_btn = QPushButton("+ Add Dir")
+        add_btn.setFixedHeight(20)
+        add_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_GOLD}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
+            f"QPushButton:hover {{ background: {SEPARATOR}; }}"
+        )
+        add_btn.clicked.connect(self._on_add_dir)
+        dirs_btn_row.addWidget(add_btn)
+        rem_btn = QPushButton("Remove")
+        rem_btn.setFixedHeight(20)
+        rem_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
+            f"QPushButton:hover {{ color: #ff6666; }}"
+        )
+        rem_btn.clicked.connect(self._on_remove_dir)
+        dirs_btn_row.addWidget(rem_btn)
+        dirs_btn_row.addStretch()
+        dvl.addLayout(dirs_btn_row)
+        self._dirs_panel.setVisible(False)
+        self.layout().addWidget(self._dirs_panel)
+
+        self.refresh()
+
+    def _on_toggle_dirs(self):
+        self._dirs_panel.setVisible(self._dirs_toggle.isChecked())
+        self._dirs_toggle.setText(
+            "WATCHED DIRS \u25B4" if self._dirs_toggle.isChecked() else "WATCHED DIRS \u25BE"
+        )
+
+    def _on_add_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "Add Sample Directory")
+        if not d:
+            return
+        if d in self._watched_dirs:
+            return
+        self._watched_dirs.append(d)
+        self._dirs_list.addItem(d)
+        self._save_dirs()
+        self.refresh()
+
+    def _on_remove_dir(self):
+        row = self._dirs_list.currentRow()
+        if row < 0 or row >= len(self._watched_dirs):
+            return
+        del self._watched_dirs[row]
+        self._dirs_list.takeItem(row)
+        self._save_dirs()
+        self.refresh()
+
+    def _save_dirs(self):
+        from mlrvp.config import save_sample_paths
+        save_sample_paths(self._watched_dirs)
+
+    def _save_cache(self):
+        from mlrvp.config import save_sample_metadata_cache
+        save_sample_metadata_cache(self._cache)
+
+    def refresh(self):
+        self._row_filepaths = []
+        self._meta = {}
+        self._table.setSortingEnabled(False)
+        self._table.setRowCount(0)
+        seen: set[str] = set()
+        for base in self._watched_dirs:
+            if not os.path.isdir(base):
+                continue
+            for root, _dirs, files in os.walk(base):
+                for fn in files:
+                    if os.path.splitext(fn)[1].lower() not in AUDIO_EXTENSIONS:
+                        continue
+                    fpath = os.path.join(root, fn)
+                    if fpath in seen:
+                        continue
+                    seen.add(fpath)
+                    cached = self._cache.get(fpath, {}) or {}
+                    duration = cached.get("duration_sec") or 0.0
+                    channels = cached.get("channels") or 0
+                    samplerate = cached.get("samplerate") or 0
+                    filesize = cached.get("filesize") or 0
+                    if not duration or not channels or not samplerate:
+                        try:
+                            info = sf.info(fpath)
+                            duration = info.frames / float(info.samplerate or 1)
+                            channels = info.channels
+                            samplerate = info.samplerate
+                        except Exception:
+                            duration, channels, samplerate = 0.0, 0, 0
+                    if not filesize:
+                        try:
+                            filesize = os.path.getsize(fpath)
+                        except OSError:
+                            filesize = 0
+                    cached.update({
+                        "duration_sec": duration,
+                        "channels": channels,
+                        "samplerate": samplerate,
+                        "filesize": filesize,
+                    })
+                    self._cache[fpath] = cached
+                    self._meta[fpath] = cached
+                    self._row_filepaths.append(fpath)
+                    self._add_row(fpath, fn, cached, duration, channels, samplerate, filesize)
+        self._save_cache()
+        self._table.setSortingEnabled(True)
+        self._refresh_key_filter_options()
+        self._apply_filter()
+        # All columns user-resizable; last column stretches to fill space
+        h = self._table.horizontalHeader()
+        h.setStretchLastSection(True)
+        for c in range(self._table.columnCount()):
+            h.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+        self._table.setColumnWidth(self.COL_PLAY, 24)
+        self._table.setColumnWidth(self.COL_NAME, 200)
+        self._table.setColumnWidth(self.COL_BPM, 55)
+        self._table.setColumnWidth(self.COL_KEY, 55)
+        self._table.setColumnWidth(self.COL_DUR, 70)
+        self._table.setColumnWidth(self.COL_CH, 35)
+        self._table.setColumnWidth(self.COL_SR, 65)
+        self._table.setColumnWidth(self.COL_SIZE, 65)
+
+    def _add_row(self, fpath: str, fname: str, meta: dict, duration: float,
+                 channels: int, samplerate: int, filesize: int):
+        r = self._table.rowCount()
+        self._table.insertRow(r)
+        # Play item (▶ text, click handled via cellClicked in base class)
+        play_item = QTableWidgetItem("▶")
+        play_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        play_item.setForeground(QColor(ACCENT_GOLD))
+        play_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        self._table.setItem(r, self.COL_PLAY, play_item)
+        # Name
+        name_item = QTableWidgetItem(fname)
+        name_item.setData(Qt.ItemDataRole.UserRole + 1, fpath)
+        name_item.setToolTip(fpath)
+        self._table.setItem(r, self.COL_NAME, name_item)
+        # BPM
+        bpm_val = meta.get("bpm")
+        bpm_item = _NumericTableItem(f"{bpm_val:.0f}" if bpm_val else "")
+        bpm_item.setData(Qt.ItemDataRole.UserRole, float(bpm_val) if bpm_val else float("nan"))
+        bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(r, self.COL_BPM, bpm_item)
+        # Key
+        key_item = QTableWidgetItem(meta.get("key") or "")
+        key_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(r, self.COL_KEY, key_item)
+        # Duration
+        dur_text = f"{int(duration // 60)}:{duration % 60:04.1f}" if duration > 0 else ""
+        dur_item = _NumericTableItem(dur_text)
+        dur_item.setData(Qt.ItemDataRole.UserRole, float(duration) if duration > 0 else float("nan"))
+        dur_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(r, self.COL_DUR, dur_item)
+        # Channels
+        ch_item = _NumericTableItem(str(channels) if channels else "")
+        ch_item.setData(Qt.ItemDataRole.UserRole, float(channels) if channels else float("nan"))
+        ch_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(r, self.COL_CH, ch_item)
+        # Sample rate
+        sr_item = _NumericTableItem(f"{samplerate // 1000}k" if samplerate else "")
+        sr_item.setData(Qt.ItemDataRole.UserRole, float(samplerate) if samplerate else float("nan"))
+        sr_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(r, self.COL_SR, sr_item)
+        # Size
+        size_item = _NumericTableItem(_human_size(filesize) if filesize else "")
+        size_item.setData(Qt.ItemDataRole.UserRole, float(filesize) if filesize else 0.0)
+        size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._table.setItem(r, self.COL_SIZE, size_item)
+        # Path (folder only)
+        folder = os.path.dirname(fpath)
+        path_item = QTableWidgetItem(folder)
+        path_item.setToolTip(fpath)
+        self._table.setItem(r, self.COL_PATH, path_item)
+
+    def _on_scan_result_persist(self, filepath: str, bpm: float, key: str):
+        import math as _m
+        cached = dict(self._cache.get(filepath, {}) or {})
+        if not _m.isnan(bpm) and bpm > 0:
+            cached["bpm"] = float(bpm)
+        if key:
+            cached["key"] = key
+        self._cache[filepath] = cached
+        self._save_cache()
+
+    def _handle_double_click(self, filepath: str):
+        # Default: load to slicer (use right-click "Load to Channel" for direct channel load)
+        self.load_to_slicer.emit(filepath)
+
+    def _build_context_menu(self, menu: QMenu, filepaths: list[str]) -> None:
+        n = len(filepaths)
+        if n == 1:
+            act_load_slice = menu.addAction("Load to Slicer")
+            act_load_slice.triggered.connect(lambda: self.load_to_slicer.emit(filepaths[0]))
+            ch_menu = menu.addMenu("Load to Channel")
+            for ch in range(8):
+                a = ch_menu.addAction(f"Channel {ch + 1}")
+                a.triggered.connect(lambda _c=False, c=ch, p=filepaths[0]: self.load_to_channel.emit(p, c))
+            act_reveal = menu.addAction("Reveal in Explorer")
+            act_reveal.triggered.connect(lambda: _reveal_in_explorer(filepaths[0]))
+            menu.addSeparator()
+        act_remove = menu.addAction(f"Remove from Library ({n})" if n > 1 else "Remove from Library")
+        act_remove.triggered.connect(self._on_delete_selected)
+        act_disk_del = menu.addAction(f"Delete File\u2026 ({n})" if n > 1 else "Delete File\u2026")
+        act_disk_del.triggered.connect(lambda: self._on_disk_delete(filepaths))
+
+    def _on_delete_selected(self):
+        """Default Delete key action: remove from library (cache only, non-destructive)."""
+        paths = self._selected_filepaths()
+        if not paths:
+            return
+        for p in paths:
+            self._cache.pop(p, None)
+        self._save_cache()
+        self.refresh()
+
+    def _on_disk_delete(self, paths: list[str]):
+        """Permanently delete files from disk (explicit confirmation)."""
+        if not paths:
+            return
+        names = [os.path.basename(p) for p in paths]
+        msg = (f"PERMANENTLY delete {len(paths)} file(s) from disk?\n"
+               f"This cannot be undone.\n\n" + "\n".join(names[:10]))
+        if len(names) > 10:
+            msg += f"\n\u2026and {len(names) - 10} more"
+        reply = QMessageBox.warning(
+            self, "Delete Files from Disk", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        for p in paths:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+            self._cache.pop(p, None)
+        self._save_cache()
+        self.refresh()
+
+
+def _human_size(n: int) -> str:
+    """Format byte count as human-readable string."""
+    n = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f}{unit}" if unit != "B" else f"{int(n)}{unit}"
+        n /= 1024
+    return f"{n:.1f}TB"
+
+
+class LibraryPanel(QFrame):
+    """Top-level Library tool tab — wraps SLICES + SAMPLES sub-tabs."""
+
+    load_to_slicer = Signal(str)
+    load_to_channel = Signal(str, int)
+    preview_requested = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(
+            f"LibraryPanel {{ background: {BG_BLACK}; "
+            f"border: 1px solid {SEPARATOR}; }}"
+        )
+        vb = QVBoxLayout(self)
+        vb.setContentsMargins(2, 2, 2, 2)
+        vb.setSpacing(2)
+
+        title = QLabel("SAMPLE LIBRARY")
+        title.setStyleSheet(
+            f"color: {TEXT_SECONDARY}; font-size: 9px; font-weight: bold; "
+            f"background: {BG_PANEL}; padding: 3px 6px;"
+        )
+        vb.addWidget(title)
+
+        self._tabs = QTabWidget()
+        self._tabs.setDocumentMode(True)
+        self._slices_tab = _LibrarySlicesTab()
+        self._samples_tab = _LibrarySamplesTab()
+        self._tabs.addTab(self._slices_tab, "SLICES")
+        self._tabs.addTab(self._samples_tab, "SAMPLES")
+        vb.addWidget(self._tabs, stretch=1)
+
+        # Bubble all signals
+        for tab in (self._slices_tab, self._samples_tab):
+            tab.load_to_slicer.connect(self.load_to_slicer.emit)
+            tab.load_to_channel.connect(self.load_to_channel.emit)
+            tab.preview_requested.connect(self.preview_requested.emit)
+
+    def refresh(self):
+        self._slices_tab.refresh()
+        self._samples_tab.refresh()
+
+    @property
+    def slices_tab(self) -> _LibrarySlicesTab:
+        return self._slices_tab
+
+    @property
+    def samples_tab(self) -> _LibrarySamplesTab:
+        return self._samples_tab
+
+
 class ToolsView(QWidget):
-    """Tabbed tools panel: Record + Slice."""
+    """Tabbed tools panel: Record + Slice + Library."""
 
     recorder_param_changed = Signal(str, object)
     record_toggled = Signal(bool)

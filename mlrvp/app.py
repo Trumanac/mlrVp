@@ -16,7 +16,13 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer, QtMsgType, qInstallMessageHandler, QObject, Signal, Qt
 from PySide6.QtGui import QIcon
 
-from mlrvp.config import AppConfig, PlaybackMode, MAX_ROWS, NUM_GROUPS, NUM_PATTERN_RECORDERS, LED_OFF, LED_DIM, LED_BRIGHT, PITCH_SCALE_MAPS, PITCH_SCALE_NAMES
+from mlrvp.config import (
+    AppConfig, PlaybackMode, MAX_ROWS, NUM_GROUPS, NUM_PATTERN_RECORDERS,
+    LED_OFF, LED_DIM, LED_BRIGHT, PITCH_SCALE_MAPS, PITCH_SCALE_NAMES,
+    LIVE_STATE_EMPTY, LIVE_STATE_COUNTING_IN, LIVE_STATE_RECORDING,
+    LIVE_STATE_OVERDUBBING, LIVE_STATE_ARMED_RERECORD, LIVE_STATE_PLAYING,
+    LIVE_QUANTIZE_NAMES,
+)
 from mlrvp.audio.engine import AudioEngine
 from mlrvp.audio.slicer_preview import SlicerPreviewService
 from mlrvp.audio.sample import load_sample, get_waveform_overview
@@ -70,6 +76,30 @@ class _TriggerScheduler(QObject):
 
     def _do_release(self, row, column, columns):
         self._release_fn(row, column, columns)
+
+
+class _LiveLoopMarshaller(QObject):
+    """Bounces audio-thread loop_recorded callback to the Qt main thread."""
+    _recorded = Signal(int, object)  # row, SampleBuffer
+
+    def __init__(self, recorded_fn):
+        super().__init__()
+        self._recorded.connect(recorded_fn, Qt.ConnectionType.QueuedConnection)
+
+    def recorded(self, row, buffer):
+        self._recorded.emit(row, buffer)
+
+
+class _RecorderCompleteMarshaller(QObject):
+    """Bounces audio-thread recorder-complete callback to the Qt main thread."""
+    _completed = Signal()
+
+    def __init__(self, completed_fn):
+        super().__init__()
+        self._completed.connect(completed_fn, Qt.ConnectionType.QueuedConnection)
+
+    def completed(self):
+        self._completed.emit()
 
 
 class _ClockMarshaller(QObject):
@@ -161,6 +191,33 @@ class AppController:
         self._pattern_hold_cleared: set[int] = set()
         self._pattern_clear_hold_seconds = 3.0
 
+        # LIVE-mode looper state (per row)
+        # _live_press_time[row] = monotonic timestamp of col-0 press (for 2s long-press)
+        self._live_press_time: dict[int, float] = {}
+        # _live_long_press_timers[row] = QTimer firing after 2s for col-0 hold detection
+        self._live_long_press_timers: dict[int, QTimer] = {}
+        # Beats remaining in count-in (key=row, value=int beats left). Counts down on each beat.
+        self._live_countin_remaining: dict[int, int] = {}
+        # Pending start params for count-in (row → (bars, tempo, input_trim, thru, overdub_buf))
+        self._live_pending_start: dict[int, tuple] = {}
+        # LIVE long-press hold seconds for re-record arming
+        self._live_long_press_seconds = 2.0
+        # LIVE recording marshaller — bounces audio-thread callback to GUI thread
+        self._live_loop_marshaller = _LiveLoopMarshaller(self._on_loop_recorded)
+
+        # Recorder (Tools tab) state
+        self._recorder_complete_marshaller = _RecorderCompleteMarshaller(
+            self._on_recorder_complete
+        )
+        # In-memory take slots (max 4). Cleared on preset load.
+        self._recorder_takes: list = []  # list[SampleBuffer]
+        # Pending start scheduling: stores a one-shot clock callback handle so
+        # we can cancel if the user disarms before quantize boundary fires.
+        self._recorder_pending_start: bool = False
+        self._recorder_count_in_remaining: int = 0  # bars remaining for count-in
+        # GUI poll timer for recorder progress + input meter (started in init_gui)
+        self._recorder_poll_timer: Optional[QTimer] = None
+
     # ------------------------------------------------------------------ #
     #  Initialization                                                     #
     # ------------------------------------------------------------------ #
@@ -183,6 +240,11 @@ class AppController:
         """Initialize the audio engine."""
         self.engine = AudioEngine(self.config)
         self.engine.set_meter_callback(self._on_meter_levels)
+        self.engine.set_live_recorded_callback(self._live_loop_marshaller.recorded)
+        # Recorder completion bounce: audio thread → GUI thread
+        self.engine.recorder.set_complete_callback(
+            self._recorder_complete_marshaller.completed
+        )
         log.info("Audio engine initialized")
 
     def init_transport(self):
@@ -352,12 +414,19 @@ class AppController:
         self._ui_timer.timeout.connect(self._update_ui)
         self._ui_timer.start(16)
 
+        # Recorder UI poll timer (~20Hz) for input meter + progress bar
+        self._recorder_poll_timer = QTimer()
+        self._recorder_poll_timer.timeout.connect(self._poll_recorder_ui)
+        self._recorder_poll_timer.start(50)
+
         log.info("All subsystems started")
 
     def stop(self):
         """Stop all subsystems cleanly."""
         if self._ui_timer:
             self._ui_timer.stop()
+        if self._recorder_poll_timer:
+            self._recorder_poll_timer.stop()
         # Stop any active pattern hold timers
         for timer in self._pattern_hold_timers.values():
             timer.stop()
@@ -440,6 +509,10 @@ class AppController:
 
     def _execute_beat(self, beat_int: int, beat_position: float):
         """SEQ-mode channel advancement — runs on Qt main thread."""
+        # LIVE-mode count-in tick (decrements remaining beats, fires start)
+        self._live_advance_countin(beat_int)
+        # Recorder (Tools tab) quantized start handler
+        self._recorder_advance_clock(beat_int)
         if self.engine:
             columns = self.config.grid_columns
             for i in range(self.config.row_count):
@@ -528,12 +601,24 @@ class AppController:
         if state == 0:
             # Track physical button release
             self._grid_row_held.discard(row)
+            # LIVE mode: cancel any pending long-press detection on col-0 release
+            if self.engine and row < len(self.engine.channels):
+                ch = self.engine.channels[row]
+                if ch.state.mode == PlaybackMode.LIVE and column == 0:
+                    self._live_cancel_long_press(row)
             # Release handling — bounce to Qt main thread via scheduler
             self._trigger_scheduler.release(row, column, columns)
             return
 
         # Track physical button press
         self._grid_row_held.add(row)
+
+        # LIVE mode: handle entirely separately from normal trigger flow
+        if self.engine and row < len(self.engine.channels):
+            ch = self.engine.channels[row]
+            if ch.state.mode == PlaybackMode.LIVE:
+                self._handle_live_grid_press(row, column, columns)
+                return
 
         # Check if channel has a sample — if not, ignore the press
         if self.engine and self.engine.channels[row].sample is None:
@@ -572,6 +657,314 @@ class AppController:
             # Schedule the trigger at the next quantize boundary
             delay_ms = int(delay * 1000)
             self._trigger_scheduler.schedule(row, column, columns, delay_ms)
+
+    # ──────────────────────────────────────────────────────────────────
+    #  LIVE-mode looper grid handling
+    # ──────────────────────────────────────────────────────────────────
+
+    def _handle_live_grid_press(self, row: int, column: int, columns: int):
+        """Handle a grid press on a LIVE-mode row."""
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        ch = self.engine.channels[row]
+        live_state = ch.state.live.loop_state
+
+        if live_state == LIVE_STATE_EMPTY:
+            self._live_begin_recording(row, overdub=False)
+            return
+
+        if live_state == LIVE_STATE_COUNTING_IN:
+            self._live_pending_start.pop(row, None)
+            self._live_countin_remaining.pop(row, None)
+            ch.state.live.loop_state = LIVE_STATE_EMPTY
+            self._notify_live_state(row)
+            return
+
+        if live_state in (LIVE_STATE_RECORDING, LIVE_STATE_OVERDUBBING):
+            self.engine.cancel_live_recording()
+            if live_state == LIVE_STATE_OVERDUBBING:
+                ch.state.live.loop_state = LIVE_STATE_PLAYING
+            else:
+                ch.state.live.loop_state = LIVE_STATE_EMPTY
+            self._notify_live_state(row)
+            return
+
+        if live_state == LIVE_STATE_ARMED_RERECORD:
+            self._live_begin_recording(row, overdub=False)
+            return
+
+        if live_state == LIVE_STATE_PLAYING:
+            # If playback was stopped (group/all stop), any press resumes the loop
+            if not ch.state.playing:
+                self._stop_group_siblings(row, columns)
+                self.engine.trigger_channel(row, column, columns)
+                return
+            if column == 0:
+                self._live_press_time[row] = time.monotonic()
+                self._live_arm_long_press(row)
+                self._live_begin_recording(row, overdub=True)
+            else:
+                ch.state.mute = not ch.state.mute
+            return
+
+    def _live_arm_long_press(self, row: int):
+        """Start a 2-second QTimer that arms re-record if col-0 is still held."""
+        prev = self._live_long_press_timers.pop(row, None)
+        if prev is not None:
+            prev.stop()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda r=row: self._live_long_press_fired(r))
+        timer.start(int(self._live_long_press_seconds * 1000))
+        self._live_long_press_timers[row] = timer
+
+    def _live_cancel_long_press(self, row: int):
+        """Cancel the pending long-press timer (button released early)."""
+        timer = self._live_long_press_timers.pop(row, None)
+        if timer is not None:
+            timer.stop()
+        self._live_press_time.pop(row, None)
+
+    def _live_clear_all_pending(self):
+        """Cancel every pending LIVE timer + count-in / pending-start dict.
+
+        Called on preset recall: stale long-press timers, count-in beats,
+        or pending-start tuples from the previous preset must not fire on
+        the new preset (whose row modes may have changed from LIVE to
+        something else, or whose channels have a different sample bound).
+        """
+        for timer in list(self._live_long_press_timers.values()):
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        self._live_long_press_timers.clear()
+        self._live_press_time.clear()
+        self._live_pending_start.clear()
+        self._live_countin_remaining.clear()
+
+    def _live_long_press_fired(self, row: int):
+        """Long-press (2s) detected on col-0 — arm re-record."""
+        self._live_long_press_timers.pop(row, None)
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        if row not in self._grid_row_held:
+            return
+        ch = self.engine.channels[row]
+        if ch.state.mode != PlaybackMode.LIVE:
+            return
+        if ch.state.live.loop_state == LIVE_STATE_OVERDUBBING:
+            self.engine.cancel_live_recording()
+        ch.state.live.loop_state = LIVE_STATE_ARMED_RERECORD
+        self._notify_live_state(row)
+
+    def _live_begin_recording(self, row: int, overdub: bool):
+        """Arm a recording — apply count-in or quantize delay, then start."""
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        ch = self.engine.channels[row]
+        live = ch.state.live
+        bars = max(1, int(live.bars))
+        tempo = self.config.tempo if self.config else 120.0
+
+        overdub_buf = None
+        if overdub and ch.sample is not None:
+            try:
+                overdub_buf = ch.sample.data.copy() if ch.sample.data is not None else None
+            except Exception:
+                overdub_buf = None
+
+        params = (bars, tempo, float(live.input_trim), bool(live.thru), overdub_buf)
+
+        if live.count_in:
+            self._live_pending_start[row] = (params, overdub)
+            self._live_countin_remaining[row] = 4
+            ch.state.live.loop_state = LIVE_STATE_COUNTING_IN
+            self._notify_live_state(row)
+            return
+
+        self._live_start_now(row, params, overdub)
+
+    def _live_start_now(self, row: int, params: tuple, overdub: bool):
+        """Actually call engine.start_live_recording with the prepared params."""
+        if not self.engine:
+            return
+        bars, tempo, input_trim, thru, overdub_buf = params
+        ok = self.engine.start_live_recording(
+            row=row, bars=bars, tempo=tempo,
+            input_trim=input_trim, thru=thru,
+            overdub_buffer=overdub_buf,
+        )
+        if not ok:
+            ch = self.engine.channels[row]
+            ch.state.live.loop_state = (
+                LIVE_STATE_PLAYING if overdub else LIVE_STATE_EMPTY
+            )
+            self._notify_live_state(row)
+            if self.window:
+                self.window.set_status("LIVE: another row is already recording")
+            return
+        ch = self.engine.channels[row]
+        ch.state.live.loop_state = (
+            LIVE_STATE_OVERDUBBING if overdub else LIVE_STATE_RECORDING
+        )
+        self._notify_live_state(row)
+
+    def _live_advance_countin(self, beat_int: int):
+        """Called from _execute_beat — decrements count-in and fires start."""
+        if not self._live_countin_remaining:
+            return
+        for row in list(self._live_countin_remaining.keys()):
+            remaining = self._live_countin_remaining[row] - 1
+            if remaining > 0:
+                self._live_countin_remaining[row] = remaining
+            else:
+                self._live_countin_remaining.pop(row, None)
+                pending = self._live_pending_start.pop(row, None)
+                if pending is not None:
+                    params, overdub = pending
+                    self._live_start_now(row, params, overdub)
+
+    def _on_loop_recorded(self, row: int, recorder):
+        """Audio thread → marshalled to GUI thread.
+
+        A LIVE recording finished. Finalize the recorder (crossfade + buffer
+        allocation happens here on the GUI thread, NOT in the audio callback),
+        then load the buffer as the channel's sample and start playback.
+        """
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        # Finalize off the audio thread to avoid underruns
+        try:
+            buffer = recorder.finalize() if recorder is not None else None
+        except Exception as e:
+            log.error("LIVE: finalize failed for row %d: %s", row, e)
+            buffer = None
+        if buffer is None:
+            ch = self.engine.channels[row]
+            ch.state.live.loop_state = LIVE_STATE_EMPTY
+            self._notify_live_state(row)
+            return
+        ch = self.engine.channels[row]
+        try:
+            self.engine.load_sample(row, buffer)
+            ch.state.live.loop_state = LIVE_STATE_PLAYING
+            self.engine.trigger_channel(row, 0, max(1, self.config.grid_columns))
+            if self.window:
+                try:
+                    overview = get_waveform_overview(buffer, num_points=800)
+                    strip = self.window.channel_view.get_strip(row)
+                    strip.set_waveform_data(overview, f"LIVE row {row + 1}")
+                    strip._waveform.set_grid_columns(self.config.grid_columns)
+                except Exception:
+                    pass
+        except Exception as e:
+            log.error("LIVE: failed to apply recorded buffer to row %d: %s", row, e)
+            ch.state.live.loop_state = LIVE_STATE_EMPTY
+        self._notify_live_state(row)
+
+    def _on_live_param_changed(self, row: int, param: str, value):
+        """Handle a LIVE parameter change from the channel-view UI."""
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        live = self.engine.channels[row].state.live
+        cfg_live = self.config.channels[row].live if row < len(self.config.channels) else None
+        if param == "bars":
+            v = max(1, int(value))
+            live.bars = v
+            if cfg_live is not None:
+                cfg_live.bars = v
+        elif param == "quantize":
+            live.quantize = int(value)
+            if cfg_live is not None:
+                cfg_live.quantize = int(value)
+        elif param == "thru":
+            live.thru = bool(value)
+            if cfg_live is not None:
+                cfg_live.thru = bool(value)
+        elif param == "count_in":
+            live.count_in = bool(value)
+            if cfg_live is not None:
+                cfg_live.count_in = bool(value)
+        elif param == "input_trim":
+            live.input_trim = float(value)
+            if cfg_live is not None:
+                cfg_live.input_trim = float(value)
+            if self.engine.live_recording_row == row:
+                self.engine.set_live_input_trim(float(value))
+
+    def _on_live_rec_button(self, row: int, is_hold: bool):
+        """REC button on the channel strip clicked (or held 2s)."""
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        ch = self.engine.channels[row]
+        if ch.state.mode != PlaybackMode.LIVE:
+            return
+        live_state = ch.state.live.loop_state
+
+        if is_hold:
+            if live_state == LIVE_STATE_PLAYING:
+                ch.state.live.loop_state = LIVE_STATE_ARMED_RERECORD
+                self._notify_live_state(row)
+            return
+
+        if live_state == LIVE_STATE_EMPTY:
+            self._live_begin_recording(row, overdub=False)
+        elif live_state == LIVE_STATE_PLAYING:
+            self._live_begin_recording(row, overdub=True)
+        elif live_state in (LIVE_STATE_RECORDING, LIVE_STATE_OVERDUBBING,
+                            LIVE_STATE_COUNTING_IN):
+            self._live_pending_start.pop(row, None)
+            self._live_countin_remaining.pop(row, None)
+            self.engine.cancel_live_recording()
+            ch.state.live.loop_state = (
+                LIVE_STATE_PLAYING if live_state == LIVE_STATE_OVERDUBBING
+                else LIVE_STATE_EMPTY
+            )
+            self._notify_live_state(row)
+        elif live_state == LIVE_STATE_ARMED_RERECORD:
+            ch.state.live.loop_state = LIVE_STATE_PLAYING
+            self._notify_live_state(row)
+
+    def _on_live_export_requested(self, row: int):
+        """Export the currently-loaded LIVE loop to data/slices/."""
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        ch = self.engine.channels[row]
+        if ch.sample is None:
+            if self.window:
+                self.window.set_status("LIVE: nothing to export")
+            return
+        try:
+            from mlrvp.audio.live_loop import LiveLoopRecorder
+            data_dir = getattr(self.config, "data_dir", None) or "data"
+            path = LiveLoopRecorder.export(
+                ch.sample, data_dir, row, self.engine.sample_rate
+            )
+            ch.state.live.exported_path = path
+            if row < len(self.config.channels):
+                self.config.channels[row].live.exported_path = path
+                # Make exported file the channel's filename so preset save records it
+                self.config.channels[row].filename = path
+            if self.window:
+                self.window.set_status(f"LIVE row {row + 1} exported → {path}")
+            log.info("LIVE: exported row %d to %s", row, path)
+        except Exception as e:
+            log.error("LIVE: export failed for row %d: %s", row, e)
+            if self.window:
+                self.window.set_status(f"LIVE export failed: {e}")
+
+    def _notify_live_state(self, row: int):
+        """Push LIVE state to the channel-view strip (badge + REC button visual)."""
+        if not self.window or not self.engine:
+            return
+        try:
+            ch = self.engine.channels[row]
+            strip = self.window.channel_view.get_strip(row)
+            if hasattr(strip, "set_live_loop_state"):
+                strip.set_live_loop_state(ch.state.live.loop_state)
+        except Exception:
+            pass
 
     def _execute_grid_release(self, row: int, column: int, columns: int):
         """Handle grid button release on the Qt main thread."""
@@ -734,6 +1127,35 @@ class AppController:
             values[cur] = LED_BRIGHT
         self.grid.set_row(row, values, grp)
 
+    def _update_live_leds(self, row: int, live_state: str, columns: int):
+        """Render LEDs for a LIVE-mode row in a non-PLAYING substate."""
+        if not self.engine:
+            return
+        ch = self.engine.channels[row]
+        grp = ch.state.group
+        values = [LED_OFF] * columns
+        # ~4 Hz wall-clock blink phase (independent of beat / UI tick rate)
+        blink_on = (int(time.monotonic() * 4) & 1) == 0
+
+        if live_state == LIVE_STATE_EMPTY:
+            pass  # all off
+        elif live_state == LIVE_STATE_COUNTING_IN:
+            if blink_on:
+                values = [LED_DIM] * columns
+        elif live_state in (LIVE_STATE_RECORDING, LIVE_STATE_OVERDUBBING):
+            progress = self.engine.live_recording_progress
+            col = int(progress * columns)
+            if col >= columns:
+                col = columns - 1
+            if col < 0:
+                col = 0
+            values[col] = LED_BRIGHT
+        elif live_state == LIVE_STATE_ARMED_RERECORD:
+            if blink_on:
+                values[0] = LED_BRIGHT
+
+        self.grid.set_row(row, values, grp)
+
     def _update_pitch_mode_leds(self, row: int, active_col: int = -1):
         """Update grid LEDs for a PITCH-mode row.
 
@@ -883,13 +1305,18 @@ class AppController:
 
     def _check_monome_connect(self):
         """Check if a monome grid just connected (called from _update_ui)."""
-        if not self.grid._pending_monome_connect:
-            return
-        self.grid._pending_monome_connect = False
+        # Snapshot the connect flag and row offset atomically so we can't
+        # race a concurrent monome (re)connect from the asyncio thread that
+        # mutates these between our reads.
+        with self.grid._state_lock:
+            if not self.grid._pending_monome_connect:
+                return
+            self.grid._pending_monome_connect = False
+            row_offset = self.grid._monome_row_offset
 
         if not self.grid.info:
             return
-        rows = self.grid.info.rows - self.grid._monome_row_offset  # data rows
+        rows = self.grid.info.rows - row_offset  # data rows
         cols = self.grid.info.columns
         # Clamp to engine channel count to avoid index-out-of-bounds
         if self.engine:
@@ -1029,6 +1456,9 @@ class AppController:
         w.channel_view.sample_load_requested.connect(self.load_sample_to_channel)
         w.channel_view.sample_clear_requested.connect(self.clear_channel_sample)
         w.channel_view.param_changed.connect(self._gui_channel_param)
+        w.channel_view.live_param_changed.connect(self._on_live_param_changed)
+        w.channel_view.live_rec_requested.connect(self._on_live_rec_button)
+        w.channel_view.live_export_requested.connect(self._on_live_export_requested)
 
         # --- Mixer ---
         w.mixer_view.group_volume_changed.connect(self._gui_group_volume)
@@ -1091,10 +1521,30 @@ class AppController:
 
         # --- Tools ---
         w.tools_view.record_toggled.connect(self._gui_record_toggle)
+        w.tools_view.recorder_param_changed.connect(self._gui_recorder_param_changed)
         w.tools_view.slice_saved.connect(self._on_slice_saved)
         w.tools_view.slice_panel.load_to_channel.connect(
             lambda fp, ch: self.load_sample_to_channel(ch, fp)
         )
+        # Library panel (top-level side tab): load-to-channel + preview
+        lp = w.library_panel
+        lp.load_to_channel.connect(
+            lambda fp, ch: self.load_sample_to_channel(ch, fp) if ch >= 0 else None
+        )
+        lp.load_to_slicer.connect(self._on_library_load_to_slicer)
+        lp.preview_requested.connect(self._on_library_preview)
+        # New recorder workflow signals (added in RecorderPanel)
+        rp = w.tools_view.recorder_panel
+        if hasattr(rp, "capture_preroll"):
+            rp.capture_preroll.connect(self._on_capture_preroll)
+        if hasattr(rp, "use_take"):
+            rp.use_take.connect(self._on_use_take)
+        if hasattr(rp, "play_take"):
+            rp.play_take.connect(self._on_play_take)
+        if hasattr(rp, "clear_takes"):
+            rp.clear_takes.connect(self._on_clear_takes)
+        if hasattr(rp, "send_to_slice"):
+            rp.send_to_slice.connect(self._on_send_to_slice)
 
         # --- Setup ---
         w.setup_view.audio_setting_changed.connect(self._gui_audio_setting)
@@ -1247,7 +1697,8 @@ class AppController:
         elif state == "clear":
             # Stop channels the pattern was driving before clearing
             if pr.playing and self.engine:
-                triggered_rows = set(e.row for e in pr.events if e.event_type == 'trigger')
+                with pr._lock:
+                    triggered_rows = set(e.row for e in pr.events if e.event_type == 'trigger')
                 for r in triggered_rows:
                     if r >= len(self.engine.channels):
                         continue
@@ -1259,7 +1710,8 @@ class AppController:
         else:
             # When pattern stops, stop all channels it had triggered
             if pr.playing and self.engine:
-                triggered_rows = set(e.row for e in pr.events if e.event_type == 'trigger')
+                with pr._lock:
+                    triggered_rows = set(e.row for e in pr.events if e.event_type == 'trigger')
                 for r in triggered_rows:
                     if r >= len(self.engine.channels):
                         continue
@@ -1312,6 +1764,11 @@ class AppController:
         from mlrvp.config import ChannelState
         fresh = AppConfig()
         self.config = fresh
+
+        # Drop any in-memory recorder takes from the previous preset
+        self._on_clear_takes()
+        # Cancel any pending LIVE long-press / count-in / pending-start state
+        self._live_clear_all_pending()
 
         # Restore preserved system settings
         for key, val in saved.items():
@@ -1460,6 +1917,9 @@ class AppController:
         # ── 2. Apply config (effects, mixer, transport, channel params) ──
         self.config = self.presets.apply_preset(data, self.config)
 
+        # Drop any in-memory recorder takes from the previous preset
+        self._on_clear_takes()
+
         # Push ALL params to engine (no playing rows to protect)
         self._apply_config_to_engine()
         self._apply_config_to_gui()
@@ -1565,6 +2025,8 @@ class AppController:
         data = self.presets.load_setlist_preset(idx)
         if data:
             self.config = self.presets.apply_preset(data, self.config)
+            self._on_clear_takes()
+            self._live_clear_all_pending()
             self._apply_config_to_engine()
             self._apply_config_to_gui()
             # Clear ALL waveform displays so old samples don't linger
@@ -1601,7 +2063,11 @@ class AppController:
                     self.window.set_status(f"Error loading preset: {path}")
                 return
             try:
+                from mlrvp.preset.manager import migrate_preset
+                data = migrate_preset(data)
                 self.config = self.presets.apply_preset(data, self.config)
+                self._on_clear_takes()
+                self._live_clear_all_pending()
                 self._apply_config_to_engine()
                 self._apply_config_to_gui()
                 self._clear_all_waveform_displays()
@@ -1777,6 +2243,10 @@ class AppController:
             # Update virtual grid row color to match group
             if self.window:
                 self.window.virtual_grid.set_row_color(row, value)
+            # Refresh physical controller LEDs — PITCH mode keeps static DIM/BRIGHT
+            # LEDs whose color is determined by group; must repaint after a group change
+            if ch.mode == PlaybackMode.PITCH:
+                self._update_pitch_mode_leds(row)
         elif param == "gain":
             ch.gain = value
             if self.engine:
@@ -2466,13 +2936,401 @@ class AppController:
             setattr(inst.state, param, value)
 
     def _gui_record_toggle(self, armed: bool):
-        if self.engine:
-            if armed:
-                self.engine.recorder.arm(self.config.tempo,
-                                         self.config.recorder.length_bars,
-                                         self.config.recorder.length_beats)
-            else:
-                self.engine.recorder.stop()
+        """ARM button toggled in the Record tool tab.
+
+        Workflow:
+          armed=True  → arm recorder, then schedule start() based on quantize
+                        + count_in. IMMEDIATE w/ no count-in: start now.
+          armed=False → stop recording, finalize buffer, apply post-processing,
+                        load to target channel (or push as a take).
+        """
+        if not self.engine:
+            return
+        rec_state = self.config.recorder
+
+        if not armed:
+            # Stop now and pull whatever we captured
+            buf = self.engine.recorder.stop()
+            self._recorder_pending_start = False
+            self._recorder_count_in_remaining = 0
+            self._on_recorded_buffer(buf, source="manual_stop")
+            self._update_recorder_button_state(False, label="ARM")
+            return
+
+        # ARM path
+        free_length = bool(rec_state.free_length)
+        try:
+            self.engine.recorder.arm(
+                self.config.tempo,
+                rec_state.length_bars,
+                rec_state.length_beats,
+                free_length=free_length,
+            )
+        except Exception as e:
+            log.error("Recorder arm failed: %s", e)
+            self._update_recorder_button_state(False, label="ARM")
+            return
+
+        # Loopback flag
+        self.engine.recorder.use_loopback = bool(rec_state.loopback)
+
+        quantize = int(rec_state.quantize)  # 0=IMMEDIATE, 1=BEAT, 2=BAR
+        count_in_bars = max(0, int(rec_state.count_in))
+
+        if quantize == 0 and count_in_bars == 0:
+            # Start immediately
+            self.engine.recorder.start()
+            self._update_recorder_button_state(True, label="● REC")
+            return
+
+        # Quantized or count-in start: wait for clock boundary
+        self._recorder_pending_start = True
+        self._recorder_count_in_remaining = count_in_bars
+        self._update_recorder_button_state(True, label="WAIT" if count_in_bars == 0 else f"COUNT {count_in_bars}")
+
+    def _gui_recorder_param_changed(self, name: str, value):
+        """Handle a parameter change from the RecorderPanel UI."""
+        rec = self.config.recorder
+        if not hasattr(rec, name):
+            return
+        # Type-coerce based on the existing field type
+        current = getattr(rec, name)
+        try:
+            if isinstance(current, bool):
+                value = bool(value)
+            elif isinstance(current, int):
+                value = int(value)
+            elif isinstance(current, float):
+                value = float(value)
+        except (TypeError, ValueError):
+            return
+        setattr(rec, name, value)
+
+        # Engine-side reactions
+        if not self.engine:
+            return
+        if name == "loopback":
+            self.engine.recorder.use_loopback = bool(value)
+        elif name == "thru":
+            self.engine.recorder.state.thru = bool(value)
+        elif name == "loop":
+            self.engine.recorder.state.loop = bool(value)
+
+    # --- Recorder completion / buffer handling -------------------------
+
+    def _on_recorder_complete(self):
+        """Marshalled from audio thread: buffer fills automatically."""
+        if not self.engine:
+            return
+        buf = self.engine.recorder.stop()
+        self._on_recorded_buffer(buf, source="auto_complete")
+        self._update_recorder_button_state(False, label="ARM")
+        # Reflect the un-checked state back to the button
+        if self.window:
+            try:
+                self.window.tools_view.recorder_panel.set_armed(False)
+            except Exception:
+                pass
+
+    def _on_recorded_buffer(self, buf, source: str = "manual_stop"):
+        """Apply post-processing pipeline, then load or push as take."""
+        if buf is None:
+            return
+        rec = self.config.recorder
+        try:
+            buf = self._apply_recorder_processing(buf, rec)
+        except Exception as e:
+            log.warning("Recorder post-processing failed: %s", e)
+
+        # Always store as a take (up to N slots)
+        max_takes = max(1, int(rec.takes))
+        self._recorder_takes.append(buf)
+        # Keep only the most recent `max_takes` entries
+        if len(self._recorder_takes) > max_takes:
+            self._recorder_takes = self._recorder_takes[-max_takes:]
+        # Refresh UI take list
+        if self.window:
+            try:
+                rp = self.window.tools_view.recorder_panel
+                if hasattr(rp, "set_takes"):
+                    rp.set_takes([
+                        (i, b.duration_sec) for i, b in enumerate(self._recorder_takes)
+                    ])
+                if hasattr(rp, "set_send_to_slice_enabled"):
+                    rp.set_send_to_slice_enabled(True)
+            except Exception:
+                pass
+
+        if rec.auto_load:
+            self._load_buffer_to_target(buf)
+
+    def _apply_recorder_processing(self, buf, rec_state):
+        """Pure-numpy post-capture pipeline: trim silence → normalize → fade."""
+        import numpy as np
+        from mlrvp.audio.sample import SampleBuffer
+
+        data = buf.data
+        if data is None or data.size == 0:
+            return buf
+        sr = buf.sample_rate
+
+        # 1) Trim silence (threshold = -50 dBFS)
+        if getattr(rec_state, "trim_silence", False):
+            thresh = 10 ** (-50.0 / 20.0)  # ~0.00316
+            mono_amp = np.max(np.abs(data), axis=1)
+            above = np.where(mono_amp > thresh)[0]
+            if above.size > 0:
+                start = int(above[0])
+                end = int(above[-1]) + 1
+                if end - start >= 64:  # at least ~1.5ms of audio
+                    data = data[start:end].copy()
+
+        # 2) Normalize to -0.1 dBFS
+        if getattr(rec_state, "normalize", False):
+            peak = float(np.max(np.abs(data)))
+            if peak > 1e-6:
+                target = 10 ** (-0.1 / 20.0)  # ~0.989
+                gain = target / peak
+                if gain != 1.0:
+                    data = (data * gain).astype(np.float32, copy=False)
+
+        # 3) Fade in/out
+        fade_ms = int(getattr(rec_state, "fade_ms", 0))
+        if fade_ms > 0 and len(data) > 4:
+            n = min(int(sr * fade_ms / 1000.0), len(data) // 2)
+            if n > 1:
+                ramp = np.linspace(0.0, 1.0, n, dtype=np.float32)[:, None]
+                # ALWAYS copy before in-place mutation: the input data may
+                # alias the recorder's internal buffer, and earlier branches
+                # (trim_silence, normalize) may not have copied.
+                if data is buf.data or not data.flags.writeable:
+                    data = data.copy()
+                data[:n] *= ramp
+                data[-n:] *= ramp[::-1]
+
+        return SampleBuffer(
+            data=data.astype(np.float32, copy=False),
+            sample_rate=sr,
+            num_frames=int(data.shape[0]),
+            num_channels=int(data.shape[1]),
+            duration_sec=float(data.shape[0]) / float(sr),
+        )
+
+    def _load_buffer_to_target(self, buf):
+        """Load a SampleBuffer into the recorder's target channel."""
+        if not self.engine or buf is None:
+            return
+        target = max(0, min(MAX_ROWS - 1, int(self.config.recorder.buffer_idx)))
+        try:
+            self.engine.load_sample(target, buf)
+            self.config.channels[target].filename = f"<recorded {buf.duration_sec:.2f}s>"
+            self.config.channels[target].steps = self.config.grid_columns
+            if self.window:
+                try:
+                    overview = get_waveform_overview(buf, num_points=800)
+                    strip = self.window.channel_view.get_strip(target)
+                    strip.set_waveform_data(overview, f"REC ({buf.duration_sec:.1f}s)")
+                    strip._waveform.set_grid_columns(self.config.grid_columns)
+                except Exception:
+                    pass
+                self.window.set_status(
+                    f"Recording loaded to channel {target + 1} ({buf.duration_sec:.2f}s)"
+                )
+        except Exception as e:
+            log.error("Failed to load recorded buffer to channel %d: %s", target, e)
+
+    def _update_recorder_button_state(self, recording: bool, label: str = ""):
+        """Update RecorderPanel button label / recording indicator."""
+        if not self.window:
+            return
+        try:
+            rp = self.window.tools_view.recorder_panel
+            if hasattr(rp, "set_recording"):
+                rp.set_recording(recording, label)
+        except Exception:
+            pass
+
+    # --- Pre-roll / takes / send-to-slice ------------------------------
+
+    def _on_capture_preroll(self, seconds: float):
+        """User clicked 'Capture Last Xs' — grab from pre-roll ring buffer."""
+        if not self.engine:
+            return
+        try:
+            buf = self.engine.pre_roll.capture_last(float(seconds))
+        except Exception as e:
+            log.error("Pre-roll capture failed: %s", e)
+            return
+        if buf is None:
+            if self.window:
+                self.window.set_status("Pre-roll empty — no input has been captured yet")
+            return
+        self._on_recorded_buffer(buf, source="preroll")
+
+    def _on_use_take(self, idx: int):
+        if 0 <= idx < len(self._recorder_takes):
+            self._load_buffer_to_target(self._recorder_takes[idx])
+
+    def _on_play_take(self, idx: int):
+        """Audition a take through the cue/preview service."""
+        if not (0 <= idx < len(self._recorder_takes)):
+            return
+        buf = self._recorder_takes[idx]
+        try:
+            self.slicer_preview.play(buf.data, buf.sample_rate, loop=False)
+        except Exception as e:
+            log.error("Take preview failed: %s", e)
+
+    def _on_library_preview(self, filepath: str):
+        """Preview an audio file from the Library tab via the cue bus."""
+        import os
+        if not filepath or not os.path.isfile(filepath):
+            return
+        try:
+            import soundfile as _sf
+            data, sr = _sf.read(filepath, dtype="float32", always_2d=False)
+            self.slicer_preview.play(data, sr, loop=False)
+        except Exception as e:
+            log.error("Library preview failed: %s", e)
+
+    def _on_library_load_to_slicer(self, filepath: str):
+        """Switch to the Tools > Slice tab and load the file."""
+        if not self.window:
+            return
+        try:
+            # Switch side panel to Tools tab then to Slice sub-tab
+            side = self.window._side_tabs
+            tools_idx = next(
+                i for i in range(side.count()) if side.tabText(i) == "Tools"
+            )
+            side.setCurrentIndex(tools_idx)
+            self.window.tools_view.slice_panel.load_file(filepath)
+        except Exception as e:
+            log.error("Library load-to-slicer failed: %s", e)
+
+    def _on_clear_takes(self):
+        self._recorder_takes = []
+        if self.window:
+            try:
+                rp = self.window.tools_view.recorder_panel
+                if hasattr(rp, "set_takes"):
+                    rp.set_takes([])
+                if hasattr(rp, "set_send_to_slice_enabled"):
+                    rp.set_send_to_slice_enabled(False)
+            except Exception:
+                pass
+
+    def _on_send_to_slice(self):
+        """Save the latest take to data/slices/ and open it in the Slice tab."""
+        if not self._recorder_takes:
+            return
+        buf = self._recorder_takes[-1]
+        import os
+        import time as _time
+        slices_dir = os.path.join("data", "slices")
+        try:
+            os.makedirs(slices_dir, exist_ok=True)
+        except Exception as e:
+            log.error("Send-to-Slice mkdir failed: %s", e)
+            return
+        ts = _time.strftime("%Y%m%d_%H%M%S")
+        filename = f"recording_{ts}.wav"
+        path = os.path.join(slices_dir, filename)
+
+        # Snapshot data for the worker thread (buf.data is float32 contiguous;
+        # SampleBuffer is immutable enough for our purposes here).
+        data = buf.data
+        sr = buf.sample_rate
+
+        def _writer():
+            try:
+                import soundfile as sf
+                sf.write(path, data, sr, subtype="PCM_16")
+            except Exception as e:
+                log.error("Send-to-Slice background write failed: %s", e)
+                return
+            # Marshal back to GUI thread to load + switch tab
+            QTimer.singleShot(0, lambda: self._after_send_to_slice(path, filename))
+
+        threading.Thread(target=_writer, daemon=True, name="SendToSlice").start()
+
+    def _after_send_to_slice(self, path: str, filename: str):
+        """GUI-thread continuation of _on_send_to_slice."""
+        if self.window:
+            try:
+                tv = self.window.tools_view
+                tv._tabs.setCurrentIndex(1)  # 0=Record, 1=Slice
+                tv.slice_panel.load_file(path)
+                self.window.set_status(f"Sent recording to Slice: {filename}")
+            except Exception as e:
+                log.error("Switch to Slice tab failed: %s", e)
+
+    def _poll_recorder_ui(self):
+        """Poll engine for input level + recording progress; push to RecorderPanel."""
+        if not self.engine or not self.window:
+            return
+        try:
+            rp = self.window.tools_view.recorder_panel
+        except AttributeError:
+            return
+        rec = self.engine.recorder
+        if hasattr(rp, "set_input_level"):
+            try:
+                rp.set_input_level(rec.input_peak, rec.input_rms)
+            except Exception:
+                pass
+        if hasattr(rp, "set_progress"):
+            try:
+                if rec.recording:
+                    if self.config.recorder.free_length:
+                        # Free-length: show elapsed seconds rolling 0-100% per 10s
+                        secs = rec.free_length_frames / float(rec.sr)
+                        rp.set_progress((secs % 10.0) / 10.0)
+                    else:
+                        rp.set_progress(rec.progress)
+                else:
+                    rp.set_progress(0.0)
+            except Exception:
+                pass
+
+    def _recorder_advance_clock(self, beat_int: int):
+        """Called from _execute_beat (GUI thread).
+
+        Drives the count-in countdown and quantized start for the Record tool.
+        BEAT quantize: start on next beat. BAR quantize: start on next bar.
+        """
+        if not self._recorder_pending_start or not self.engine:
+            return
+
+        rec = self.config.recorder
+        quantize = int(rec.quantize)
+
+        # Count-in phase: wait N bars, then proceed to quantized start
+        if self._recorder_count_in_remaining > 0:
+            # Decrement only on bar boundaries (every 4 beats)
+            if beat_int % 4 == 0:
+                self._recorder_count_in_remaining -= 1
+                if self._recorder_count_in_remaining > 0:
+                    self._update_recorder_button_state(
+                        True, label=f"COUNT {self._recorder_count_in_remaining}"
+                    )
+                else:
+                    # Count-in complete — start immediately
+                    self._recorder_pending_start = False
+                    self.engine.recorder.start()
+                    self._update_recorder_button_state(True, label="● REC")
+            return
+
+        # Quantize-only path (no count-in)
+        if quantize == 1:  # BEAT — fire on every beat
+            self._recorder_pending_start = False
+            self.engine.recorder.start()
+            self._update_recorder_button_state(True, label="● REC")
+        elif quantize == 2:  # BAR — fire on bar boundary
+            if beat_int % 4 == 0:
+                self._recorder_pending_start = False
+                self.engine.recorder.start()
+                self._update_recorder_button_state(True, label="● REC")
 
     def _on_slice_saved(self, filepath: str):
         """A slice was saved — add it to the sample library."""
@@ -3622,8 +4480,16 @@ class AppController:
             if _existing is not None:
                 def _wrapped(v, _fn=_existing, _widget=_w):
                     _fn(v)  # update config + engine (thread-safe)
-                    # Schedule widget update on the Qt main thread
-                    QTimer.singleShot(0, lambda w=_widget, val=v: w.set_value(val))
+                    # Schedule widget update on the Qt main thread.
+                    # blockSignals() prevents the widget's valueChanged from
+                    # bouncing back through _gui_* and re-writing the engine.
+                    def _apply(w=_widget, val=v):
+                        try:
+                            w.blockSignals(True)
+                            w.set_value(val)
+                        finally:
+                            w.blockSignals(False)
+                    QTimer.singleShot(0, _apply)
                 self.midi.set_param_callback(param_path, _wrapped)
 
     # ------------------------------------------------------------------ #
@@ -3739,6 +4605,17 @@ class AppController:
             ech.state.pitch_root = ch.pitch_root
             ech.state.pitch_loop = ch.pitch_loop
             ech.state.transpose = ch.transpose
+            # LIVE looper state — copy params; reset transient loop_state
+            ech.state.live.bars = ch.live.bars
+            ech.state.live.quantize = ch.live.quantize
+            ech.state.live.thru = ch.live.thru
+            ech.state.live.count_in = ch.live.count_in
+            ech.state.live.input_trim = ch.live.input_trim
+            ech.state.live.exported_path = ch.live.exported_path
+            ech.state.live.loop_state = (
+                LIVE_STATE_PLAYING if (ch.mode == PlaybackMode.LIVE and ech.sample is not None)
+                else LIVE_STATE_EMPTY
+            )
             if ch.transpose != 0 and ech.sample is not None:
                 self._apply_pitch_shift_async(i, ch.transpose)
 
@@ -3840,6 +4717,17 @@ class AppController:
                 ech.state.pitch_scale = ch.pitch_scale
                 ech.state.pitch_root = ch.pitch_root
                 ech.state.pitch_loop = ch.pitch_loop
+                # LIVE looper params (safe to update for non-playing rows)
+                ech.state.live.bars = ch.live.bars
+                ech.state.live.quantize = ch.live.quantize
+                ech.state.live.thru = ch.live.thru
+                ech.state.live.count_in = ch.live.count_in
+                ech.state.live.input_trim = ch.live.input_trim
+                ech.state.live.exported_path = ch.live.exported_path
+                ech.state.live.loop_state = (
+                    LIVE_STATE_PLAYING if (ch.mode == PlaybackMode.LIVE and ech.sample is not None)
+                    else LIVE_STATE_EMPTY
+                )
             ech.state.transpose = ch.transpose
             if ch.transpose != 0 and ech.sample is not None:
                 self._apply_pitch_shift_async(i, ch.transpose)
@@ -4347,6 +5235,18 @@ class AppController:
         for i in range(self.config.row_count):
             ch = self.engine.channels[i]
             strip = self.window.channel_view.get_strip(i)
+
+            # LIVE mode: special LED handling for non-PLAYING substates
+            if ch.state.mode == PlaybackMode.LIVE:
+                live_state = ch.state.live.loop_state
+                if live_state in (LIVE_STATE_EMPTY, LIVE_STATE_COUNTING_IN,
+                                  LIVE_STATE_RECORDING, LIVE_STATE_OVERDUBBING,
+                                  LIVE_STATE_ARMED_RERECORD):
+                    self._update_live_leds(i, live_state, columns)
+                    strip.set_playing(False)
+                    self._row_was_playing[i] = True  # prevent stray clears
+                    continue
+                # PLAYING falls through to the standard playback logic below
 
             # SEQ mode: always show step pattern LEDs regardless of playing state
             if ch.state.mode == PlaybackMode.SEQ and ch.sample is not None:

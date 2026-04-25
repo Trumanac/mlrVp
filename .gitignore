@@ -35,6 +35,7 @@ installer.iss
 
 # Audio samples / slices (user data)
 data/slices/*.wav
+data/slices/*.json
 
 # Runtime-generated user config
 data/ui_scale.txt
@@ -46,6 +47,10 @@ data/setlists/*/
 
 # Runtime-generated plugin data (machine-specific paths)
 data/defaults/plugin_cache.json
+
+# Runtime-generated sample caches (machine-specific paths)
+data/defaults/sample_metadata_cache.json
+data/defaults/sample_paths.json
 
 # Dev/planning files not for end users
 FX_RACK_PLAN.md
@@ -59,6 +64,7 @@ stress_out.txt
 build_local.log
 _test_editor.py
 _test_load.py
+tmp_*.txt
 
 # Local dev backups
 _backup/

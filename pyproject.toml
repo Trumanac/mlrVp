@@ -57,4 +57,4 @@ where = ["."]
 include = ["mlrvp*"]
 
 [tool.setuptools.package-data]
-mlrvp = ["resources/*.png", "resources/*.ico", "resources/*.icns"]
+mlrvp = ["resources/*.png", "resources/*.ico", "resources/*.icns", "resources/*.html", "resources/*.svg"]

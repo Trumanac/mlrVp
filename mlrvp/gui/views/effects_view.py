@@ -7,10 +7,13 @@ labels in TEXT_SECONDARY, ACCENT_GOLD active states.
 
 import math
 
+import numpy as np
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QFrame, QComboBox, QSpinBox, QDoubleSpinBox,
-    QCheckBox, QGroupBox, QGridLayout, QSizePolicy, QScrollArea
+    QCheckBox, QGroupBox, QGridLayout, QSizePolicy, QScrollArea,
+    QProgressBar
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
@@ -21,6 +24,7 @@ from mlrvp.gui.styles import (
     ACCENT_BLUE, FX1_COLOR, FX2_COLOR
 )
 from mlrvp.gui.widgets.fader import RotaryKnob, HorizontalFader
+from mlrvp.gui.widgets.vu_meter import VUMeter
 
 
 # Delay sync division names matching mlrV2
@@ -373,56 +377,85 @@ class TapeDelayPanel(QFrame):
 
 
 class RecorderPanel(QFrame):
-    """Live audio recording controls."""
+    """Studio capture panel — distinct from the LIVE looper.
+
+    Workflow targets: gain-staging, free-length capture, retroactive
+    pre-roll grab, loopback resampling of the main output, A/B take
+    comparison, post-capture processing, and one-click handoff to Slice.
+    """
 
     param_changed = Signal(str, object)
     record_toggled = Signal(bool)
+    capture_preroll = Signal(float)   # seconds
+    use_take = Signal(int)
+    play_take = Signal(int)
+    clear_takes = Signal()
+    send_to_slice = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        layout = QVBoxLayout(self)
+        # Scroll wrapper so all controls remain reachable in tight layouts
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        host = QWidget()
+        scroll.setWidget(host)
+        layout = QVBoxLayout(host)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setSpacing(10)
 
         title = QLabel("RECORDER")
         title.setStyleSheet(f"font-weight: bold; font-size: 11px; color: {TEXT_SECONDARY};")
         layout.addWidget(title)
 
+        # ---- Routing & timing -----------------------------------------
         grid = QGridLayout()
         grid.setSpacing(6)
 
-        # Target buffer/channel
         self._buffer_combo = QComboBox()
         self._buffer_combo.addItems([f"Channel {i+1}" for i in range(16)])
         self._buffer_combo.currentIndexChanged.connect(
             lambda v: self.param_changed.emit("buffer_idx", v)
         )
-        self._buffer_combo.setToolTip("Which channel slot the recording will load into")
+        self._buffer_combo.setToolTip("Channel slot the recording loads into")
         grid.addWidget(QLabel("Target:"), 0, 0)
-        grid.addWidget(self._buffer_combo, 0, 1)
+        grid.addWidget(self._buffer_combo, 0, 1, 1, 3)
 
-        # Input device
         self._input_combo = QComboBox()
         self._input_combo.addItem("Default Input")
         self._input_combo.currentIndexChanged.connect(
             lambda v: self.param_changed.emit("input_device", v)
         )
-        self._input_combo.setToolTip("Audio input device used as the recording source")
+        self._input_combo.setToolTip("Audio input device")
         grid.addWidget(QLabel("Input:"), 1, 0)
-        grid.addWidget(self._input_combo, 1, 1)
+        grid.addWidget(self._input_combo, 1, 1, 1, 3)
 
-        # Input channel
         self._input_ch = QSpinBox()
         self._input_ch.setRange(0, 31)
         self._input_ch.valueChanged.connect(
             lambda v: self.param_changed.emit("input_channel", v)
         )
-        self._input_ch.setToolTip("Input channel index on the selected audio device")
+        self._input_ch.setToolTip("Input channel index on the selected device")
         grid.addWidget(QLabel("In Ch:"), 2, 0)
         grid.addWidget(self._input_ch, 2, 1)
 
-        # Length
+        self._loopback_chk = QCheckBox("Loopback (record output)")
+        self._loopback_chk.toggled.connect(
+            lambda v: self._on_loopback_toggled(v)
+        )
+        self._loopback_chk.setToolTip(
+            "Record the final master output instead of the device input.\n"
+            "Use this for resampling — play your grid pattern, capture the result."
+        )
+        grid.addWidget(self._loopback_chk, 2, 2, 1, 2)
+
+        # Length: bars + beats side by side
         self._length_spin = QSpinBox()
         self._length_spin.setRange(1, 128)
         self._length_spin.setValue(16)
@@ -430,68 +463,373 @@ class RecorderPanel(QFrame):
         self._length_spin.valueChanged.connect(
             lambda v: self.param_changed.emit("length_bars", v)
         )
-        self._length_spin.setToolTip("Recording buffer length in bars — synced to the current BPM")
+        self._length_spin.setToolTip("Recording length in bars (synced to current BPM)")
         grid.addWidget(QLabel("Length:"), 3, 0)
         grid.addWidget(self._length_spin, 3, 1)
 
-        # Loop
+        self._length_beats_spin = QSpinBox()
+        self._length_beats_spin.setRange(0, 3)
+        self._length_beats_spin.setValue(0)
+        self._length_beats_spin.setSuffix(" beats")
+        self._length_beats_spin.valueChanged.connect(
+            lambda v: self.param_changed.emit("length_beats", v)
+        )
+        self._length_beats_spin.setToolTip("Additional beats beyond the bar count")
+        grid.addWidget(self._length_beats_spin, 3, 2)
+
+        self._free_length_chk = QCheckBox("Free length")
+        self._free_length_chk.toggled.connect(self._on_free_length_toggled)
+        self._free_length_chk.setToolTip(
+            "Record indefinitely until manually stopped (bar/beat length ignored)"
+        )
+        grid.addWidget(self._free_length_chk, 3, 3)
+
+        self._quantize_combo = QComboBox()
+        self._quantize_combo.addItems(["Immediate", "Beat", "Bar"])
+        self._quantize_combo.currentIndexChanged.connect(
+            lambda v: self.param_changed.emit("quantize", v)
+        )
+        self._quantize_combo.setToolTip("When recording starts after pressing ARM")
+        grid.addWidget(QLabel("Quantize:"), 4, 0)
+        grid.addWidget(self._quantize_combo, 4, 1)
+
+        self._count_in_spin = QSpinBox()
+        self._count_in_spin.setRange(0, 4)
+        self._count_in_spin.setSuffix(" bars")
+        self._count_in_spin.valueChanged.connect(
+            lambda v: self.param_changed.emit("count_in", v)
+        )
+        self._count_in_spin.setToolTip("Bars of count-in before recording starts (0 = off)")
+        grid.addWidget(QLabel("Count-in:"), 4, 2)
+        grid.addWidget(self._count_in_spin, 4, 3)
+
         self._loop_chk = QCheckBox("Loop recording")
         self._loop_chk.toggled.connect(
             lambda v: self.param_changed.emit("loop", v)
         )
-        self._loop_chk.setToolTip("Continuously overwrite the buffer when it fills (looped recording)")
-        grid.addWidget(self._loop_chk, 4, 0, 1, 2)
+        self._loop_chk.setToolTip("Continuously overwrite the buffer when it fills")
+        grid.addWidget(self._loop_chk, 5, 0, 1, 2)
 
-        # Thru monitor
         self._thru_chk = QCheckBox("Input thru")
         self._thru_chk.toggled.connect(
             lambda v: self.param_changed.emit("thru", v)
         )
-        self._thru_chk.setToolTip("Monitor the input audio through the main output while recording")
-        grid.addWidget(self._thru_chk, 5, 0, 1, 2)
+        self._thru_chk.setToolTip("Monitor the input through the main output while recording")
+        grid.addWidget(self._thru_chk, 5, 2, 1, 2)
+
+        self._auto_load_chk = QCheckBox("Auto-load to channel")
+        self._auto_load_chk.setChecked(True)
+        self._auto_load_chk.toggled.connect(
+            lambda v: self.param_changed.emit("auto_load", v)
+        )
+        self._auto_load_chk.setToolTip(
+            "Load the recorded buffer to the target channel automatically"
+        )
+        grid.addWidget(self._auto_load_chk, 6, 0, 1, 4)
 
         layout.addLayout(grid)
 
-        # Record button
+        # ---- Input level meter + trim ----------------------------------
+        meter_row = QHBoxLayout()
+        meter_row.setSpacing(8)
+
+        meter_label = QLabel("INPUT")
+        meter_label.setStyleSheet(f"font-size: 10px; color: {TEXT_SECONDARY};")
+        meter_row.addWidget(meter_label)
+
+        self._vu = VUMeter(orientation=Qt.Orientation.Horizontal)
+        self._vu.setMinimumWidth(120)
+        self._vu.setToolTip("Real-time input level — peak hold (gain-stage before recording)")
+        meter_row.addWidget(self._vu, 1)
+
+        # Trim knob: widget value 0..1 maps to trim 0..2 (1.0 = unity at midpoint)
+        trim_box = QVBoxLayout()
+        trim_box.setSpacing(0)
+        self._trim_knob = RotaryKnob(default_value=0.5)
+        self._trim_knob.value_changed.connect(
+            lambda v: self.param_changed.emit("input_trim", float(v) * 2.0)
+        )
+        self._trim_knob.setToolTip("Pre-record gain (knob: left=mute, center=unity, right=+6dB)")
+        trim_box.addWidget(self._trim_knob, alignment=Qt.AlignmentFlag.AlignHCenter)
+        trim_label = QLabel("Trim")
+        trim_label.setStyleSheet(f"font-size: 9px; color: {TEXT_SECONDARY};")
+        trim_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        trim_box.addWidget(trim_label)
+        meter_row.addLayout(trim_box)
+
+        layout.addLayout(meter_row)
+
+        # ---- Progress bar ---------------------------------------------
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 1000)
+        self._progress.setValue(0)
+        self._progress.setTextVisible(False)
+        self._progress.setFixedHeight(6)
+        self._progress.setToolTip("Recording progress (0–100%)")
+        layout.addWidget(self._progress)
+
+        # ---- Record button --------------------------------------------
         self._rec_btn = QPushButton("ARM")
         self._rec_btn.setCheckable(True)
-        self._rec_btn.setFixedHeight(30)
+        self._rec_btn.setFixedHeight(34)
         self._rec_btn.setStyleSheet(f"""
             QPushButton {{ background: {BG_BLACK}; border: 1px solid {SEPARATOR}; border-radius: 0px;
-                          font-size: 11px; font-weight: bold; color: {TEXT_SECONDARY}; }}
+                          font-size: 12px; font-weight: bold; color: {TEXT_SECONDARY}; }}
             QPushButton:checked {{ background: #cc3333; border-color: #cc3333; color: white; }}
+            QPushButton:hover {{ border-color: {ACCENT_GOLD}; }}
         """)
         self._rec_btn.toggled.connect(self.record_toggled.emit)
         self._rec_btn.setToolTip(
-            "ARM: ready the recorder — recording starts on the next bar\n"
-            "Click again to stop recording and load to the target channel"
+            "ARM: ready the recorder; recording starts based on the Quantize setting.\n"
+            "Click again to stop and load to the target channel."
         )
         layout.addWidget(self._rec_btn)
 
+        # ---- Pre-roll / retroactive capture ---------------------------
+        preroll_box = QGroupBox("Pre-roll Capture")
+        preroll_box.setStyleSheet(f"QGroupBox {{ color: {TEXT_SECONDARY}; font-size: 10px; }}")
+        pr_lay = QHBoxLayout(preroll_box)
+        pr_lay.setSpacing(6)
+        self._preroll_spin = QDoubleSpinBox()
+        self._preroll_spin.setRange(1.0, 30.0)
+        self._preroll_spin.setSingleStep(0.5)
+        self._preroll_spin.setSuffix(" s")
+        self._preroll_spin.setValue(5.0)
+        self._preroll_spin.valueChanged.connect(
+            lambda v: self.param_changed.emit("pre_roll_sec", float(v))
+        )
+        self._preroll_spin.setToolTip(
+            "Seconds of input audio kept in the ring buffer for retroactive capture"
+        )
+        pr_lay.addWidget(self._preroll_spin)
+        self._capture_btn = QPushButton("Capture Last")
+        self._capture_btn.clicked.connect(
+            lambda: self.capture_preroll.emit(float(self._preroll_spin.value()))
+        )
+        self._capture_btn.setToolTip(
+            "Grab the most recent N seconds of input — perfect for catching\n"
+            "happy accidents you forgot to record"
+        )
+        pr_lay.addWidget(self._capture_btn, 1)
+        layout.addWidget(preroll_box)
+
+        # ---- Post-capture processing ----------------------------------
+        post_box = QGroupBox("On Capture")
+        post_box.setStyleSheet(f"QGroupBox {{ color: {TEXT_SECONDARY}; font-size: 10px; }}")
+        pl = QGridLayout(post_box)
+        pl.setSpacing(4)
+        self._normalize_chk = QCheckBox("Normalize")
+        self._normalize_chk.setChecked(True)
+        self._normalize_chk.toggled.connect(
+            lambda v: self.param_changed.emit("normalize", v)
+        )
+        self._normalize_chk.setToolTip("Peak-normalize the recording to -0.1 dBFS")
+        pl.addWidget(self._normalize_chk, 0, 0)
+
+        self._trim_silence_chk = QCheckBox("Trim silence")
+        self._trim_silence_chk.toggled.connect(
+            lambda v: self.param_changed.emit("trim_silence", v)
+        )
+        self._trim_silence_chk.setToolTip("Strip leading/trailing silence below -50 dBFS")
+        pl.addWidget(self._trim_silence_chk, 0, 1)
+
+        pl.addWidget(QLabel("Fade:"), 1, 0)
+        self._fade_spin = QSpinBox()
+        self._fade_spin.setRange(0, 50)
+        self._fade_spin.setValue(10)
+        self._fade_spin.setSuffix(" ms")
+        self._fade_spin.valueChanged.connect(
+            lambda v: self.param_changed.emit("fade_ms", v)
+        )
+        self._fade_spin.setToolTip("Fade-in/out applied to recording edges (prevents clicks)")
+        pl.addWidget(self._fade_spin, 1, 1)
+        layout.addWidget(post_box)
+
+        # ---- Take slots -----------------------------------------------
+        takes_box = QGroupBox("Takes")
+        takes_box.setStyleSheet(f"QGroupBox {{ color: {TEXT_SECONDARY}; font-size: 10px; }}")
+        takes_outer = QVBoxLayout(takes_box)
+        takes_outer.setSpacing(2)
+        takes_header = QHBoxLayout()
+        takes_header.addWidget(QLabel("Slots:"))
+        self._takes_count = QSpinBox()
+        self._takes_count.setRange(1, 4)
+        self._takes_count.setValue(1)
+        self._takes_count.valueChanged.connect(
+            lambda v: self.param_changed.emit("takes", v)
+        )
+        self._takes_count.setToolTip("Maximum number of takes kept in memory (oldest dropped)")
+        takes_header.addWidget(self._takes_count)
+        takes_header.addStretch()
+        self._clear_takes_btn = QPushButton("Clear")
+        self._clear_takes_btn.clicked.connect(self.clear_takes.emit)
+        takes_header.addWidget(self._clear_takes_btn)
+        takes_outer.addLayout(takes_header)
+
+        self._takes_list_widget = QWidget()
+        self._takes_list_lay = QVBoxLayout(self._takes_list_widget)
+        self._takes_list_lay.setContentsMargins(0, 0, 0, 0)
+        self._takes_list_lay.setSpacing(2)
+        takes_outer.addWidget(self._takes_list_widget)
+        self._takes_empty_label = QLabel("(no takes recorded yet)")
+        self._takes_empty_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 10px;")
+        self._takes_list_lay.addWidget(self._takes_empty_label)
+        layout.addWidget(takes_box)
+
+        # ---- Send to Slice --------------------------------------------
+        self._send_slice_btn = QPushButton("Send to Slice →")
+        self._send_slice_btn.setEnabled(False)
+        self._send_slice_btn.clicked.connect(self.send_to_slice.emit)
+        self._send_slice_btn.setToolTip(
+            "Save the latest take as a WAV in data/slices/ and open it\n"
+            "in the Slice tab for chopping"
+        )
+        layout.addWidget(self._send_slice_btn)
+
         layout.addStretch()
 
+    # ---------------------------------------------------------------- helpers
+
+    def _on_free_length_toggled(self, v: bool):
+        self.param_changed.emit("free_length", v)
+        # Disable length controls when in free-length mode (irrelevant)
+        self._length_spin.setEnabled(not v)
+        self._length_beats_spin.setEnabled(not v)
+        self._quantize_combo.setEnabled(not v)
+        self._count_in_spin.setEnabled(not v)
+
+    def _on_loopback_toggled(self, v: bool):
+        self.param_changed.emit("loopback", v)
+        # Hide device input combo when loopback is active (it's irrelevant)
+        self._input_combo.setEnabled(not v)
+        self._input_ch.setEnabled(not v)
+
+    # ---------------------------------------------------------------- public API
+
     def set_state(self, state: RecorderState):
-        self._buffer_combo.blockSignals(True)
-        self._buffer_combo.setCurrentIndex(state.buffer_idx)
-        self._buffer_combo.blockSignals(False)
-
-        self._length_spin.blockSignals(True)
-        self._length_spin.setValue(state.length_bars)
-        self._length_spin.blockSignals(False)
-
-        self._loop_chk.blockSignals(True)
-        self._loop_chk.setChecked(state.loop)
-        self._loop_chk.blockSignals(False)
-
-        self._thru_chk.blockSignals(True)
-        self._thru_chk.setChecked(state.thru)
-        self._thru_chk.blockSignals(False)
+        for w, attr, signal_name in [
+            (self._buffer_combo, "buffer_idx", "currentIndex"),
+            (self._length_spin, "length_bars", "value"),
+            (self._length_beats_spin, "length_beats", "value"),
+            (self._loop_chk, "loop", "checked"),
+            (self._thru_chk, "thru", "checked"),
+            (self._quantize_combo, "quantize", "currentIndex"),
+            (self._count_in_spin, "count_in", "value"),
+            (self._auto_load_chk, "auto_load", "checked"),
+            (self._free_length_chk, "free_length", "checked"),
+            (self._loopback_chk, "loopback", "checked"),
+            (self._preroll_spin, "pre_roll_sec", "value"),
+            (self._takes_count, "takes", "value"),
+            (self._normalize_chk, "normalize", "checked"),
+            (self._trim_silence_chk, "trim_silence", "checked"),
+            (self._fade_spin, "fade_ms", "value"),
+        ]:
+            if not hasattr(state, attr):
+                continue
+            v = getattr(state, attr)
+            w.blockSignals(True)
+            try:
+                if signal_name == "currentIndex":
+                    w.setCurrentIndex(int(v))
+                elif signal_name == "value":
+                    w.setValue(v)
+                elif signal_name == "checked":
+                    w.setChecked(bool(v))
+            finally:
+                w.blockSignals(False)
+        # Trim knob (special: state value is 0..2, knob is 0..1)
+        if hasattr(state, "input_trim"):
+            self._trim_knob.blockSignals(True)
+            try:
+                self._trim_knob.set_value(max(0.0, min(1.0, float(state.input_trim) / 2.0)))
+            finally:
+                self._trim_knob.blockSignals(False)
+        # Sync derived enables
+        self._length_spin.setEnabled(not state.free_length)
+        self._length_beats_spin.setEnabled(not state.free_length)
+        self._quantize_combo.setEnabled(not state.free_length)
+        self._count_in_spin.setEnabled(not state.free_length)
+        self._input_combo.setEnabled(not state.loopback)
+        self._input_ch.setEnabled(not state.loopback)
 
     def set_input_devices(self, devices: list[str]):
         self._input_combo.blockSignals(True)
         self._input_combo.clear()
         self._input_combo.addItems(devices)
         self._input_combo.blockSignals(False)
+
+    def set_input_level(self, peak: float, rms: float):
+        try:
+            self._vu.set_level(float(peak))
+        except Exception:
+            pass
+
+    def set_progress(self, value: float):
+        try:
+            v = max(0.0, min(1.0, float(value)))
+            self._progress.setValue(int(v * 1000))
+        except Exception:
+            pass
+
+    def set_recording(self, recording: bool, label: str = ""):
+        """Update the ARM button label and visual state."""
+        self._rec_btn.blockSignals(True)
+        try:
+            if label:
+                self._rec_btn.setText(label)
+            else:
+                self._rec_btn.setText("● REC" if recording else "ARM")
+            self._rec_btn.setChecked(recording)
+        finally:
+            self._rec_btn.blockSignals(False)
+
+    def set_armed(self, armed: bool):
+        """External force-uncheck (e.g. on auto-complete)."""
+        self._rec_btn.blockSignals(True)
+        try:
+            self._rec_btn.setChecked(armed)
+            if not armed:
+                self._rec_btn.setText("ARM")
+        finally:
+            self._rec_btn.blockSignals(False)
+
+    def set_takes(self, takes: list):
+        """takes: list of (idx, duration_sec) tuples."""
+        # Clear existing rows. Drop the stale Python ref to the empty label
+        # FIRST so we don't accidentally touch a deleteLater'd C++ object.
+        self._takes_empty_label = None
+        while self._takes_list_lay.count() > 0:
+            item = self._takes_list_lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        if not takes:
+            self._takes_empty_label = QLabel("(no takes recorded yet)")
+            self._takes_empty_label.setStyleSheet(
+                f"color: {TEXT_SECONDARY}; font-size: 10px;"
+            )
+            self._takes_list_lay.addWidget(self._takes_empty_label)
+            return
+        for idx, dur in takes:
+            row = QWidget()
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(4)
+            lbl = QLabel(f"Take {idx + 1}  ({dur:.2f}s)")
+            lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 10px;")
+            rl.addWidget(lbl, 1)
+            play_btn = QPushButton("▶")
+            play_btn.setFixedWidth(28)
+            play_btn.clicked.connect(lambda _=False, i=idx: self.play_take.emit(i))
+            rl.addWidget(play_btn)
+            use_btn = QPushButton("Use")
+            use_btn.setFixedWidth(40)
+            use_btn.clicked.connect(lambda _=False, i=idx: self.use_take.emit(i))
+            rl.addWidget(use_btn)
+            self._takes_list_lay.addWidget(row)
+
+    def set_send_to_slice_enabled(self, enabled: bool):
+        self._send_slice_btn.setEnabled(bool(enabled))
 
 
 class FilterCurveWidget(QWidget):
@@ -558,19 +896,27 @@ class FilterCurveWidget(QWidget):
         # Draw filter curve — gain > 1.0 shows peaks above the 0 dB line
         # Map: gain=0 → bottom, gain=1 → zero_y, gain=max_peak → top
         max_peak = 3.0  # max displayable gain (Q peaks)
-        path = QPainterPath()
-        points = []
-        for px in range(w):
-            freq = self._x_to_freq(px, w)
-            gain = self._compute_gain(freq)
-            # Piecewise linear: gain 0→1 maps to h→zero_y, gain 1→max_peak maps to zero_y→0
-            if gain <= 1.0:
-                y = h - gain * (h - zero_y)
-            else:
-                y = zero_y - (gain - 1.0) / (max_peak - 1.0) * zero_y
-            y = max(2.0, min(float(h - 2), y))
-            points.append((px, y))
 
+        # Vectorized: build the whole curve in one numpy pass instead of a
+        # per-pixel Python loop.  Output is a (w, 2) array of (x, y) points.
+        if w > 1:
+            xs = np.arange(w, dtype=np.float64)
+            log_min = math.log10(20.0)
+            log_max = math.log10(20000.0)
+            freqs = 10.0 ** (log_min + (xs / max(w, 1)) * (log_max - log_min))
+            gains = self._compute_gain_array(freqs)
+
+            ys = np.where(
+                gains <= 1.0,
+                h - gains * (h - zero_y),
+                zero_y - (gains - 1.0) / (max_peak - 1.0) * zero_y,
+            )
+            np.clip(ys, 2.0, float(h - 2), out=ys)
+            points = list(zip(xs.astype(int).tolist(), ys.tolist()))
+        else:
+            points = []
+
+        path = QPainterPath()
         if points:
             path.moveTo(points[0][0], points[0][1])
             for px, py in points[1:]:
@@ -636,6 +982,37 @@ class FilterCurveWidget(QWidget):
                 gain = 0.0
 
         return gain  # allow > 1.0 for Q peaks
+
+    def _compute_gain_array(self, freqs: np.ndarray) -> np.ndarray:
+        """Vectorized version of _compute_gain for an array of frequencies.
+
+        Mirrors the scalar logic exactly — used by paintEvent so we can
+        evaluate the response at every pixel in one numpy pass.
+        """
+        gain = np.ones_like(freqs, dtype=np.float64)
+
+        if self._lp_enabled and self._lp_freq > 0:
+            q = 0.5 + self._lp_q * 4.0
+            ratio = freqs / self._lp_freq
+            lp_resp = 1.0 / np.sqrt(1.0 + ratio ** 4)
+            mask = (ratio > 0.5) & (ratio < 2.0)
+            peak = 1.0 + (q - 0.7) * 0.3 * np.exp(-((ratio - 1.0) ** 2) * 8)
+            lp_resp = np.where(mask, lp_resp * peak, lp_resp)
+            gain *= lp_resp
+
+        if self._hp_enabled and self._hp_freq > 0:
+            q = 0.5 + self._hp_q * 4.0
+            ratio = freqs / self._hp_freq
+            # Avoid divide-by-zero on ratio==0 (matches the scalar gain=0.0 branch)
+            zero_mask = ratio <= 0
+            safe_ratio = np.where(zero_mask, 1.0, ratio)
+            hp_resp = 1.0 / np.sqrt(1.0 + (1.0 / safe_ratio) ** 4)
+            peak_mask = (safe_ratio > 0.5) & (safe_ratio < 2.0)
+            peak = 1.0 + (q - 0.7) * 0.3 * np.exp(-((safe_ratio - 1.0) ** 2) * 8)
+            hp_resp = np.where(peak_mask, hp_resp * peak, hp_resp)
+            gain = np.where(zero_mask, 0.0, gain * hp_resp)
+
+        return gain
 
 
 class FilterPanel(QFrame):

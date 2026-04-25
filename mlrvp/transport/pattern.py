@@ -111,9 +111,14 @@ class PatternRecorder:
             if not self._recording:
                 return
 
-            # Cap events to prevent unbounded memory growth
+            # Cap events to prevent unbounded memory growth.
+            # Drop the oldest 10% in one shot rather than popping a single
+            # element each call: list.pop(0) is O(n) and at the cap (n=10k)
+            # every subsequent record_event would memmove ~10k pointers,
+            # spiking the clock-thread under sustained recording. Trimming
+            # in batches amortises that work over ~1000 events.
             if len(self.events) >= 10000:
-                self.events.pop(0)
+                del self.events[:1000]
 
             # Calculate position within the pattern
             length = self.length_beats
