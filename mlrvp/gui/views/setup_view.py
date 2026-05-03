@@ -8,7 +8,14 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
-from mlrvp.config import AppConfig, MAX_ROWS
+from mlrvp.config import (
+    AppConfig,
+    MAX_ROWS,
+    MONOME_BACKEND_AUTO,
+    MONOME_BACKEND_SERIALOSC,
+    MONOME_BACKEND_40H_DIRECT,
+    MONOME_BACKEND_LEGACY_OSC,
+)
 from mlrvp.gui.styles import ACCENT_BLUE, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY
 
 
@@ -283,12 +290,27 @@ class GridSetupPanel(QFrame):
         grid.addWidget(QLabel("Grid Columns:"), 1, 0)
         grid.addWidget(self._cols_combo, 1, 1)
 
+        # Monome backend
+        self._backend_combo = QComboBox()
+        self._backend_combo.addItem("Auto", MONOME_BACKEND_AUTO)
+        self._backend_combo.addItem("serialosc", MONOME_BACKEND_SERIALOSC)
+        self._backend_combo.addItem("40h direct", MONOME_BACKEND_40H_DIRECT)
+        self._backend_combo.addItem("Legacy OSC", MONOME_BACKEND_LEGACY_OSC)
+        self._backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        self._backend_combo.setToolTip(
+            "Choose how mlrVp talks to monome hardware.\n"
+            "Auto uses serialosc first and keeps the legacy backends available\n"
+            "when you need them explicitly."
+        )
+        grid.addWidget(QLabel("Monome Backend:"), 2, 0)
+        grid.addWidget(self._backend_combo, 2, 1)
+
         # Connected grid device
         self._grid_combo = QComboBox()
         self._grid_combo.addItem("Virtual Grid (built-in)")
         self._grid_combo.setToolTip("Select the hardware grid controller to connect to")
-        grid.addWidget(QLabel("Grid Device:"), 2, 0)
-        grid.addWidget(self._grid_combo, 2, 1)
+        grid.addWidget(QLabel("Grid Device:"), 3, 0)
+        grid.addWidget(self._grid_combo, 3, 1)
 
         layout.addLayout(grid)
 
@@ -403,6 +425,37 @@ class GridSetupPanel(QFrame):
             self._grid_combo.addItem(f"{d['name']} ({d['model']})")
         self._grid_combo.blockSignals(False)
 
+    def set_grid_settings(
+        self,
+        row_count: int,
+        grid_columns: int,
+        show_virtual_grid: bool,
+        snap_speed_to_rate: bool,
+        monome_backend: str,
+    ):
+        self._rows_spin.blockSignals(True)
+        self._rows_spin.setValue(row_count)
+        self._rows_spin.blockSignals(False)
+
+        self._cols_combo.blockSignals(True)
+        self._cols_combo.setCurrentText(str(grid_columns))
+        self._cols_combo.blockSignals(False)
+
+        self._virtual_chk.blockSignals(True)
+        self._virtual_chk.setChecked(bool(show_virtual_grid))
+        self._virtual_chk.blockSignals(False)
+
+        self._snap_speed_chk.blockSignals(True)
+        self._snap_speed_chk.setChecked(bool(snap_speed_to_rate))
+        self._snap_speed_chk.blockSignals(False)
+
+        self._backend_combo.blockSignals(True)
+        idx = self._backend_combo.findData(monome_backend)
+        if idx < 0:
+            idx = self._backend_combo.findData(MONOME_BACKEND_AUTO)
+        self._backend_combo.setCurrentIndex(max(0, idx))
+        self._backend_combo.blockSignals(False)
+
     def set_tilt_enabled(self, enabled: bool):
         """Programmatically set the tilt checkbox (e.g. on monome connect)."""
         self._tilt_chk.blockSignals(True)
@@ -437,7 +490,15 @@ class GridSetupPanel(QFrame):
         device_idx = idx - 1  # offset for "Virtual Grid" entry
         if device_idx < len(self._scanned_devices):
             d = self._scanned_devices[device_idx]
+            # Skip non-MIDI entries (e.g. monome 40h injected by the app
+            # for display purposes — already connected via direct serial).
+            if d.get("in_port", -1) < 0:
+                return
             self.midi_grid_connect_requested.emit(d["in_port"], d["out_port"])
+
+    def _on_backend_changed(self, index: int):
+        backend = self._backend_combo.itemData(index) or MONOME_BACKEND_AUTO
+        self.setting_changed.emit("monome_backend", backend)
 
     def _refresh_defaults_list(self):
         """Scan the defaults directory and populate the combo."""
@@ -481,6 +542,8 @@ class MidiSetupPanel(QFrame):
     mapping_removed = Signal(str)                        # param_path
     mapping_toggle_changed = Signal(str, bool)           # param_path, toggle
     tilt_mapping_changed = Signal(int, str)              # axis_index (0=x,1=y,2=z), target param_path
+    tilt_range_changed = Signal(int, float, float)       # axis_index, min, max
+    tilt_sensitivity_changed = Signal(int, float)        # axis_index, sensitivity multiplier
     midi_input_added = Signal(int)                       # port index
     midi_input_removed = Signal(int)                     # port index
 
@@ -627,19 +690,38 @@ class MidiSetupPanel(QFrame):
         tilt_sep.setStyleSheet("color: #444;")
         tilt_inner.addWidget(tilt_sep)
 
+        tilt_header_row = QHBoxLayout()
+        tilt_header_row.setSpacing(8)
         tilt_label = QLabel("MONOME TILT / ACCELEROMETER")
         tilt_label.setStyleSheet("font-weight: bold; font-size: 10px; color: #888;")
-        tilt_inner.addWidget(tilt_label)
+        tilt_header_row.addWidget(tilt_label)
+        self._tilt_live_label = QLabel("no data")
+        self._tilt_live_label.setStyleSheet(
+            "font-size: 9px; color: #555; font-style: italic;"
+        )
+        self._tilt_live_label.setToolTip(
+            "Live tilt sensor values (normalized 0–1). "
+            "Values change only if the accelerometer is connected and data is streaming."
+        )
+        tilt_header_row.addWidget(self._tilt_live_label)
+        tilt_header_row.addStretch()
+        tilt_inner.addLayout(tilt_header_row)
 
         tilt_grid = QGridLayout()
         tilt_grid.setSpacing(4)
         self._tilt_combos: list[QComboBox] = []
+        self._tilt_min_spins: list[QDoubleSpinBox] = []
+        self._tilt_max_spins: list[QDoubleSpinBox] = []
+        self._tilt_sensitivity_spins: list[QDoubleSpinBox] = []
         _TILT_TOOLTIPS = [
             "Tilt X axis — map left/right tilt to a parameter",
             "Tilt Y axis — map forward/back tilt to a parameter",
-            "Tilt Z axis — map up/down tilt to a parameter",
         ]
-        for i, axis in enumerate(["Tilt X", "Tilt Y", "Tilt Z"]):
+        _spin_ss = (
+            "QDoubleSpinBox { background: #1a1a1a; color: #ccc; "
+            "border: 1px solid #333; font-size: 9px; }"
+        )
+        for i, axis in enumerate(["Tilt X", "Tilt Y"]):
             lbl = QLabel(axis + ":")
             lbl.setStyleSheet("color: #aaa; font-size: 10px;")
             combo = QComboBox()
@@ -651,9 +733,60 @@ class MidiSetupPanel(QFrame):
             combo.currentIndexChanged.connect(
                 lambda idx, ax=i: self._on_tilt_changed(ax, idx))
             combo.setToolTip(_TILT_TOOLTIPS[i])
+
+            min_spin = QDoubleSpinBox()
+            min_spin.setRange(-1000.0, 1000.0)
+            min_spin.setDecimals(2)
+            min_spin.setValue(0.0)
+            min_spin.setSingleStep(0.05)
+            min_spin.setFixedWidth(60)
+            min_spin.setStyleSheet(_spin_ss)
+            min_spin.setToolTip("Output value at rest (device held flat — no tilt)")
+            min_spin.valueChanged.connect(lambda v, ax=i: self._on_tilt_range_changed(ax))
+
+            max_spin = QDoubleSpinBox()
+            max_spin.setRange(-1000.0, 1000.0)
+            max_spin.setDecimals(2)
+            max_spin.setValue(1.0)
+            max_spin.setSingleStep(0.05)
+            max_spin.setFixedWidth(60)
+            max_spin.setStyleSheet(_spin_ss)
+            max_spin.setToolTip("Output value at full tilt deflection")
+            max_spin.valueChanged.connect(lambda v, ax=i: self._on_tilt_range_changed(ax))
+
+            sens_spin = QDoubleSpinBox()
+            sens_spin.setRange(0.1, 20.0)
+            sens_spin.setDecimals(1)
+            sens_spin.setValue(5.0)
+            sens_spin.setSingleStep(0.5)
+            sens_spin.setFixedWidth(70)
+            sens_spin.setStyleSheet(_spin_ss)
+            sens_spin.setToolTip(
+                "Sensitivity — how strongly a small physical tilt moves the output.\n"
+                "5.0 = a moderate tilt (~20% of sensor range) gives a full sweep.\n"
+                "Higher = more responsive; lower = requires bigger tilts."
+            )
+            sens_spin.valueChanged.connect(lambda v, ax=i: self._on_tilt_sensitivity_changed(ax))
+
+            min_lbl = QLabel("Min:")
+            min_lbl.setStyleSheet("color: #666; font-size: 9px;")
+            max_lbl = QLabel("Max:")
+            max_lbl.setStyleSheet("color: #666; font-size: 9px;")
+            sens_lbl = QLabel("Sens:")
+            sens_lbl.setStyleSheet("color: #666; font-size: 9px;")
+
             tilt_grid.addWidget(lbl, i, 0)
             tilt_grid.addWidget(combo, i, 1)
+            tilt_grid.addWidget(min_lbl, i, 2)
+            tilt_grid.addWidget(min_spin, i, 3)
+            tilt_grid.addWidget(max_lbl, i, 4)
+            tilt_grid.addWidget(max_spin, i, 5)
+            tilt_grid.addWidget(sens_lbl, i, 6)
+            tilt_grid.addWidget(sens_spin, i, 7)
             self._tilt_combos.append(combo)
+            self._tilt_min_spins.append(min_spin)
+            self._tilt_max_spins.append(max_spin)
+            self._tilt_sensitivity_spins.append(sens_spin)
         tilt_inner.addLayout(tilt_grid)
 
         self._tilt_container.setVisible(False)
@@ -684,6 +817,15 @@ class MidiSetupPanel(QFrame):
     def set_tilt_visible(self, visible: bool):
         """Show or hide the tilt mapping section."""
         self._tilt_container.setVisible(visible)
+
+    def update_tilt_live(self, x: float, y: float):
+        """Update live tilt value display (called from app when data arrives)."""
+        self._tilt_live_label.setStyleSheet(
+            "font-size: 9px; color: #7fc97f;"
+        )
+        self._tilt_live_label.setText(
+            f"X={x:.2f}  Y={y:.2f}"
+        )
 
     def _on_add_input(self):
         """Add a new MIDI input selector row."""
@@ -860,6 +1002,31 @@ class MidiSetupPanel(QFrame):
                     item.data(Qt.ItemDataRole.UserRole))
             self._map_table.removeRow(0)
 
+    def set_tilt_axis_state(self, axis: int, param_path: str,
+                            min_val: float, max_val: float,
+                            sensitivity: float = 5.0):
+        """Restore a tilt axis target, range and sensitivity (e.g. on preset load)."""
+        if axis >= len(self._tilt_combos):
+            return
+        combo = self._tilt_combos[axis]
+        found = 0
+        for i in range(combo.count()):
+            if combo.itemData(i) == param_path:
+                found = i
+                break
+        combo.blockSignals(True)
+        combo.setCurrentIndex(found)
+        combo.blockSignals(False)
+        self._tilt_min_spins[axis].blockSignals(True)
+        self._tilt_min_spins[axis].setValue(min_val)
+        self._tilt_min_spins[axis].blockSignals(False)
+        self._tilt_max_spins[axis].blockSignals(True)
+        self._tilt_max_spins[axis].setValue(max_val)
+        self._tilt_max_spins[axis].blockSignals(False)
+        self._tilt_sensitivity_spins[axis].blockSignals(True)
+        self._tilt_sensitivity_spins[axis].setValue(sensitivity)
+        self._tilt_sensitivity_spins[axis].blockSignals(False)
+
     def set_tilt_targets(self, targets: list[tuple[str, str]]):
         """Populate tilt combo boxes with available target parameters.
 
@@ -872,6 +1039,17 @@ class MidiSetupPanel(QFrame):
             for path, label in targets:
                 combo.addItem(label, path)
             combo.blockSignals(False)
+
+    def _on_tilt_range_changed(self, axis: int):
+        """Emit range change when a tilt min/max spinbox changes."""
+        min_v = self._tilt_min_spins[axis].value()
+        max_v = self._tilt_max_spins[axis].value()
+        self.tilt_range_changed.emit(axis, min_v, max_v)
+
+    def _on_tilt_sensitivity_changed(self, axis: int):
+        """Emit sensitivity change when the Sens spinbox changes."""
+        sens = self._tilt_sensitivity_spins[axis].value()
+        self.tilt_sensitivity_changed.emit(axis, sens)
 
     def _on_tilt_changed(self, axis: int, combo_index: int):
         """User changed tilt axis target assignment."""
@@ -967,6 +1145,8 @@ class SetupView(QWidget):
     midi_mapping_removed = Signal(str)
     midi_mapping_toggle_changed = Signal(str, bool)
     midi_tilt_mapping_changed = Signal(int, str)  # axis, target param_path
+    midi_tilt_range_changed = Signal(int, float, float)  # axis, min, max
+    midi_tilt_sensitivity_changed = Signal(int, float)  # axis, sensitivity
     midi_input_added = Signal(int)     # port index
     midi_input_removed = Signal(int)   # port index
     osc_setting_changed = Signal(str, object)
@@ -1007,6 +1187,8 @@ class SetupView(QWidget):
         self._midi_panel.mapping_removed.connect(self.midi_mapping_removed.emit)
         self._midi_panel.mapping_toggle_changed.connect(self.midi_mapping_toggle_changed.emit)
         self._midi_panel.tilt_mapping_changed.connect(self.midi_tilt_mapping_changed.emit)
+        self._midi_panel.tilt_range_changed.connect(self.midi_tilt_range_changed.emit)
+        self._midi_panel.tilt_sensitivity_changed.connect(self.midi_tilt_sensitivity_changed.emit)
         self._midi_panel.midi_input_added.connect(self.midi_input_added.emit)
         self._midi_panel.midi_input_removed.connect(self.midi_input_removed.emit)
         tabs.addTab(self._midi_panel, "MIDI")
@@ -1038,3 +1220,7 @@ class SetupView(QWidget):
         self._midi_panel._learn_btn.blockSignals(True)
         self._midi_panel._learn_btn.setChecked(on)
         self._midi_panel._learn_btn.blockSignals(False)
+
+    def update_tilt_live(self, x: float, y: float):
+        """Forward live tilt values to the MIDI panel display."""
+        self._midi_panel.update_tilt_live(x, y)

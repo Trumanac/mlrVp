@@ -64,10 +64,25 @@ class OscHandler:
     def stop(self):
         self._running = False
         if self._server is not None:
-            self._server.shutdown()
+            try:
+                self._server.shutdown()
+            except Exception:
+                pass
+            try:
+                # shutdown() stops serve_forever but does NOT close the
+                # underlying UDP socket; server_close() is required to
+                # release the port for the next start().
+                self._server.server_close()
+            except Exception:
+                pass
             self._server = None
         if self._server_thread is not None:
             self._server_thread.join(timeout=2.0)
+            if self._server_thread.is_alive():
+                import logging
+                logging.getLogger("mlrvp").warning(
+                    "OSC server thread did not shut down within 2s timeout"
+                )
             self._server_thread = None
 
     def add_handler(self, address: str, handler: Callable):

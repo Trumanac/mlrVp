@@ -15,6 +15,7 @@ td, th { padding: 2px 8px; }
 <p>mlrVp is a grid-based sample looping instrument inspired by the original mlrV2.2 for monome.
 Load audio, trigger and loop samples from a grid controller (or the on-screen virtual grid),
 apply modular effects, and build setlists for live performance.</p>
+<p>Supported grid controllers: <b>monome grids</b> (modern serialosc grids, legacy 40h/64 kit hardware via direct serial, and pre-serialosc devices via monomeserial); <b>Novation Launchpads</b> (all models); any <b>generic MIDI</b> note-on/off controller; and the built-in <b>virtual grid</b>. See the <b>Monome Hardware &amp; OSC</b> section below for setup details.</p>
 
 <h2>Getting Started</h2>
 <ol>
@@ -184,9 +185,71 @@ Click <b>ARM</b> and recording starts on the next beat, writing directly into th
     <li>Click <b>Start Engine</b> to open the audio stream. Use <b>File → Restart</b> to reinitialize after changing settings.</li>
   </ul>
 </li>
-<li><b>Grid tab</b> — connect Launchpad or monome, set active rows and columns, toggle virtual grid, enable tilt mapping.</li>
+<li><b>Grid tab</b> — connect a hardware grid controller, set active rows and columns, toggle the virtual grid, and configure tilt mapping:
+  <ul>
+    <li><b>Monome Backend</b> dropdown — choose how mlrVp talks to monome hardware:
+      <ul>
+        <li><b>Auto</b> (default) — probes serialosc first; if serialosc is not running or the device does not enumerate (common with pre-2010 kit/40h hardware), falls back to 40h-direct</li>
+        <li><b>serialosc</b> — explicitly use the serialosc daemon (required for all modern 2010+ monome grids). Install serialosc from <a href="https://github.com/monome/serialosc/releases">github.com/monome/serialosc</a></li>
+        <li><b>40h direct</b> — bypasses serialosc and talks directly to the original 40h / black-rubber-64 kit hardware via FTDI serial (COM port, 9600 baud). Requires <code>pyserial</code> and the FTDI VCP driver. LEDs are binary on/off</li>
+        <li><b>Legacy OSC</b> — connects to a running <a href="https://github.com/monome/monomeserial">monomeserial</a> bridge application using OSC/UDP (send port 8080, receive port 8000). Use <code>run_monomeserial.bat</code> (Windows) to launch with the correct environment pre-set</li>
+      </ul>
+    </li>
+    <li><b>Grid Device</b> — lists all discovered controllers. Click <b>Scan for Controllers</b> to refresh, then select a device and click <b>Connect</b>.</li>
+    <li><b>Show Virtual Grid</b> — opens the on-screen grid in a separate window. Always available regardless of hardware.</li>
+    <li><b>Snap Speed to Rate</b> — auto-rounds speed to the nearest ½×/2× step when loading a sample.</li>
+    <li><b>Tilt Control Mapping</b> — enables the accelerometer/tilt section in the MIDI tab. Auto-enabled when a monome with a tilt sensor connects.</li>
+  </ul>
+</li>
 <li><b>MIDI tab</b> — add MIDI input controllers, click <b>Learn</b> to enter mapping mode. Each mapping row has Min/Max range and a Toggle checkbox. Tilt axis assignments appear here when a monome with accelerometer is connected.</li>
 </ul>
+
+<h2>Monome Hardware &amp; OSC</h2>
+
+<h3>Modern grids — serialosc (2010 and newer)</h3>
+<p>All current monome grids (grayscale 64 / 128 / 256 / walnut editions and newer) use the
+<b>serialosc</b> daemon. Install serialosc from
+<a href="https://github.com/monome/serialosc/releases">github.com/monome/serialosc/releases</a>,
+then set the Monome Backend to <b>Auto</b> or <b>serialosc</b>. mlrVp discovers devices
+automatically. Full LED brightness (off / dim / med / bright) and tilt/accelerometer are supported.</p>
+<p><b>Windows tip:</b> If serialosc is installed but the grid never appears, open Task Manager →
+Services → right-click <code>serialosc</code> → Start (or run <code>net start serialosc</code> as
+Administrator).</p>
+
+<h3>Original 40h / black-rubber-64 kit grids — 40h direct (2007–2009)</h3>
+<p>The original 40h kit and early black-rubber 64 boards use a binary serial protocol over FTDI USB.
+serialosc 1.4.x cannot enumerate these devices on Windows. Use the <b>40h direct</b> backend to
+bypass serialosc and talk directly to the COM port.</p>
+<ul>
+  <li>Install the <a href="https://ftdichip.com/drivers/vcp-drivers/">FTDI VCP driver</a> so the device appears as a COM port (e.g. <code>COM7</code>)</li>
+  <li>Install pyserial: <code>pip install pyserial</code></li>
+  <li>Set Monome Backend to <b>40h direct</b> and click <b>Scan for Controllers</b></li>
+  <li>If serialosc is running, mlrVp will request an elevated stop of the service to release the COM port</li>
+</ul>
+<p><b>LED note:</b> The 40h hardware has no PWM dimming — LEDs are binary on/off. mlrVp lights any
+brightness level ≥ 1 as ON so that sub-loop backgrounds and sequencer step dots remain visible.</p>
+
+<h3>Pre-serialosc grids via monomeserial — Legacy OSC</h3>
+<p><a href="https://github.com/monome/monomeserial">monomeserial</a> is the original bridge
+application (pre-2010) that exposes a grid over OSC/UDP. If you already have monomeserial running,
+set the Monome Backend to <b>Legacy OSC</b>.</p>
+<ul>
+  <li>monomeserial sends button events to mlrVp on port <b>8000</b></li>
+  <li>mlrVp sends LED commands to monomeserial on port <b>8080</b></li>
+  <li>On Windows, use <code>run_monomeserial.bat</code> instead of <code>run.bat</code> — it pre-sets all required environment variables and calls the normal launcher</li>
+</ul>
+
+<h3>OSC Remote Control &amp; Mirroring</h3>
+<p>mlrVp exposes a secondary OSC interface for remote control and visual mirroring (matching the
+<i>serialosnoopy</i> feature from mlrV2.2):</p>
+<ul>
+  <li><b>Receive port:</b> 8001 — listens for incoming OSC control messages</li>
+  <li><b>Send port:</b> 8000 — forwards mirrored events to any listening client</li>
+  <li><b>/mlrvp/grid/key x y state</b> — mirrors every grid button press/release in real time</li>
+  <li><b>/mlrvp/position row pos</b> — publishes per-channel playback positions continuously</li>
+</ul>
+<p>This allows a second machine (or a visualiser in Processing, Max, or TouchDesigner) to receive
+the full grid state without being the primary grid controller.</p>
 
 <h2>Keyboard Shortcuts</h2>
 <ul>

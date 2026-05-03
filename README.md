@@ -119,11 +119,15 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 - **Scrollable Slices Library**: All saved slices listed with search, sort (name/date), BPM badges, right-click "Load to channel", multi-select batch delete, and drag-to-load
 
 ### Controllers
-- **Monome grids** via serialosc/OSC (auto-detected)
+- **Monome grids** — four connection backends, selectable in Setup → Grid:
+  - **Auto** (default): probes serialosc first; falls back to 40h-direct if an FTDI monome is detected but serialosc cannot hand-shake it (common with pre-2010 kit hardware on Windows)
+  - **serialosc** — modern monome grids (2010 and newer) using the serialosc daemon over OSC/UDP. Supports any grid size (64 / 128 / 256 / arc-style). LED brightness levels (dim / med / bright) fully supported. Tilt/accelerometer available on grids that have the sensor
+  - **40h direct** — legacy 2007–2009 kit/40h/black-rubber-64 hardware that uses the binary 256/m64 serial protocol over FTDI USB. serialosc 1.4.x cannot enumerate these devices; this backend bypasses serialosc entirely and talks directly to the COM port at 9600 baud. LEDs are binary on/off (the 40h has no hardware dimming). Tilt (X/Y ADC) is supported
+  - **Legacy OSC (monomeserial)** — for grids managed by the pre-serialosc [monomeserial](https://github.com/monome/monomeserial) bridge application. Communicates over OSC/UDP using monomeserial's default port layout (send to 8080, receive on 8000). See `run_monomeserial.bat` for a pre-configured launcher
 - **Novation Launchpads**: Mini, S, MK1, MK2, X, MK3, Pro, Pro MK3 — with per-group color LED feedback
 - **Generic MIDI grids**: Any note-on/off based controller
 - **Built-in virtual grid** (always available)
-- **OSC networking** for remote control and visual mirroring
+- **OSC networking** — remote control and visual mirroring via `python-osc`; button presses are forwarded to `/mlrvp/grid/key x y state` and playback positions to `/mlrvp/position row pos` (serialosnoopy-style mirroring)
 
 ### MIDI
 - **Full MIDI Learn** system — map any CC or Note to any parameter
@@ -247,6 +251,7 @@ python generate_icon.py
 ### Windows
 - ASIO drivers recommended for low-latency audio (download from your audio interface manufacturer, or use [ASIO4ALL](https://www.asio4all.org/) for onboard audio)
 - The `sounddevice` package uses PortAudio which supports WASAPI, DirectSound, and ASIO
+- **Monome grids:** install [serialosc](https://github.com/monome/serialosc/releases) for modern grids. For original 40h/64 kit hardware, use the **40h direct** backend (requires FTDI VCP driver + `pyserial`). For monomeserial-managed grids, use `run_monomeserial.bat`
 
 ### macOS
 - CoreAudio is used automatically — no extra drivers needed
@@ -264,7 +269,7 @@ python generate_icon.py
 - **Python 3.10+**
 - **Audio interface** (ASIO recommended on Windows)
 - **Grid controller** (optional — virtual grid included)
-  - Monome grid (any size)
+  - Monome grid — any size (see [Monome Hardware Support](#monome-hardware-support) below)
   - Novation Launchpad (any model)
   - Any MIDI controller with note-on/off
 
@@ -278,11 +283,109 @@ python generate_icon.py
 | soundfile | Audio file loading (WAV, AIFF, FLAC, OGG) |
 | python-rtmidi | MIDI I/O for Launchpad and MIDI Learn |
 | python-osc | OSC networking |
-| pymonome | Monome grid communication (optional) |
+| pymonome | Monome grid communication (serialosc backend, optional) |
+| pyserial | Legacy 40h direct serial backend (optional) |
 | resampy | High-quality sample rate conversion |
 | scipy | Signal processing (filters) |
 | librosa | Time-stretch-free pitch shifting |
 | numba | JIT-compiled DSP kernels for real-time audio processing |
+---
+
+## Monome Hardware Support
+
+mlrVp supports every generation of monome grid hardware through four selectable backends. Choose the right one in **Setup → Grid → Monome Backend**.
+
+### Modern grids — serialosc (2010 and newer)
+
+Any monome grid released after 2010 (grayscale 64 / 128 / 256 / walnut editions, all current production models) communicates via the [serialosc](https://github.com/monome/serialosc) daemon.
+
+**Requirements:**
+- Install serialosc from the [monome/serialosc releases page](https://github.com/monome/serialosc/releases)
+- On Windows: serialosc runs as a background service. If it ever gets stuck, open Task Manager → Services → right-click `serialosc` → Start (or run `net start serialosc` as Administrator)
+- The `pymonome` Python package must be installed (`pip install pymonome`)
+
+**Backend:** set to **Auto** or **serialosc**. mlrVp auto-discovers connected devices and lists them in the Grid Device dropdown.
+
+**Features fully supported:** variable LED brightness (off / dim / med / bright), tilt/accelerometer (on grids that have the sensor), any grid size.
+
+---
+
+### Original 40h / black-rubber-64 kit grids — 40h direct (2007–2009)
+
+The original "40h kit" and early black-rubber 64 boards speak a binary serial protocol (the "256/m64" protocol from `libmonome`) over an FTDI USB-Serial converter chip. **serialosc 1.4.x on Windows does not recognise these devices** — the handshake times out and the grid never appears. mlrVp's 40h-direct backend bypasses serialosc entirely.
+
+**Requirements:**
+- Install the [FTDI VCP driver](https://ftdichip.com/drivers/vcp-drivers/) so the device appears as a COM port (e.g. `COM7`)
+- Install `pyserial`: `pip install pyserial`
+- If serialosc is installed and running, the 40h-direct backend will request an elevated stop of the serialosc service so it can claim exclusive access to the COM port
+
+**Backend:** set to **40h direct**. mlrVp scans for FTDI VID/PID `0403:6001` ports automatically; if only one is found it connects on first scan.
+
+**Limitations:**
+- LEDs are binary on/off only — the 40h hardware has no PWM dimming. mlrVp thresholds any brightness value ≥ 1 to ON so that dim sub-loop backgrounds and step-sequencer dots remain visible
+- Row/column bulk writes (`0x70|y` / `0x80|x`) are **not used** — empirical testing on kit firmware confirmed they are silently ignored. mlrVp uses individual per-LED `0x20 [(x<<4)|y]` commands instead
+- No LED brightness levels; all grid visual feedback is binary
+
+**Environment variables for advanced tuning:**
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `MLRVP_40H_COM` | auto-detect | Force a specific COM port (e.g. `COM7`) |
+| `MLRVP_40H_BAUD` | `9600` | Override serial baud rate |
+| `MLRVP_40H_TILT_SMOOTH` | `0.3` | EMA smoothing factor for tilt axes (0 = raw, 1 = frozen) |
+
+---
+
+### Pre-serialosc grids managed by monomeserial — Legacy OSC
+
+[monomeserial](https://github.com/monome/monomeserial) is the original bridge application used before serialosc existed (circa 2007–2010). If your grid is already managed by a running copy of monomeserial, use the **Legacy OSC** backend to connect without needing serialosc at all.
+
+monomeserial exposes the grid as OSC over UDP:
+
+| Direction | Default port | What it carries |
+|-----------|-------------|-----------------|
+| mlrVp → monomeserial | **8080** | LED set, clear, prefix queries |
+| monomeserial → mlrVp | **8000** | Button press/release events |
+
+mlrVp probes `/sys/report` on startup to discover the active prefix, device type (`40h` / `64` / `128` / `256`), and serial number. The `run_monomeserial.bat` launcher pre-configures all environment variables and calls `run.bat`.
+
+**Backend:** set to **Legacy OSC** (or use `run_monomeserial.bat` which sets `MLRVP_MONOMESERIAL=1`).
+
+**Environment variables:**
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `MLRVP_MONOMESERIAL` | `0` | Set to `1` to force Legacy OSC backend on launch |
+| `MLRVP_MONOMESERIAL_HOST` | `127.0.0.1` | IP where monomeserial is running |
+| `MLRVP_MONOMESERIAL_SEND_PORT` | `8080` | Port mlrVp sends LED commands to |
+| `MLRVP_MONOMESERIAL_RECV_PORT` | `8000` | Port mlrVp listens on for button events |
+
+---
+
+### Backend selection summary
+
+| Hardware | Era | Recommended backend | serialosc needed? | pyserial needed? |
+|----------|-----|---------------------|-------------------|-----------------|
+| Current production monome grids | 2010+ | **Auto** or **serialosc** | Yes | No |
+| Grayscale 64 / walnut editions | 2011+ | **Auto** or **serialosc** | Yes | No |
+| Original 40h kit / black-rubber 64 | 2007–2009 | **40h direct** | No | Yes |
+| Any grid via monomeserial bridge | Pre-2010 | **Legacy OSC** | No | No |
+
+The **Auto** backend probes serialosc first. If the daemon is running and lists a device, it connects via serialosc. If serialosc is not running (or the device doesn't enumerate — common with 40h kit hardware), Auto then scans for FTDI COM ports and tries 40h-direct.
+
+---
+
+## OSC Remote Control
+
+In addition to hardware grid communication, mlrVp exposes an OSC interface for remote control and visual mirroring (matching the `serialosnoopy` feature from the original mlrV2.2):
+
+- **Receive port**: 8001 (default) — accepts any registered handler address
+- **Send port**: 8000 (default), configurable via `OscHandler`
+- **Button mirror**: every grid button press/release is forwarded to `/mlrvp/grid/key x y state`
+- **Playback position**: channel positions are published to `/mlrvp/position row pos`
+
+This lets a second computer (or a visualiser like Processing/Max/TouchDesigner) mirror the grid state in real time.
+
 ---
 
 ## Project Structure
@@ -307,8 +410,10 @@ MLRVp/
 │   │   ├── clock.py        # Master clock
 │   │   └── pattern.py      # Pattern recording/playback
 │   ├── grid/               # Grid controllers
-│   │   ├── controller.py   # Monome serialosc communication
-│   │   └── midi_grid.py    # Launchpad + MIDI grid support
+│   │   ├── controller.py   # Grid controller hub — serialosc, 40h-direct, legacy OSC, MIDI
+│   │   ├── midi_grid.py    # Launchpad + MIDI grid support
+│   │   ├── monome40h.py    # 40h direct binary serial backend (legacy kit hardware)
+│   │   └── monomeserial.py # Legacy OSC backend (monomeserial bridge)
 │   ├── midi/               # MIDI I/O
 │   │   └── handler.py      # MIDI learn + CC mapping
 │   ├── osc/                # OSC networking
@@ -397,6 +502,7 @@ MLRVp/
 ├── run.bat                 # Windows launcher
 ├── run.command             # macOS launcher
 ├── run.sh                  # Linux launcher
+├── run_monomeserial.bat    # Windows launcher pre-configured for monomeserial Legacy OSC mode
 └── README.md
 ```
 

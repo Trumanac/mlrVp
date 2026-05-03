@@ -79,6 +79,7 @@ class PatternRecorder:
                 self._recording = True
                 self._playing = False
                 self._start_beat = current_beat
+                self._last_playback_pos = -1.0  # reset stale position from previous playback
 
     def toggle_play(self, current_beat: float):
         """Toggle playback on/off."""
@@ -148,6 +149,10 @@ class PatternRecorder:
                         self._playing = True
                     state_cb = self._state_change_callback
                     state = 'playing' if self._playing else 'idle'
+                    log.info(
+                        "Pattern %d auto-stop at beat %.2f: events=%d playing=%s",
+                        self.index, current_beat, len(self.events), self._playing,
+                    )
 
             if self._playing and self.events and self._trigger_callback is not None:
                 events_snapshot = list(self.events)
@@ -155,6 +160,10 @@ class PatternRecorder:
                 start_beat = self._start_beat
                 length_beats = self.length_beats
                 last_pos = self._last_playback_pos
+            elif self._playing and not self.events:
+                log.warning("Pattern %d playing but events list is EMPTY", self.index)
+            elif self._playing and self._trigger_callback is None:
+                log.warning("Pattern %d playing but trigger_callback is None", self.index)
 
         # Fire state callback outside lock
         if state_cb is not None:
@@ -171,13 +180,19 @@ class PatternRecorder:
 
         # Check for events that fall between last_pos and current_pos
         if last_pos < 0:
+            log.debug(
+                "Pattern %d playback start: pos=%.3f events=%d",
+                self.index, pos, len(events_snapshot),
+            )
             with self._lock:
                 self._last_playback_pos = pos
             return
 
+        fired = 0
         for event in events_snapshot:
             # Check if event falls in the window
             if last_pos <= event.beat_position < pos:
+                fired += 1
                 try:
                     trigger_cb(event.row, event.column, event.event_type)
                 except Exception as exc:
@@ -185,13 +200,21 @@ class PatternRecorder:
             elif pos < last_pos:
                 # Wrapped around
                 if event.beat_position >= last_pos or event.beat_position < pos:
+                    fired += 1
                     try:
                         trigger_cb(event.row, event.column, event.event_type)
                     except Exception as exc:
                         log.warning("Pattern trigger callback error: %s", exc)
 
+        if fired:
+            log.debug(
+                "Pattern %d fired %d event(s): pos=%.3f last_pos=%.3f",
+                self.index, fired, pos, last_pos,
+            )
+
         with self._lock:
-            self._last_playback_pos = pos
+            if self._playing:  # guard: don't overwrite a reset from toggle_record/toggle_play
+                self._last_playback_pos = pos
 
     @property
     def progress(self) -> float:

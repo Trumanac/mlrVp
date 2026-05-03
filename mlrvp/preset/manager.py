@@ -45,6 +45,7 @@ from mlrvp.config import (
     TapeDelayState, ModState, HallReverbState, PlateReverbState,
     SlicerState,
     PlaybackMode, QuantizeMode,
+    MONOME_BACKENDS, MONOME_BACKEND_AUTO,
     get_presets_dir, get_setlists_dir, NUM_PRESETS, NUM_SETLIST_SLOTS
 )
 
@@ -228,7 +229,8 @@ class PresetManager:
         return result
 
     def save_preset(self, name: str, config: AppConfig,
-                    midi_mappings: Optional[list] = None) -> None:
+                    midi_mappings: Optional[list] = None,
+                    tilt_mappings: Optional[list] = None) -> None:
         """Save current state to the preset library under the given name.
 
         The actual file write happens on a background thread so slow
@@ -241,6 +243,7 @@ class PresetManager:
             "name": name,
             "config": self._serialize_config(config),
             "midi_mappings": midi_mappings or [],
+            "tilt_mappings": tilt_mappings or [],
         }
 
         def _write():
@@ -793,6 +796,10 @@ class PresetManager:
             config.grid_columns = max(1, min(16, int(cfg_data.get("grid_columns", config.grid_columns))))
         except (ValueError, TypeError):
             pass
+        backend = cfg_data.get("monome_backend", config.monome_backend)
+        if backend not in MONOME_BACKENDS:
+            backend = MONOME_BACKEND_AUTO
+        config.monome_backend = backend
 
         # Per-effect routing
         # Backward compat: old presets stored delay_route at top level
@@ -935,6 +942,7 @@ class PresetManager:
             "aux_fx_route": config.aux_fx_route,
             "aux_send_level": config.aux_send_level,
             "grid_columns": config.grid_columns,
+            "monome_backend": config.monome_backend,
             "osc_host": config.osc_host,
             "osc_send_port": config.osc_send_port,
             "osc_recv_port": config.osc_recv_port,

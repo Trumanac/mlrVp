@@ -45,6 +45,16 @@ NUM_PRESETS = 32
 NUM_SETLIST_SLOTS = 32
 SAMPLE_RATE = 44100
 BUFFER_SIZE = 512
+MONOME_BACKEND_AUTO = "auto"
+MONOME_BACKEND_SERIALOSC = "serialosc"
+MONOME_BACKEND_40H_DIRECT = "40h-direct"
+MONOME_BACKEND_LEGACY_OSC = "legacy-osc"
+MONOME_BACKENDS = (
+    MONOME_BACKEND_AUTO,
+    MONOME_BACKEND_SERIALOSC,
+    MONOME_BACKEND_40H_DIRECT,
+    MONOME_BACKEND_LEGACY_OSC,
+)
 
 # Default group colors — exact RGB from mixer.maxpat bpatcher args
 DEFAULT_GROUP_COLORS = [
@@ -711,6 +721,7 @@ class AppConfig:
     # Grid
     row_count: int = 8
     grid_columns: int = 8
+    monome_backend: str = MONOME_BACKEND_AUTO
 
     # Tempo
     tempo: float = 120.0

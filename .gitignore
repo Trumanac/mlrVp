@@ -52,6 +52,9 @@ data/defaults/plugin_cache.json
 data/defaults/sample_metadata_cache.json
 data/defaults/sample_paths.json
 
+# Logs
+*.log
+
 # Dev/planning files not for end users
 FX_RACK_PLAN.md
 SLICER_UPGRADE_SPEC.md
@@ -65,6 +68,12 @@ build_local.log
 _test_editor.py
 _test_load.py
 tmp_*.txt
+
+# Diagnostic / hardware probe scripts
+diagnose_com7.py
+diagnose_loopback.py
+probe_40h.py
+probe_tilt.py
 
 # Local dev backups
 _backup/

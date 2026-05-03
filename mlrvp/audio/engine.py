@@ -1259,24 +1259,35 @@ class AudioEngine:
         fx4_bus = self._process_fx_chain(fx4_bus, 'd', frames)
 
         # Track FX bus peaks before summing (for per-rack metering)
-        # Use pre-allocated stereo abs buffer to avoid per-column view allocs
+        # Use pre-allocated stereo abs buffer to avoid per-column view allocs.
+        # NaN guard: a divergent FX effect can produce NaN which, without the
+        # guard, permanently corrupts the peak meter (max(NaN, x) == NaN).
+        # Mirrors the np.isfinite() guard in mixer.py group_peaks.
         _pt = self._peak_tmp2[:frames]
         np.abs(fx1_bus[:frames], out=_pt)
-        _p0 = _pt[:, 0].max(); _p1 = _pt[:, 1].max()
-        self._fx1_peak[0] = max(self._fx1_peak[0] * 0.95, float(_p0))
-        self._fx1_peak[1] = max(self._fx1_peak[1] * 0.95, float(_p1))
+        _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
+        if not np.isfinite(_p0): _p0 = 0.0
+        if not np.isfinite(_p1): _p1 = 0.0
+        self._fx1_peak[0] = max(self._fx1_peak[0] * 0.95, _p0)
+        self._fx1_peak[1] = max(self._fx1_peak[1] * 0.95, _p1)
         np.abs(fx2_bus[:frames], out=_pt)
-        _p0 = _pt[:, 0].max(); _p1 = _pt[:, 1].max()
-        self._fx2_peak[0] = max(self._fx2_peak[0] * 0.95, float(_p0))
-        self._fx2_peak[1] = max(self._fx2_peak[1] * 0.95, float(_p1))
+        _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
+        if not np.isfinite(_p0): _p0 = 0.0
+        if not np.isfinite(_p1): _p1 = 0.0
+        self._fx2_peak[0] = max(self._fx2_peak[0] * 0.95, _p0)
+        self._fx2_peak[1] = max(self._fx2_peak[1] * 0.95, _p1)
         np.abs(fx3_bus[:frames], out=_pt)
-        _p0 = _pt[:, 0].max(); _p1 = _pt[:, 1].max()
-        self._fx3_peak[0] = max(self._fx3_peak[0] * 0.95, float(_p0))
-        self._fx3_peak[1] = max(self._fx3_peak[1] * 0.95, float(_p1))
+        _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
+        if not np.isfinite(_p0): _p0 = 0.0
+        if not np.isfinite(_p1): _p1 = 0.0
+        self._fx3_peak[0] = max(self._fx3_peak[0] * 0.95, _p0)
+        self._fx3_peak[1] = max(self._fx3_peak[1] * 0.95, _p1)
         np.abs(fx4_bus[:frames], out=_pt)
-        _p0 = _pt[:, 0].max(); _p1 = _pt[:, 1].max()
-        self._fx4_peak[0] = max(self._fx4_peak[0] * 0.95, float(_p0))
-        self._fx4_peak[1] = max(self._fx4_peak[1] * 0.95, float(_p1))
+        _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
+        if not np.isfinite(_p0): _p0 = 0.0
+        if not np.isfinite(_p1): _p1 = 0.0
+        self._fx4_peak[0] = max(self._fx4_peak[0] * 0.95, _p0)
+        self._fx4_peak[1] = max(self._fx4_peak[1] * 0.95, _p1)
 
         # Capture per-bus waveform for oscilloscopes (before summing)
         # Only compute waveform data when we'll actually send it

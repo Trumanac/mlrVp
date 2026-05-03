@@ -177,3 +177,17 @@ class MasterFilterView(QWidget):
         lp_freq = 200.0 + val * 19800.0
         self._curve.set_params(self._curve._hp_freq, lp_freq)
         self.lp_changed.emit(val)
+
+    def set_lp_value_external(self, val: float):
+        """Update LP knob and curve from an external source (tilt/MIDI) without re-emitting lp_changed."""
+        if abs(self._lp_knob.value - val) > 0.001:
+            lp_freq = 200.0 + val * 19800.0
+            self._curve.set_params(self._curve._hp_freq, lp_freq)
+            self._lp_knob.set_value(val)
+
+    def set_hp_value_external(self, val: float):
+        """Update HP knob and curve from an external source (tilt/MIDI) without re-emitting hp_changed."""
+        if abs(self._hp_knob.value - val) > 0.001:
+            hp_freq = 20.0 + val * 480.0
+            self._curve.set_params(hp_freq, self._curve._lp_freq)
+            self._hp_knob.set_value(val)

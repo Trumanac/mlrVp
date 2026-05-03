@@ -6,6 +6,7 @@ soundfile>=0.12
 python-rtmidi>=1.5
 python-osc>=1.8
 pymonome>=0.10
+pyserial>=3.5
 resampy>=0.4
 librosa>=0.10
 numba>=0.57

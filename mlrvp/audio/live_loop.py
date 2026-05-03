@@ -168,15 +168,23 @@ class LiveLoopRecorder:
         """Write input audio into the buffer (audio thread).
 
         Args:
-            input_data: shape (num_frames, num_channels) float32 input audio
+            input_data: shape (num_frames, 2) float32 input audio
             input_trim: linear gain applied to input before writing/mixing
 
         Returns:
             Thru audio (input_data * trim) if thru monitoring is on, else None.
             Caller is responsible for adding it to the output mix.
         """
+        # Apply trim OUTSIDE the lock — this is a pure compute on the
+        # caller-provided array and never touches mutable recorder state.
+        if input_trim != 1.0:
+            trimmed = input_data * np.float32(input_trim)
+        else:
+            trimmed = input_data
+
         # Snapshot mutable state under the lock to avoid races with cancel()
-        # and finalize() which may run on the GUI thread.
+        # and finalize() which may run on the GUI thread.  Only the minimal
+        # state reads and the actual buffer write need the lock held.
         with self._lock:
             if self._state not in (_RecState.RECORDING, _RecState.OVERDUBBING):
                 return None
@@ -188,19 +196,13 @@ class LiveLoopRecorder:
             is_overdub = self._state == _RecState.OVERDUBBING
             thru_on = self._thru
 
-            # Apply trim once; reused for both write and thru
-            if input_trim != 1.0:
-                trimmed = input_data * np.float32(input_trim)
-            else:
-                trimmed = input_data
-
             frames_to_write = min(len(trimmed), target - wp)
             if frames_to_write <= 0:
                 return trimmed if thru_on else None
 
             buf = buf_obj.data
 
-            # Match channel count
+            # Match channel count — view (no alloc) when input is stereo
             if trimmed.shape[1] >= 2:
                 in_stereo = trimmed[:frames_to_write, :2]
             else:

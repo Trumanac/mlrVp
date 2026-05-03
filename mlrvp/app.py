@@ -22,6 +22,8 @@ from mlrvp.config import (
     LIVE_STATE_EMPTY, LIVE_STATE_COUNTING_IN, LIVE_STATE_RECORDING,
     LIVE_STATE_OVERDUBBING, LIVE_STATE_ARMED_RERECORD, LIVE_STATE_PLAYING,
     LIVE_QUANTIZE_NAMES,
+    MONOME_BACKEND_AUTO, MONOME_BACKEND_SERIALOSC,
+    MONOME_BACKEND_40H_DIRECT, MONOME_BACKEND_LEGACY_OSC,
 )
 from mlrvp.audio.engine import AudioEngine
 from mlrvp.audio.slicer_preview import SlicerPreviewService
@@ -130,6 +132,11 @@ class AppController:
     def __init__(self):
         self.config = AppConfig()
 
+        # Load lightweight startup settings (monome_backend etc.) persisted from
+        # last session.  Must happen before GridController is created so that
+        # the correct backend is active when grid.connect() fires in init_grid().
+        self._load_startup_settings()
+
         # Pre-warm librosa in a background thread so the first pitch-shift
         # call doesn't stall on a cold import (librosa → numba JIT is slow).
         threading.Thread(target=self._preload_librosa, daemon=True).start()
@@ -141,6 +148,7 @@ class AppController:
         self.engine: Optional[AudioEngine] = None
         self.clock: Optional[MasterClock] = None
         self.grid = GridController()
+        self._sync_grid_backend_to_controller()
         self.midi = MidiHandler()
         self.osc: Optional[OscHandler] = None
         self.presets = PresetManager()
@@ -180,6 +188,17 @@ class AppController:
 
         # Tilt axis → target param_path mapping
         self._tilt_mappings: dict[str, str] = {}  # e.g. "tilt.0.x" → "filter_a.lp_freq"
+        # Tilt axis → (min, max) output range
+        # min = output value at rest (device flat); max = output value at full tilt
+        self._tilt_ranges: dict[str, tuple[float, float]] = {}  # e.g. "tilt.0.x" → (0.0, 1.0)
+        # Tilt axis → sensitivity multiplier
+        # 5.0 = a ~20% physical deflection from neutral produces a full-range sweep
+        self._tilt_sensitivity: dict[str, float] = {}  # e.g. "tilt.0.y" → 5.0
+        # Output-side EMA per axis: smooths the final mapped value so it glides
+        # to its new target rather than jumping.  Alpha=0.35 at 60 Hz ≈ 8 Hz cutoff.
+        # This eliminates the hard snap-to-min when the device returns to flat.
+        self._tilt_output_ema: dict[str, float] = {}
+        self._tilt_output_alpha: float = 0.35
 
         # Track per-row playing state for LED cleanup
         self._row_was_playing: list[bool] = [False] * MAX_ROWS
@@ -190,6 +209,9 @@ class AppController:
         self._pattern_hold_timers: dict[int, QTimer] = {}
         self._pattern_hold_cleared: set[int] = set()
         self._pattern_clear_hold_seconds = 3.0
+        # Track which patterns were in "recording" state when their button was pressed.
+        # If auto-stop fires while the button is held, the release should NOT stop playback.
+        self._pattern_was_recording_at_press: set[int] = set()
 
         # LIVE-mode looper state (per row)
         # _live_press_time[row] = monotonic timestamp of col-0 press (for 2s long-press)
@@ -265,6 +287,9 @@ class AppController:
         self.grid.set_led_update_callback(self._on_led_update)
         self.grid.set_tilt_callback(self._on_tilt_data)
         self.grid.enable_tilt(True)
+        # Kick off serialosc discovery in a background thread so any
+        # monome grid plugged in (now or later) is auto-detected.
+        self.grid.connect()
         log.info("Grid controller initialized")
 
     def init_midi(self):
@@ -470,6 +495,7 @@ class AppController:
                 # Reset any SLICE state on the stopped channel
                 if ch.state.mode == PlaybackMode.SLICE:
                     ch._slice_btn1 = None
+                    ch._slice_btn2 = None
                     ch._slice_loop_start = None
                     ch._slice_loop_end = None
                     ch._slice_reverse = False
@@ -564,6 +590,7 @@ class AppController:
 
     def _execute_pattern_trigger(self, row: int, column: int, event_type: str):
         """Handle pattern replay event on the Qt main thread."""
+        log.debug("Pattern trigger: row=%d col=%d type=%s", row, column, event_type)
         if not self.engine or row >= len(self.engine.channels):
             return
         ch = self.engine.channels[row]
@@ -986,6 +1013,7 @@ class AppController:
             if not ch._slice_held and not getattr(ch, '_slice_latched', False):
                     self.engine.stop_channel(row)
                     ch._slice_btn1 = None
+                    ch._slice_btn2 = None
                     ch._slice_loop_start = None
                     ch._slice_loop_end = None
                     ch._slice_reverse = False
@@ -1177,18 +1205,49 @@ class AppController:
         if self.window:
             self.window.virtual_grid.set_led_state(led_state)
 
+    # Throttle for tilt debug logging — only log once per second
+    _tilt_log_last: float = 0.0
+
     def _on_tilt_data(self, sensor: int, x: float, y: float, z: float):
         """Handle accelerometer/tilt data from monome grid.
 
         Forwards normalized 0.0-1.0 values to any mapped target params.
         """
-        for axis, val in [("x", x), ("y", y), ("z", z)]:
+        import time as _time
+        # Throttled debug log so the user can confirm data is arriving
+        now = _time.monotonic()
+        if now - AppController._tilt_log_last >= 1.0:
+            AppController._tilt_log_last = now
+            log.debug("tilt_data: sensor=%d x=%.3f y=%.3f z=%.3f  mappings=%s",
+                      sensor, x, y, z, list(self._tilt_mappings.keys()))
+        # Update live display in setup panel (only costs a label setText)
+        if self.window:
+            self.window.setup_view.update_tilt_live(x, y)
+        for axis, val in [("x", x), ("y", y)]:
             src = f"tilt.{sensor}.{axis}"
             target = self._tilt_mappings.get(src)
             if target:
+                min_v, max_v = self._tilt_ranges.get(src, (0.0, 1.0))
+                sensitivity = self._tilt_sensitivity.get(src, 5.0)
+                # Neutral position (device held flat) is centred at 0.5 (ADC 128/255).
+                # delta = deviation from rest; t is clamped to [0, 1] so that
+                # min_v is output at rest and max_v is output at full deflection.
+                # Swap min/max to invert direction; increase sensitivity for
+                # big sweeps from small tilts (default 5.0 ≈ ±20% = full sweep).
+                t = max(0.0, min(1.0, (val - 0.5) * sensitivity))
+                scaled = min_v + t * (max_v - min_v)
+                # Output-side EMA: glide the mapped value smoothly to its target.
+                # This eliminates the hard snap-to-min (e.g. 200 Hz) when the
+                # device returns to flat — the value drifts there instead.
+                oa = self._tilt_output_alpha
+                prev = self._tilt_output_ema.get(src, scaled)
+                smoothed = oa * scaled + (1.0 - oa) * prev
+                self._tilt_output_ema[src] = smoothed
                 cb = self.midi.get_param_callback(target)
                 if cb:
-                    cb(val)
+                    cb(smoothed)
+                else:
+                    log.debug("tilt: no callback for param '%s' (call _register_midi_param_callback first)", target)
 
     # ------------------------------------------------------------------ #
     #  Control row (monome top row / Launchpad CC buttons)                #
@@ -1217,6 +1276,13 @@ class AppController:
                 self._pattern_hold_timers[idx] = timer
                 self._pattern_hold_cleared.discard(idx)
                 timer.start()
+                # Record whether this pattern was recording at press time.
+                # If it auto-stops while held, we must NOT stop playback on release.
+                pr = self.patterns[idx] if idx < len(self.patterns) else None
+                if pr is not None and pr.recording:
+                    self._pattern_was_recording_at_press.add(idx)
+                else:
+                    self._pattern_was_recording_at_press.discard(idx)
                 return
 
             # Release: if already cleared by the timer, absorb. Otherwise toggle.
@@ -1226,6 +1292,19 @@ class AppController:
             if idx in self._pattern_hold_cleared:
                 self._pattern_hold_cleared.discard(idx)
                 return  # already cleared while held
+            # Guard: if pattern was recording when pressed but has since auto-stopped
+            # and is now playing, don't stop the freshly-started playback.
+            pr = self.patterns[idx] if idx < len(self.patterns) else None
+            if (pr is not None
+                    and idx in self._pattern_was_recording_at_press
+                    and not pr.recording
+                    and pr.playing):
+                log.info(
+                    "Pattern %d: auto-stop fired while button held — keeping playback", idx
+                )
+                self._pattern_was_recording_at_press.discard(idx)
+                return
+            self._pattern_was_recording_at_press.discard(idx)
             self._on_control_pattern_toggle(idx)
 
     def _pattern_hold_fire(self, idx: int):
@@ -1264,8 +1343,10 @@ class AppController:
                     gui_state = "playing"
                 else:
                     gui_state = "idle"
+            log.info("Pattern %d: manual stop-recording → %s (beat=%.2f)", idx, gui_state, beat)
         elif pr.playing:
             # Stop playing — also stop channels the pattern triggered
+            log.info("Pattern %d: control-button STOP PLAYING at beat=%.2f", idx, beat)
             if self.engine:
                 with pr._lock:
                     triggered_rows = set(e.row for e in pr.events if e.event_type == 'trigger')
@@ -1296,6 +1377,7 @@ class AppController:
 
     def _execute_pattern_state(self, idx: int, state: str):
         """Handle pattern state change on the Qt main thread."""
+        log.info("Pattern %d auto-state → '%s' (main thread)", idx, state)
         if self.window:
             self.window.transport.set_pattern_state(idx, state)
 
@@ -1330,15 +1412,40 @@ class AppController:
             for i in range(min(len(self.config.channels), len(self.engine.channels))):
                 self.engine.channels[i].state.steps = cols
 
+        # Reset LED column cache — newly connected grid needs a full refresh;
+        # stale cached positions from a previous session would suppress updates.
+        self._row_last_led_col = [-1] * MAX_ROWS
+        self._row_was_playing = [False] * MAX_ROWS
+
         if self.window:
             self.window.channel_view.set_visible_rows(rows)
             self.window.set_grid_dimensions(rows, cols)
             self.window.set_hardware_grid_connected(True)
             self._sync_grid_columns_to_waveforms()
-            # Auto-enable tilt control mapping for monome
-            self.window.setup_view.grid_panel.set_tilt_enabled(True)
-            self.window.setup_view.midi_panel.set_tilt_visible(True)
-            self.grid.enable_tilt(True)
+            # Auto-enable tilt control mapping for monome.
+            # The 40h direct serial driver now parses ADC frames (opcodes
+            # 0x11-0x17) and fires on_tilt — enabling is safe.
+            # monome-monomeserial (legacy OSC bridge) does not expose
+            # a tilt API, so skip it.
+            is_legacy_osc = self.grid.info.type == "monome-monomeserial"
+            if not is_legacy_osc:
+                self.window.setup_view.grid_panel.set_tilt_enabled(True)
+                self.window.setup_view.midi_panel.set_tilt_visible(True)
+                self.grid.enable_tilt(True)
+            # Update Setup > Grid panel status label so the user can see the
+            # monome is recognised (label already exists; was previously only
+            # set for MIDI-grid connects).
+            grid_type = self.grid.info.type or "monome"
+            display_name = (
+                f"{self.grid.info.id} ({grid_type})"
+                if self.grid.info.id else grid_type
+            )
+            # Populate the dropdown FIRST so set_connection_status can find
+            # and select the entry (it does a substring search on combo items).
+            self._gui_scan_grids(auto_connect=False)
+            self.window.setup_view.grid_panel.set_connection_status(
+                True, display_name
+            )
             self.window.set_status(
                 f"Monome connected: {cols}×{self.grid.info.rows} "
                 f"({rows} sample rows + control row)"
@@ -1346,6 +1453,16 @@ class AppController:
             self.window._auto_resize_for_rows(rows)
             log.info("Monome connected: %dx%d (%d data rows)",
                      cols, self.grid.info.rows, rows)
+            # Schedule a one-shot LED sync to clear firmware ghost LEDs.
+            # Running 1.5 s after connect gives the firmware and our writer
+            # time to finish their startup sequences before we force-resend
+            # OFF for any dark cells that the firmware turned on at boot.
+            QTimer.singleShot(1500, self._post_connect_led_sync)
+
+    def _post_connect_led_sync(self):
+        """Force OFF for firmware ghost LEDs after grid connect has settled."""
+        if self.grid and self.grid.connected:
+            self.grid.force_hardware_led_sync()
 
     # ------------------------------------------------------------------ #
     #  Sample loading                                                     #
@@ -1554,6 +1671,7 @@ class AppController:
         w.setup_view.midi_grid_connect_requested.connect(self._gui_midi_grid_connect)
         w.setup_view.midi_grid_disconnect_requested.connect(self._gui_midi_grid_disconnect)
         w.setup_view.save_default_requested.connect(self._gui_save_default)
+        w.setup_view.load_default_requested.connect(self._gui_load_default_preset)
 
         # --- OSC ---
         w.setup_view.osc_setting_changed.connect(self._gui_osc_setting)
@@ -1565,6 +1683,8 @@ class AppController:
         w.setup_view.midi_mapping_removed.connect(self._gui_midi_mapping_removed)
         w.setup_view.midi_mapping_toggle_changed.connect(self._gui_midi_toggle_changed)
         w.setup_view.midi_tilt_mapping_changed.connect(self._gui_tilt_mapping_changed)
+        w.setup_view.midi_tilt_range_changed.connect(self._gui_tilt_range_changed)
+        w.setup_view.midi_tilt_sensitivity_changed.connect(self._gui_tilt_sensitivity_changed)
         w.setup_view.midi_input_added.connect(self._gui_midi_input_added)
         w.setup_view.midi_input_removed.connect(self._gui_midi_input_removed)
         w.setup_view.tilt_enabled_changed.connect(self._gui_tilt_enabled_changed)
@@ -1690,10 +1810,28 @@ class AppController:
             return
         pr = self.patterns[idx]
         beat = self.clock.beat_position if self.clock else 0.0
+        log.info("GUI pattern %d state → '%s' (beat=%.2f pr.recording=%s pr.playing=%s)",
+                 idx, state, beat, pr.recording, pr.playing)
         if state == "recording":
             pr.toggle_record(beat)
         elif state == "playing":
-            pr.toggle_play(beat)
+            if pr.recording:
+                # GUI button cycled recording → playing.  toggle_play() would
+                # leave _recording=True, so handle the transition explicitly:
+                # stop recording and start playback with whatever was captured.
+                with pr._lock:
+                    pr._recording = False
+                    if pr.events:
+                        pr._playing = True
+                        pr._start_beat = beat
+                        pr._last_playback_pos = -1.0
+                # Nothing recorded — revert GUI button to idle.
+                if not pr.playing and self.window:
+                    self.window.transport.set_pattern_state(idx, "idle")
+            elif not pr.playing:
+                # Only start playback if not already running — if auto-stop
+                # fired first and set _playing=True, toggle_play() would stop it.
+                pr.toggle_play(beat)
         elif state == "clear":
             # Stop channels the pattern was driving before clearing
             if pr.playing and self.engine:
@@ -1739,6 +1877,13 @@ class AppController:
             # Zero the ring buffer so stale pre-computed blocks don't play out.
             self.engine.flush_ring_buffer()
 
+        # Stop all pattern recorders — stale events must not fire on the new preset.
+        for pr in self.patterns:
+            pr.clear()
+        if self.window:
+            for i in range(NUM_PATTERN_RECORDERS):
+                self.window.transport.set_pattern_state(i, "idle")
+
         # Clear all grid LEDs
         for i in range(self.config.row_count):
             self.grid.clear_row_leds(i, self.config.grid_columns)
@@ -1752,6 +1897,7 @@ class AppController:
             "host_api": self.config.host_api,
             "row_count": self.config.row_count,
             "grid_columns": self.config.grid_columns,
+            "monome_backend": getattr(self.config, "monome_backend", MONOME_BACKEND_AUTO),
             "tempo": self.config.tempo,
             "quantize": self.config.quantize,
             "snap_speed_to_rate": getattr(self.config, "snap_speed_to_rate", False),
@@ -1829,6 +1975,8 @@ class AppController:
         # De-select active preset (fresh slate, not tied to any preset)
         self.presets.active_index = -1
         self._refresh_setlist_ui()
+        # Clear tilt mappings — fresh preset has no tilt assignments
+        self._apply_tilt_mappings([])
         if self.window:
             self.window.set_status("New preset — all channels cleared")
 
@@ -1870,7 +2018,8 @@ class AppController:
         # Save to library (async write — errors logged in bg thread)
         self.presets.save_preset(
             name, self.config,
-            midi_mappings=self.midi.get_mappings_serializable())
+            midi_mappings=self.midi.get_mappings_serializable(),
+            tilt_mappings=self._get_tilt_mappings_serializable())
 
         # If this name isn't already the currently-active entry in the
         # setlist, add it (avoids duplicates when overwriting).
@@ -1916,9 +2065,18 @@ class AppController:
 
         # ── 2. Apply config (effects, mixer, transport, channel params) ──
         self.config = self.presets.apply_preset(data, self.config)
+        self._sync_grid_backend_to_controller(restart=True)
 
         # Drop any in-memory recorder takes from the previous preset
         self._on_clear_takes()
+        # Cancel any pending LIVE long-press / count-in / pending-start state
+        self._live_clear_all_pending()
+        # Stop all pattern recorders — stale events must not fire on the new preset.
+        for pr in self.patterns:
+            pr.clear()
+        if self.window:
+            for i in range(NUM_PATTERN_RECORDERS):
+                self.window.transport.set_pattern_state(i, "idle")
 
         # Push ALL params to engine (no playing rows to protect)
         self._apply_config_to_engine()
@@ -1954,6 +2112,7 @@ class AppController:
         self.midi.load_mappings(midi_maps)
         for m in midi_maps:
             self._register_midi_param_callback(m["param_path"])
+        self._apply_tilt_mappings(data.get("tilt_mappings", []))
         self._refresh_midi_mapping_table()
 
         self._refresh_setlist_ui()
@@ -2025,18 +2184,27 @@ class AppController:
         data = self.presets.load_setlist_preset(idx)
         if data:
             self.config = self.presets.apply_preset(data, self.config)
+            self._sync_grid_backend_to_controller(restart=True)
             self._on_clear_takes()
             self._live_clear_all_pending()
+            # Stop all pattern recorders — stale events must not fire on the new preset.
+            for pr in self.patterns:
+                pr.clear()
+            if self.window:
+                for i in range(NUM_PATTERN_RECORDERS):
+                    self.window.transport.set_pattern_state(i, "idle")
             self._apply_config_to_engine()
             self._apply_config_to_gui()
             # Clear ALL waveform displays so old samples don't linger
             # while background loads run.
             self._clear_all_waveform_displays()
             self._reload_samples_from_config()
+            # Restore MIDI and tilt mappings
             midi_maps = data.get("midi_mappings", [])
             self.midi.load_mappings(midi_maps)
             for m in midi_maps:
                 self._register_midi_param_callback(m["param_path"])
+            self._apply_tilt_mappings(data.get("tilt_mappings", []))
             self._refresh_midi_mapping_table()
             self._refresh_setlist_ui()
             if self.window:
@@ -2066,17 +2234,25 @@ class AppController:
                 from mlrvp.preset.manager import migrate_preset
                 data = migrate_preset(data)
                 self.config = self.presets.apply_preset(data, self.config)
+                self._sync_grid_backend_to_controller(restart=True)
                 self._on_clear_takes()
                 self._live_clear_all_pending()
+                # Stop all pattern recorders — stale events must not fire on the new preset.
+                for pr in self.patterns:
+                    pr.clear()
+                if self.window:
+                    for i in range(NUM_PATTERN_RECORDERS):
+                        self.window.transport.set_pattern_state(i, "idle")
                 self._apply_config_to_engine()
                 self._apply_config_to_gui()
                 self._clear_all_waveform_displays()
                 self._reload_samples_from_config()
-                # Restore MIDI mappings
+                # Restore MIDI and tilt mappings
                 midi_maps = data.get("midi_mappings", [])
                 self.midi.load_mappings(midi_maps)
                 for m in midi_maps:
                     self._register_midi_param_callback(m["param_path"])
+                self._apply_tilt_mappings(data.get("tilt_mappings", []))
                 self._refresh_midi_mapping_table()
                 if self.window:
                     self.window.set_status(f"Loaded preset: {path}")
@@ -2103,6 +2279,7 @@ class AppController:
                 "version": "0.6.9.16",
                 "config": data,
                 "midi_mappings": self.midi.get_mappings_serializable(),
+                "tilt_mappings": self._get_tilt_mappings_serializable(),
             }
 
             def _write():
@@ -2140,6 +2317,60 @@ class AppController:
             log.error("Failed to serialize default: %s", e)
             if self.window:
                 self.window.set_status(f"Error saving default: {e}")
+
+    def _gui_load_default_preset(self, name: str):
+        """Load a named default preset (emitted by Setup > Default State 'Load' button)."""
+        import json
+        from .config import get_defaults_dir
+        if not name:
+            return
+        try:
+            path = get_defaults_dir() / f"{name}.json"
+            if not path.exists():
+                if self.window:
+                    self.window.set_status(f"Default preset not found: {name}")
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.config = self.presets.apply_preset(data, self.config)
+            self._sync_grid_backend_to_controller(restart=True)
+            self._apply_config_to_gui()
+            if self.window:
+                self.window.set_status(f"Loaded default: {name}")
+        except Exception as e:
+            log.error("Failed to load default preset '%s': %s", name, e)
+            if self.window:
+                self.window.set_status(f"Error loading default: {e}")
+
+    def _load_startup_settings(self):
+        """Load lightweight startup settings that must be known before init_grid().
+
+        These are a small subset of the full config (just the settings that
+        affect which hardware backend is used for grid discovery).  They are
+        written by _save_startup_settings() whenever a relevant setting changes.
+        """
+        import json
+        from .config import get_defaults_dir, MONOME_BACKENDS
+        try:
+            path = get_defaults_dir() / "startup_settings.json"
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                backend = data.get("monome_backend", "")
+                if backend in MONOME_BACKENDS:
+                    self.config.monome_backend = backend
+                    log.info("Startup settings loaded: monome_backend=%s", backend)
+        except Exception as e:
+            log.warning("Could not load startup settings: %s", e)
+
+    def _save_startup_settings(self):
+        """Persist lightweight startup settings to data/defaults/startup_settings.json."""
+        import json
+        from .config import get_defaults_dir
+        try:
+            data = {"monome_backend": self.config.monome_backend}
+            path = get_defaults_dir() / "startup_settings.json"
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as e:
+            log.warning("Could not save startup settings: %s", e)
 
     # --- Channel param handlers ---
 
@@ -2210,6 +2441,16 @@ class AppController:
                         ech._active_pitch_semitone = None
                         ech._pitch_mode_col = -1
                         ech._pitch_mode_mult = 1.0
+            # Cancel any pending LIVE state when leaving LIVE mode.
+            if old_mode == PlaybackMode.LIVE and value != PlaybackMode.LIVE:
+                timer = self._live_long_press_timers.pop(row, None)
+                if timer is not None:
+                    timer.stop()
+                self._live_press_time.pop(row, None)
+                self._live_pending_start.pop(row, None)
+                self._live_countin_remaining.pop(row, None)
+                if self.engine and self.engine.live_recording_row == row:
+                    self.engine.cancel_live_recording()
         elif param == "stop":
             if self.engine:
                 ech = self.engine.channels[row]
@@ -2223,6 +2464,7 @@ class AppController:
                 # Reset SLICE state
                 if ech.state.mode == PlaybackMode.SLICE:
                     ech._slice_btn1 = None
+                    ech._slice_btn2 = None
                     ech._slice_loop_start = None
                     ech._slice_loop_end = None
                     ech._slice_reverse = False
@@ -2355,6 +2597,7 @@ class AppController:
                     # Reset slice state
                     if ch.state.mode == PlaybackMode.SLICE:
                         ch._slice_btn1 = None
+                        ch._slice_btn2 = None
                         ch._slice_loop_start = None
                         ch._slice_loop_end = None
                         ch._slice_reverse = False
@@ -2382,6 +2625,7 @@ class AppController:
                 self.engine.force_stop_channel(i)
                 if ch.state.mode == PlaybackMode.SLICE:
                     ch._slice_btn1 = None
+                    ch._slice_btn2 = None
                     ch._slice_loop_start = None
                     ch._slice_loop_end = None
                     ch._slice_reverse = False
@@ -2468,6 +2712,8 @@ class AppController:
         self.config.master_hp = freq
         if self.engine:
             self.engine.set_master_hp(freq)
+        if self.window:
+            self.window.master_filter_view.set_hp_value_external(val)
 
     def _gui_master_lp(self, val: float):
         """Master LP trim: knob 0.0=200Hz (max trim), 1.0=20kHz (off)."""
@@ -2475,6 +2721,8 @@ class AppController:
         self.config.master_lp = freq
         if self.engine:
             self.engine.set_master_lp(freq)
+        if self.window:
+            self.window.master_filter_view.set_lp_value_external(val)
 
     # --- Effects handlers ---
 
@@ -3370,22 +3618,107 @@ class AppController:
 
     # --- Setup handlers ---
 
+    @staticmethod
+    def _monome_backend_label(mode: str) -> str:
+        labels = {
+            MONOME_BACKEND_AUTO: "Auto",
+            MONOME_BACKEND_SERIALOSC: "serialosc",
+            MONOME_BACKEND_40H_DIRECT: "40h direct",
+            MONOME_BACKEND_LEGACY_OSC: "Legacy OSC",
+        }
+        return labels.get(mode or MONOME_BACKEND_AUTO, "Auto")
+
+    def _sync_grid_backend_to_controller(self, restart: bool = False) -> bool:
+        previous = self.grid.get_monome_backend()
+        desired = getattr(self.config, "monome_backend", MONOME_BACKEND_AUTO)
+        self.grid.set_monome_backend(desired)
+        changed = previous != self.grid.get_monome_backend()
+        if restart and changed:
+            self.grid.restart_monome()
+        return changed
+
+    def _sync_grid_setup_panel(self):
+        if not self.window:
+            return
+        self.window.setup_view.grid_panel.set_grid_settings(
+            row_count=self.config.row_count,
+            grid_columns=self.config.grid_columns,
+            show_virtual_grid=self.window.virtual_grid.isVisible(),
+            snap_speed_to_rate=getattr(self.config, "snap_speed_to_rate", False),
+            monome_backend=getattr(self.config, "monome_backend", MONOME_BACKEND_AUTO),
+        )
+
     def _gui_scan_grids(self, auto_connect: bool = True):
         """Scan for MIDI grid controllers and update the UI.
+
+        Also probes serialosc and triggers a fresh monome rescan so
+        users get a single button that re-detects every kind of grid.
 
         If auto_connect is True, automatically connect to the first
         detected device.
         """
+        # ── monome / serialosc probe ────────────────────────────────────
+        # Done first so its status is logged even if the MIDI scan succeeds.
+        legacy_modes = {
+            "monome-40h": "40h direct mode",
+            "monome-monomeserial": "monomeserial mode",
+        }
+        selected_backend = getattr(self.config, "monome_backend", MONOME_BACKEND_AUTO)
+        active_legacy_mode = legacy_modes.get(self.grid.info.type) if self.grid.connected else None
+        # Skip the probe entirely when a legacy monome path is already
+        # connected, or when serialosc is not the selected backend.
+        if active_legacy_mode or selected_backend not in (MONOME_BACKEND_AUTO, MONOME_BACKEND_SERIALOSC):
+            probe = None
+        else:
+            probe = GridController.probe_monome(timeout=0.6)
+            log.info("Monome probe: %s", probe.summary)
+        # Kick a rescan so any grid plugged in after launch (or after the
+        # serialosc service was started) gets picked up immediately.
+        self.grid.rescan_monome()
+
+        # ── MIDI grid scan ──────────────────────────────────────────────
         devices = GridController.scan_midi_grids()
+        # If a legacy monome path is connected, prepend it to the
+        # device list so the Setup → Grid Device dropdown shows it as a
+        # selectable / selected entry (the combo otherwise only contains
+        # MIDI grids and 'Virtual Grid').
+        if active_legacy_mode:
+            mono_name = self.grid.info.id or active_legacy_mode
+            devices = [{
+                "name": mono_name,
+                "model": self.grid.info.type,
+                "in_port": -1,
+                "out_port": -1,
+            }] + list(devices)
         if self.window:
             self.window.setup_view.grid_panel.set_scanned_midi_devices(devices)
+            status_parts = []
             if devices:
                 names = ', '.join(d['name'] for d in devices)
-                self.window.set_status(f"Found MIDI grids: {names}")
+                status_parts.append(f"MIDI grids: {names}")
             else:
-                self.window.set_status("No MIDI grid controllers found")
+                status_parts.append("No MIDI grid controllers found")
+            # Append monome status so the user gets actionable feedback
+            # right in the status bar (no need to open a log file).
+            if probe is None:
+                if active_legacy_mode:
+                    legacy_id = self.grid.info.id or active_legacy_mode or "legacy monome"
+                    status_parts.append(f"monome: {active_legacy_mode} ({legacy_id})")
+                else:
+                    label = self._monome_backend_label(selected_backend)
+                    status_parts.append(f"monome backend: {label}")
+            elif probe.daemon_running and probe.devices:
+                names = ', '.join(
+                    f"{d['id']} ({d['type']})" for d in probe.devices
+                )
+                status_parts.append(f"monome: {names}")
+            elif probe.daemon_running:
+                status_parts.append("monome: serialosc running, no devices")
+            else:
+                status_parts.append("monome: serialosc not reachable")
+            self.window.set_status(" — ".join(status_parts))
 
-        # Auto-connect to first found device
+        # Auto-connect to first found MIDI device
         if auto_connect and devices and not self.grid.connected:
             d = devices[0]
             self._gui_midi_grid_connect(d["in_port"], d["out_port"])
@@ -3439,7 +3772,16 @@ class AppController:
             self.window.set_status(f"Audio: {key} = {value} (restart to apply)")
 
     def _gui_grid_setting(self, key: str, value):
-        if key == "row_count":
+        if key == "monome_backend":
+            self.config.monome_backend = value
+            self._sync_grid_backend_to_controller(restart=True)
+            self._gui_scan_grids(auto_connect=False)
+            self._save_startup_settings()
+            if self.window:
+                self.window.set_status(
+                    f"Monome backend: {self._monome_backend_label(value)}"
+                )
+        elif key == "row_count":
             self.config.row_count = value
             if self.window:
                 self.window.channel_view.set_visible_rows(value)
@@ -3566,6 +3908,8 @@ class AppController:
             self.window.setup_view.midi_panel.set_midi_devices(
                 self.midi.available_inputs, self.midi.available_outputs
             )
+
+        self._sync_grid_setup_panel()
 
         # MIDI grid controllers — auto-scan and connect
         self._gui_scan_grids()
@@ -4099,10 +4443,71 @@ class AppController:
         src = f"tilt.0.{axis_names[axis]}"
         if target_param:
             self._tilt_mappings[src] = target_param
+            # Reset output EMA so the new target starts from its current position
+            self._tilt_output_ema.pop(src, None)
             # Make sure the target param has a callback registered
             self._register_midi_param_callback(target_param)
         else:
             self._tilt_mappings.pop(src, None)
+            self._tilt_output_ema.pop(src, None)
+
+    def _gui_tilt_range_changed(self, axis: int, min_val: float, max_val: float):
+        """User edited min/max range for a tilt axis."""
+        axis_names = ["x", "y", "z"]
+        src = f"tilt.0.{axis_names[axis]}"
+        self._tilt_ranges[src] = (min_val, max_val)
+
+    def _gui_tilt_sensitivity_changed(self, axis: int, value: float):
+        """User edited sensitivity for a tilt axis."""
+        axis_names = ["x", "y", "z"]
+        src = f"tilt.0.{axis_names[axis]}"
+        self._tilt_sensitivity[src] = value
+
+    def _get_tilt_mappings_serializable(self) -> list[dict]:
+        """Serialize tilt axis assignments, ranges and sensitivity for preset save."""
+        axis_names = ["x", "y", "z"]
+        result = []
+        for ax in axis_names:
+            src = f"tilt.0.{ax}"
+            target = self._tilt_mappings.get(src, "")
+            if target:
+                min_v, max_v = self._tilt_ranges.get(src, (0.0, 1.0))
+                sensitivity = self._tilt_sensitivity.get(src, 5.0)
+                result.append({"axis": ax, "target": target,
+                                "min_val": min_v, "max_val": max_v,
+                                "sensitivity": sensitivity})
+        return result
+
+    def _apply_tilt_mappings(self, tilt_maps: list[dict]):
+        """Restore tilt axis assignments from preset data and update UI."""
+        self._tilt_mappings.clear()
+        self._tilt_ranges.clear()
+        self._tilt_sensitivity.clear()
+        axis_name_to_idx = {"x": 0, "y": 1, "z": 2}
+        for tm in tilt_maps:
+            ax = tm.get("axis", "")
+            target = tm.get("target", "")
+            min_v = float(tm.get("min_val", 0.0))
+            max_v = float(tm.get("max_val", 1.0))
+            sensitivity = float(tm.get("sensitivity", 5.0))
+            if ax in axis_name_to_idx and target:
+                src = f"tilt.0.{ax}"
+                self._tilt_mappings[src] = target
+                self._tilt_ranges[src] = (min_v, max_v)
+                self._tilt_sensitivity[src] = sensitivity
+                self._register_midi_param_callback(target)
+        if self.window:
+            for tm in tilt_maps:
+                ax = tm.get("axis", "")
+                idx = axis_name_to_idx.get(ax, -1)
+                if idx >= 0:
+                    self.window.setup_view.midi_panel.set_tilt_axis_state(
+                        idx,
+                        tm.get("target", ""),
+                        float(tm.get("min_val", 0.0)),
+                        float(tm.get("max_val", 1.0)),
+                        float(tm.get("sensitivity", 5.0)),
+                    )
 
     def _gui_midi_input_added(self, port: int):
         """User added a new MIDI input controller."""
@@ -5141,6 +5546,7 @@ class AppController:
                 w.virtual_grid.set_row_color(i, self.config.channels[i].group)
 
             w.channel_view.set_visible_rows(self.config.row_count)
+            self._sync_grid_setup_panel()
 
             # Mixer groups
             for i, grp in enumerate(self.config.groups):
