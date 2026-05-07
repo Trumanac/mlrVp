@@ -3,6 +3,7 @@
 Provides a stable tempo clock with beat/bar tracking and quantized triggering.
 """
 
+import asyncio
 import time
 import logging
 import threading
@@ -11,6 +12,109 @@ from typing import Callable, Optional
 from mlrvp.config import QuantizeMode
 
 log = logging.getLogger("mlrvp")
+
+# ---------------------------------------------------------------------------
+# Ableton Link — optional soft dependency via aalink
+# ---------------------------------------------------------------------------
+try:
+    import aalink as _aalink_mod  # noqa: F401  (imported for availability check)
+    _HAS_LINK = True
+except ImportError:
+    _HAS_LINK = False
+
+
+class _LinkBridge:
+    """Thread-safe bridge between aalink (asyncio) and MasterClock (threading).
+
+    Runs an asyncio event loop on a dedicated daemon thread.  Exposes
+    `tempo` (read/write) and `num_peers` (read-only) safely from any thread.
+    """
+
+    def __init__(self):
+        self._link = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._tempo: float = 120.0
+        self._num_peers: int = 0
+        self._lock = threading.Lock()
+        self._started = False
+
+    def start(self, initial_tempo: float) -> bool:
+        if not _HAS_LINK:
+            return False
+        if self._started:
+            # Already running — just update the session tempo
+            self.tempo = initial_tempo
+            return True
+        self._tempo = initial_tempo
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._run_loop, daemon=True, name="LinkBridge"
+        )
+        self._thread.start()
+        # Schedule the Link setup coroutine in the new loop
+        asyncio.run_coroutine_threadsafe(
+            self._link_main(initial_tempo), self._loop
+        )
+        self._started = True
+        return True
+
+    def _run_loop(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    async def _link_main(self, initial_tempo: float):
+        from aalink import Link
+        self._link = Link(initial_tempo)
+        self._link.enabled = True
+        log.info("Ableton Link enabled (initial tempo %.1f BPM)", initial_tempo)
+        while True:
+            with self._lock:
+                self._tempo = self._link.tempo
+                self._num_peers = self._link.num_peers
+            await asyncio.sleep(0.05)  # 50 ms polling — ample for tempo display
+
+    @property
+    def tempo(self) -> float:
+        with self._lock:
+            return self._tempo
+
+    @tempo.setter
+    def tempo(self, value: float):
+        # Update the Lock session immediately from any thread
+        if self._loop is not None and self._link is not None:
+            self._loop.call_soon_threadsafe(
+                lambda: setattr(self._link, "tempo", value)
+            )
+        with self._lock:
+            self._tempo = value
+
+    @property
+    def num_peers(self) -> int:
+        with self._lock:
+            return self._num_peers
+
+    def stop(self):
+        if not self._started:
+            return
+        if self._link is not None:
+            try:
+                self._loop.call_soon_threadsafe(
+                    lambda: setattr(self._link, "enabled", False)
+                )
+            except Exception:
+                pass
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            if self._thread.is_alive():
+                log.warning("LinkBridge thread did not stop within 2s")
+        self._link = None
+        self._loop = None
+        self._thread = None
+        self._started = False
+        log.info("Ableton Link disabled")
 
 
 class MasterClock:
@@ -40,12 +144,21 @@ class MasterClock:
         self._bar_callbacks: list[Callable] = []
         self._tick_callbacks: list[Callable] = []  # called every tick (~1ms)
         self._quantize_callbacks: list[Callable] = []
+        self._seq_tick_callbacks: list[Callable] = []  # 1/64th-note SEQ step tick
 
         # Pending tempo change (for quantized tempo changes)
         self._next_tempo: Optional[float] = None
 
+        # Windows high-resolution timer handle (set in start(), released in stop())
+        self._timeBeginPeriod = None
+
         # Lock protecting anchor variables shared between set_tempo() and _run()
         self._anchor_lock = threading.Lock()
+
+        # Ableton Link (optional)
+        self._link_enabled: bool = False
+        self._link_bridge: Optional[_LinkBridge] = None
+        self._link_poll_counter: int = 0  # counts ticks; poll tempo every ~50ms
 
     @property
     def beat_position(self) -> float:
@@ -70,6 +183,10 @@ class MasterClock:
 
     def on_quantize(self, callback: Callable):
         self._quantize_callbacks.append(callback)
+
+    def on_seq_tick(self, callback: Callable):
+        """Register a callback that fires every 1/64th note for SEQ step advancement."""
+        self._seq_tick_callbacks.append(callback)
 
     def start(self):
         if self._running:
@@ -114,9 +231,49 @@ class MasterClock:
                 pass
             self._timeBeginPeriod = None
 
+    def set_link_enabled(self, enabled: bool) -> bool:
+        """Enable or disable Ableton Link tempo sync.
+
+        Returns True on success.  Returns False if aalink is not installed
+        or the bridge fails to start.
+        """
+        if enabled:
+            if not _HAS_LINK:
+                log.warning(
+                    "Ableton Link requested but aalink is not installed — "
+                    "run: pip install aalink"
+                )
+                return False
+            if self._link_bridge is None:
+                self._link_bridge = _LinkBridge()
+            ok = self._link_bridge.start(self.tempo)
+            self._link_enabled = ok
+            return ok
+        else:
+            self._link_enabled = False
+            if self._link_bridge is not None:
+                self._link_bridge.stop()
+                self._link_bridge = None
+            return True
+
+    @property
+    def link_num_peers(self) -> int:
+        """Number of Ableton Link peers currently in the session (0 if Link disabled)."""
+        if self._link_bridge is not None:
+            return self._link_bridge.num_peers
+        return 0
+
+    @property
+    def link_available(self) -> bool:
+        """True if aalink is installed and Link can be used."""
+        return _HAS_LINK
+
     def set_tempo(self, tempo: float, immediate: bool = False):
         """Set tempo. If not immediate, change happens on next beat."""
         tempo = max(20.0, min(300.0, tempo))
+        # Propagate to Ableton Link session if active
+        if self._link_enabled and self._link_bridge is not None:
+            self._link_bridge.tempo = tempo
         if immediate:
             # Re-anchor so the new tempo starts from current position
             with self._anchor_lock:
@@ -178,6 +335,10 @@ class MasterClock:
 
         prev_beat_int = -1
         prev_bar = -1
+
+        # SEQ fine tick — fires every 1/64th note (0.0625 beats)
+        _SEQ_TICK_DIV = 0.0625
+        prev_seq_tick_pos = -1.0
 
         # Quantize tracking
         quant_divisions = {
@@ -242,12 +403,39 @@ class MasterClock:
                         except Exception as exc:
                             log.warning("Quantize callback error: %s", exc)
 
+            # SEQ fine tick — fires at every 1/64th note boundary
+            seq_tick_pos = self._beat_position // _SEQ_TICK_DIV
+            if seq_tick_pos > prev_seq_tick_pos:
+                prev_seq_tick_pos = seq_tick_pos
+                for cb in list(self._seq_tick_callbacks):
+                    try:
+                        cb(self._beat_position)
+                    except Exception as exc:
+                        log.warning("SEQ tick callback error: %s", exc)
+
             # Tick callbacks
             for cb in list(self._tick_callbacks):
                 try:
                     cb(self._beat_position, self.tempo)
                 except Exception as exc:
                     log.warning("Tick callback error: %s", exc)
+
+            # Ableton Link — poll the shared session tempo every ~50ms and
+            # re-anchor if a remote peer has changed it.
+            if self._link_enabled and self._link_bridge is not None:
+                self._link_poll_counter += 1
+                if self._link_poll_counter >= 50:
+                    self._link_poll_counter = 0
+                    link_tempo = self._link_bridge.tempo
+                    if abs(link_tempo - self.tempo) > 0.05:
+                        log.debug(
+                            "Link tempo change: %.2f -> %.2f BPM",
+                            self.tempo, link_tempo,
+                        )
+                        with self._anchor_lock:
+                            self._anchor_beats = self._beat_position
+                            self._anchor_time = now
+                            self.tempo = link_tempo
 
             # Sleep ~1ms for resolution
             time.sleep(0.001)

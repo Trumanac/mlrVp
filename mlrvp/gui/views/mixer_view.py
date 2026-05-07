@@ -521,6 +521,11 @@ class MixerView(QWidget):
             return self._groups[idx]
         return self._groups[0]
 
+    def set_active_groups(self, n: int):
+        """Show/hide group strips based on active group count."""
+        for i, gc in enumerate(self._groups):
+            gc.setVisible(i < n)
+
     def set_group_fx_route(self, group: int, route: int):
         """Set FX route display for a group channel (syncs from effects view)."""
         if 0 <= group < len(self._groups):

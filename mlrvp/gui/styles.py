@@ -65,10 +65,14 @@ LOGO_MAGENTA = "#c60059"
 # Group 3: [0.91, 0.51, 0.45] — salmon/red
 # Group 4: [0.25, 0.71, 0.8]  — teal/cyan
 GROUP_COLORS = [
-    "#dec261",   # Group 1
-    "#82e875",   # Group 2
-    "#e88273",   # Group 3
-    "#40b5cc",   # Group 4
+    "#dec261",   # Group 1 — golden/amber
+    "#82e875",   # Group 2 — green
+    "#e88273",   # Group 3 — salmon/red
+    "#40b5cc",   # Group 4 — teal/cyan
+    "#c478f0",   # Group 5 — lavender/purple
+    "#f0a030",   # Group 6 — warm orange
+    "#e060bf",   # Group 7 — hot pink/magenta
+    "#3880f2",   # Group 8 — cobalt blue
 ]
 
 # ── Grid button colors ──

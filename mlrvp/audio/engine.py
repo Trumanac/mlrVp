@@ -20,10 +20,13 @@ import numpy as np
 import sounddevice as sd
 import threading
 import gc
+import logging
 import os
 import time
 from collections import deque
 from typing import Optional, Callable
+
+log = logging.getLogger("mlrvp")
 
 from mlrvp.config import (
     AppConfig, SAMPLE_RATE, BUFFER_SIZE, MAX_ROWS, NUM_GROUPS,
@@ -781,6 +784,9 @@ class AudioEngine:
         # Keeps trigger latency and visual-playback-head offset low while
         # still absorbing short GC pauses and DSP spikes.
         self._ring_blocks = 4
+        # _out_channels is set to 2 now and recomputed in start() when
+        # multi-channel output is enabled.
+        self._out_channels: int = 2
         self._ring_buf = np.zeros(
             (self._ring_blocks, self.buffer_size, 2), dtype=np.float32
         )
@@ -930,20 +936,23 @@ class AudioEngine:
             self._prof_overruns = 0
             self._prof_ring_min = self._ring_blocks
             self._prof_ring_sum = 0
-            print("[AudioEngine] Profiling ENABLED")
+            log.info("[AudioEngine] Profiling ENABLED")
         else:
-            print("[AudioEngine] Profiling DISABLED")
+            log.info("[AudioEngine] Profiling DISABLED")
 
     def start(self):
         """Start the audio engine."""
         if self._running:
             return
 
-        print(f"\n[AudioEngine] Starting — Numba JIT: {_HAS_NUMBA}, "
-              f"SR={self.sample_rate}, buffer={self.buffer_size}, "
-              f"budget={self.buffer_size/self.sample_rate*1000:.2f}ms, "
-              f"ring={self._ring_blocks} blocks, "
-              f"profiling={'ON' if self._prof_enabled else 'OFF (set MLRVP_DEBUG=1 to enable)'}")
+        log.info(
+            "[AudioEngine] Starting — Numba JIT: %s, SR=%s, buffer=%s, "
+            "budget=%.2fms, ring=%s blocks, profiling=%s",
+            _HAS_NUMBA, self.sample_rate, self.buffer_size,
+            self.buffer_size / self.sample_rate * 1000,
+            self._ring_blocks,
+            'ON' if self._prof_enabled else 'OFF (set MLRVP_DEBUG=1 to enable)',
+        )
 
         # Disable Python's cyclic GC to prevent unpredictable collection
         # pauses on the audio thread.  A dedicated background thread runs
@@ -956,11 +965,46 @@ class AudioEngine:
         self._gc_thread.start()
 
         try:
+            # Compute output channel count for this session.
+            # Multi-channel mode: Master=ch1-2, Group1=ch3-4, ..., GroupN=ch(2N+1)-(2N+2)
+            # Clamp to the device's actual max so we degrade gracefully instead
+            # of hard-failing on stereo-only or limited-channel devices.
+            if getattr(self.config, 'multichannel_output', False):
+                num_grp = min(
+                    getattr(self.config, 'active_groups', NUM_GROUPS), NUM_GROUPS
+                )
+                desired = 2 + 2 * num_grp
+                output_device_idx = (
+                    self.config.output_device if self.config.output_device >= 0 else None
+                )
+                try:
+                    dev_info = (
+                        sd.query_devices(output_device_idx, 'output')
+                        if output_device_idx is not None
+                        else sd.query_devices(kind='output')
+                    )
+                    dev_max = int(dev_info.get('max_output_channels', desired))
+                except Exception:
+                    dev_max = desired  # can't query — try the full count
+                # Clamp to even number (complete stereo pairs only), minimum 2
+                clamped = max(2, min(desired, dev_max))
+                if clamped % 2:
+                    clamped -= 1
+                self._out_channels = clamped
+            else:
+                self._out_channels = 2
+
+            # Re-allocate the ring buffer to match the new channel count
+            self._ring_buf = np.zeros(
+                (self._ring_blocks, self.buffer_size, self._out_channels),
+                dtype=np.float32,
+            )
+
             output_device = self.config.output_device if self.config.output_device >= 0 else None
             self._stream = sd.OutputStream(
                 samplerate=self.sample_rate,
                 blocksize=self.buffer_size,
-                channels=2,
+                channels=self._out_channels,
                 dtype='float32',
                 callback=self._audio_callback,
                 device=output_device,
@@ -991,8 +1035,13 @@ class AudioEngine:
                 raise
             self._running = True
         except Exception as e:
+            # Stop the GC worker thread we started before the try block
+            self._gc_running = False
+            if self._gc_thread is not None:
+                self._gc_thread.join(timeout=0.5)
+                self._gc_thread = None
             gc.enable()
-            print(f"Audio engine start error: {e}")
+            log.error("Audio engine start error: %s", e)
             raise
 
         # Launch the DSP worker thread
@@ -1021,7 +1070,7 @@ class AudioEngine:
                 raise
         except Exception as e:
             # Input not critical - recording just won't work
-            print(f"[AudioEngine] Input stream unavailable (recording disabled): {e}")
+            log.warning("[AudioEngine] Input stream unavailable (recording disabled): %s", e)
             self._input_stream = None
 
     def stop(self):
@@ -1363,7 +1412,18 @@ class AudioEngine:
         self.output_peak[0] = max(self.output_peak[0] * 0.95, float(_pt[:, 0].max()))
         self.output_peak[1] = max(self.output_peak[1] * 0.95, float(_pt[:, 1].max()))
 
-        outbuf[:] = dsp_output
+        out_frames = len(dsp_output)
+        if self._out_channels > 2:
+            # Multi-channel output: master on ch 1-2, each group on its own pair.
+            # mixer._group_audio[g] holds post-fader, post-mute, pre-FX audio —
+            # the cleanest "stem" for DAW recording.
+            outbuf[:out_frames, :2] = dsp_output
+            grp_count = (self._out_channels - 2) // 2
+            for _g in range(grp_count):
+                _ga = self.mixer._group_audio[_g]
+                outbuf[:out_frames, 2 + _g * 2 : 4 + _g * 2] = _ga[:out_frames]
+        else:
+            outbuf[:] = dsp_output
 
         # Meter callback for UI — decimated to ~30 fps to reduce GC pressure
         if _send_meters:
@@ -1472,24 +1532,21 @@ class AudioEngine:
                 n = self._prof_count
                 budget_ms = self._prof_budget * 1000
                 pt = self._prof_total if self._prof_total > 0 else 1e-9
-                print(f"\n[DSP PROFILE] {n} blocks, budget={budget_ms:.2f}ms")
-                print(f"  avg total:   {pt/n*1000:.2f}ms  "
-                      f"max: {self._prof_max*1000:.2f}ms  "
-                      f"overruns: {self._prof_overruns} ({self._prof_overruns/n*100:.1f}%)")
-                print(f"  channels:    {self._prof_channels/n*1000:.2f}ms  "
-                      f"({self._prof_channels/pt*100:.0f}%)")
-                print(f"  mixer:       {self._prof_mixer/n*1000:.2f}ms  "
-                      f"({self._prof_mixer/pt*100:.0f}%)")
-                print(f"  fx_buses:    {self._prof_fx/n*1000:.2f}ms  "
-                      f"({self._prof_fx/pt*100:.0f}%)")
-                print(f"  master:      {self._prof_master/n*1000:.2f}ms  "
-                      f"({self._prof_master/pt*100:.0f}%)")
-                print(f"  metering:    {self._prof_meter/n*1000:.2f}ms  "
-                      f"({self._prof_meter/pt*100:.0f}%)")
                 active = len(channel_outputs)
                 ring_avg = self._prof_ring_sum / max(n, 1)
-                print(f"  active_ch:   {active}  numba: {_HAS_NUMBA}  "
-                      f"ring: min={self._prof_ring_min} avg={ring_avg:.1f}")
+                log.debug(
+                    "[DSP PROFILE] %d blocks budget=%.2fms | "
+                    "avg=%.2fms max=%.2fms overruns=%d (%.1f%%) | "
+                    "ch=%.2fms mix=%.2fms fx=%.2fms mast=%.2fms met=%.2fms | "
+                    "active_ch=%d numba=%s ring: min=%d avg=%.1f",
+                    n, budget_ms,
+                    pt/n*1000, self._prof_max*1000,
+                    self._prof_overruns, self._prof_overruns/n*100,
+                    self._prof_channels/n*1000, self._prof_mixer/n*1000,
+                    self._prof_fx/n*1000, self._prof_master/n*1000,
+                    self._prof_meter/n*1000,
+                    active, _HAS_NUMBA, self._prof_ring_min, ring_avg,
+                )
                 # Reset
                 self._prof_count = 0
                 self._prof_total = 0.0

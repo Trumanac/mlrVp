@@ -11,6 +11,7 @@ resampy>=0.4
 librosa>=0.10
 numba>=0.57
 pedalboard>=0.9
+aalink>=0.2.1  # Ableton Link tempo sync (optional — disables Link button if absent)
 
 # Python 3.13+ removed audioop, aifc, chunk, and sunau — these backports restore them
 audioop-lts>=0.2.1; python_version >= "3.13"

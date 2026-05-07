@@ -17,13 +17,14 @@ from PySide6.QtCore import QTimer, QtMsgType, qInstallMessageHandler, QObject, S
 from PySide6.QtGui import QIcon
 
 from mlrvp.config import (
-    AppConfig, PlaybackMode, MAX_ROWS, NUM_GROUPS, NUM_PATTERN_RECORDERS,
+    AppConfig, PlaybackMode, MAX_ROWS, MAX_COLUMNS, NUM_GROUPS, NUM_PATTERN_RECORDERS,
     LED_OFF, LED_DIM, LED_BRIGHT, PITCH_SCALE_MAPS, PITCH_SCALE_NAMES,
     LIVE_STATE_EMPTY, LIVE_STATE_COUNTING_IN, LIVE_STATE_RECORDING,
     LIVE_STATE_OVERDUBBING, LIVE_STATE_ARMED_RERECORD, LIVE_STATE_PLAYING,
     LIVE_QUANTIZE_NAMES,
     MONOME_BACKEND_AUTO, MONOME_BACKEND_SERIALOSC,
     MONOME_BACKEND_40H_DIRECT, MONOME_BACKEND_LEGACY_OSC,
+    SEQ_STEP_DIV_BEATS,
 )
 from mlrvp.audio.engine import AudioEngine
 from mlrvp.audio.slicer_preview import SlicerPreviewService
@@ -109,15 +110,20 @@ class _ClockMarshaller(QObject):
     _beat = Signal(int, float)
     _pattern = Signal(int, int, str)
     _pattern_state = Signal(int, str)
+    _seq_tick = Signal(float)  # beat_position — 1/64th note SEQ step tick
 
-    def __init__(self, beat_fn, pattern_fn, pattern_state_fn):
+    def __init__(self, beat_fn, pattern_fn, pattern_state_fn, seq_tick_fn):
         super().__init__()
         self._beat.connect(beat_fn, Qt.ConnectionType.QueuedConnection)
         self._pattern.connect(pattern_fn, Qt.ConnectionType.QueuedConnection)
         self._pattern_state.connect(pattern_state_fn, Qt.ConnectionType.QueuedConnection)
+        self._seq_tick.connect(seq_tick_fn, Qt.ConnectionType.QueuedConnection)
 
     def beat(self, beat_int, beat_position):
         self._beat.emit(beat_int, beat_position)
+
+    def seq_tick(self, beat_position: float):
+        self._seq_tick.emit(beat_position)
 
     def pattern_trigger(self, row, column, event_type):
         self._pattern.emit(row, column, event_type)
@@ -178,6 +184,7 @@ class AppController:
             self._execute_beat,
             self._execute_pattern_trigger,
             self._execute_pattern_state,
+            self._execute_seq_tick,
         )
 
         # Background sample loader — disk I/O off the main thread
@@ -275,6 +282,7 @@ class AppController:
         self.clock.on_beat(self._on_beat)
         self.clock.on_bar(self._on_bar)
         self.clock.on_tick(self._on_tick)
+        self.clock.on_seq_tick(self._clock_marshaller.seq_tick)
         for pr in self.patterns:
             pr.set_trigger_callback(self._on_pattern_trigger)
             pr.set_state_change_callback(self._on_pattern_auto_state)
@@ -335,8 +343,8 @@ class AppController:
                 QTimer.singleShot(0, lambda: fn(addr, *args))
             return _handler
 
-        # Group mixer: /mlrvp/group/<1-4>/volume|send|mute|fx_route  (float 0-1 or int)
-        for g in range(4):
+        # Group mixer: /mlrvp/group/<1-N>/volume|send|mute|fx_route  (float 0-1 or int)
+        for g in range(NUM_GROUPS):
             grp = g  # capture
             osc.add_handler(f"/mlrvp/group/{g+1}/volume",
                             _osc(lambda addr, v, _g=grp: self._gui_group_volume(_g, _fader_to_gain(float(v)))))
@@ -404,6 +412,18 @@ class AppController:
         self._populate_gui_devices()
         self._register_mappable_controls()
         self._populate_tilt_targets()
+        # Populate control row MIDI actions section
+        cr = self.config.control_row
+        self.window.setup_view.midi_panel.set_control_row_actions(
+            cr.num_group_stops, cr.num_patterns
+        )
+        # Restore control row grid settings to UI
+        self.window.setup_view.grid_panel.set_control_row_config(
+            cr.enabled, cr.monome_row, cr.assignments
+        )
+        # Apply persisted control row config to the controller now so the
+        # correct physical row / offset is used when the grid connects.
+        self.grid.configure_control_row(cr.enabled, cr.monome_row)
         # Sync initial grid row colors from config group assignments
         for i, ch in enumerate(self.config.channels[:self.config.row_count]):
             self.window.virtual_grid.set_row_color(i, ch.group)
@@ -455,6 +475,7 @@ class AppController:
         # Stop any active pattern hold timers
         for timer in self._pattern_hold_timers.values():
             timer.stop()
+            timer.deleteLater()
         self._pattern_hold_timers.clear()
         if self.clock:
             self.clock.stop()
@@ -534,47 +555,60 @@ class AppController:
         self._clock_marshaller.beat(beat_int, beat_position)
 
     def _execute_beat(self, beat_int: int, beat_position: float):
-        """SEQ-mode channel advancement — runs on Qt main thread."""
+        """Beat-boundary work — runs on Qt main thread."""
         # LIVE-mode count-in tick (decrements remaining beats, fires start)
         self._live_advance_countin(beat_int)
         # Recorder (Tools tab) quantized start handler
         self._recorder_advance_clock(beat_int)
+        # Pending sample reloads for SEQ channels (staged while SEQ was running)
         if self.engine:
-            columns = self.config.grid_columns
             for i in range(self.config.row_count):
                 ch = self.engine.channels[i]
                 if ch.state.mode != PlaybackMode.SEQ:
                     continue
-                if ch.sample is None:
-                    continue
-                if ch._seq_stopped:
-                    continue
-                # If a new sample was staged while SEQ was running, load it now
                 pending = getattr(ch, '_pending_sample_path', None)
-                if pending:
-                    ch._pending_sample_path = None
-                    self.engine.stop_channel(i)
-                    self.grid.clear_row_leds(i, self.config.grid_columns)
-                    # Use pre-loaded buffer if available
-                    buf = getattr(ch, '_pending_sample_buffer', None)
-                    ch._pending_sample_buffer = None
-                    if buf is not None:
-                        self._apply_loaded_sample(i, pending, buf)
-                    else:
-                        self.load_sample_to_channel(i, pending)
-                        continue  # don't trigger old sample while new one loads
-                col = beat_int % columns if columns > 0 else 0
-                ch._seq_column = col
-                if col in ch._seq_steps:
-                    # Stop other channels in the same group before triggering
-                    self._stop_group_siblings(i, columns)
-                    # Retrigger sample from the beginning on each active step
-                    self.engine.trigger_channel(i, 0, 1)
-                    ch._seq_playing_step = True
+                if not pending:
+                    continue
+                ch._pending_sample_path = None
+                self.engine.stop_channel(i)
+                self.grid.clear_row_leds(i, self.config.grid_columns)
+                buf = getattr(ch, '_pending_sample_buffer', None)
+                ch._pending_sample_buffer = None
+                if buf is not None:
+                    self._apply_loaded_sample(i, pending, buf)
                 else:
-                    # Inactive step — let the sample keep playing until it
-                    # reaches its end or the next active step retriggers it.
-                    ch._seq_playing_step = ch._playing
+                    self.load_sample_to_channel(i, pending)
+
+    def _execute_seq_tick(self, beat_position: float):
+        """SEQ-mode step advancement at 1/64th-note resolution — Qt main thread."""
+        if not self.engine:
+            return
+        columns = self.config.grid_columns
+        for i in range(self.config.row_count):
+            ch = self.engine.channels[i]
+            if ch.state.mode != PlaybackMode.SEQ:
+                continue
+            if ch.sample is None:
+                continue
+            if ch._seq_stopped:
+                continue
+            # Skip if a pending reload is waiting for the beat boundary
+            if getattr(ch, '_pending_sample_path', None):
+                continue
+            # Determine current step based on the channel's step division
+            div_idx = max(0, min(len(SEQ_STEP_DIV_BEATS) - 1, ch.state.seq_step_div))
+            beats_per_step = SEQ_STEP_DIV_BEATS[div_idx]
+            step_global = int(beat_position / beats_per_step)
+            col = step_global % columns if columns > 0 else 0
+            if col == ch._seq_column:
+                continue
+            ch._seq_column = col
+            if col in ch._seq_steps:
+                self._stop_group_siblings(i, columns)
+                self.engine.trigger_channel(i, 0, 1)
+                ch._seq_playing_step = True
+            else:
+                ch._seq_playing_step = ch._playing
 
     def _on_bar(self, bar: int):
         """Bar boundary — for future use."""
@@ -739,6 +773,7 @@ class AppController:
         prev = self._live_long_press_timers.pop(row, None)
         if prev is not None:
             prev.stop()
+            prev.deleteLater()
         timer = QTimer()
         timer.setSingleShot(True)
         timer.timeout.connect(lambda r=row: self._live_long_press_fired(r))
@@ -750,6 +785,7 @@ class AppController:
         timer = self._live_long_press_timers.pop(row, None)
         if timer is not None:
             timer.stop()
+            timer.deleteLater()
         self._live_press_time.pop(row, None)
 
     def _live_clear_all_pending(self):
@@ -763,6 +799,7 @@ class AppController:
         for timer in list(self._live_long_press_timers.values()):
             try:
                 timer.stop()
+                timer.deleteLater()
             except Exception:
                 pass
         self._live_long_press_timers.clear()
@@ -1205,6 +1242,36 @@ class AppController:
         if self.window:
             self.window.virtual_grid.set_led_state(led_state)
 
+    def _on_virtual_grid_size_changed(self, rows: int, cols: int):
+        """Virtual grid size toggle selected — apply as if the user changed rows+columns in Setup."""
+        rows = max(1, min(rows, MAX_ROWS))
+        cols = max(1, min(cols, MAX_COLUMNS))
+        self.config.row_count = rows
+        self.config.grid_columns = cols
+        for ch in self.config.channels:
+            ch.steps = cols
+        # Reset LED column cache — resized grid needs a full refresh
+        self._row_last_led_col = [-1] * MAX_ROWS
+        self._row_was_playing = [False] * MAX_ROWS
+        if self.engine:
+            for i in range(MAX_ROWS):
+                self.engine.channels[i].state.steps = cols
+            for i in range(rows):
+                self.engine.set_channel_speed(i, self.config.tempo)
+        if self.window:
+            self.window.set_grid_dimensions(rows, cols)
+            self._sync_grid_columns_to_waveforms()
+            show_vg = self.window._grid_window.isVisible()
+            self.window.setup_view.grid_panel.set_grid_settings(
+                row_count=rows,
+                grid_columns=cols,
+                show_virtual_grid=show_vg,
+                snap_speed_to_rate=getattr(self.config, "snap_speed_to_rate", False),
+                monome_backend=getattr(self.config, "monome_backend", MONOME_BACKEND_AUTO),
+            )
+            self.window.set_status(f"Virtual grid: {cols}×{rows}")
+        log.info("Virtual grid size changed to %dx%d", cols, rows)
+
     # Throttle for tilt debug logging — only log once per second
     _tilt_log_last: float = 0.0
 
@@ -1254,21 +1321,31 @@ class AppController:
     # ------------------------------------------------------------------ #
 
     def _on_control_button(self, x: int, state: int):
-        """Handle control row button press/release.
+        """Handle control row button press/release dispatched by slot assignment."""
+        from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_ALL_STOP
+        assignments = self.config.control_row.assignments
+        if x < 0 or x >= len(assignments):
+            return
+        slot = assignments[x]
+        slot_type = slot.get("type", "empty")
+        slot_val = slot.get("value", 0)
 
-        x=0..3 → group stop, x=4..7 → pattern toggle or hold-to-clear.
-        """
-        if 0 <= x <= 3:
+        if slot_type == CR_SLOT_GROUP_STOP:
             if state == 1:
-                self._gui_group_stop(x)
-        elif 4 <= x <= 7:
-            idx = x - 4
+                self._gui_group_stop(slot_val)
+
+        elif slot_type == CR_SLOT_ALL_STOP:
             if state == 1:
-                # Stop any existing timer for this index before creating new
+                for g in range(NUM_GROUPS):
+                    self._gui_group_stop(g)
+
+        elif slot_type == CR_SLOT_PATTERN:
+            idx = slot_val
+            if state == 1:
                 old_timer = self._pattern_hold_timers.get(idx)
                 if old_timer is not None:
                     old_timer.stop()
-                # Start a hold timer — fires after 3 s and clears immediately.
+                    old_timer.deleteLater()
                 timer = QTimer()
                 timer.setSingleShot(True)
                 timer.setInterval(int(self._pattern_clear_hold_seconds * 1000))
@@ -1276,8 +1353,6 @@ class AppController:
                 self._pattern_hold_timers[idx] = timer
                 self._pattern_hold_cleared.discard(idx)
                 timer.start()
-                # Record whether this pattern was recording at press time.
-                # If it auto-stops while held, we must NOT stop playback on release.
                 pr = self.patterns[idx] if idx < len(self.patterns) else None
                 if pr is not None and pr.recording:
                     self._pattern_was_recording_at_press.add(idx)
@@ -1285,15 +1360,14 @@ class AppController:
                     self._pattern_was_recording_at_press.discard(idx)
                 return
 
-            # Release: if already cleared by the timer, absorb. Otherwise toggle.
+            # Release
             timer = self._pattern_hold_timers.pop(idx, None)
             if timer is not None:
                 timer.stop()
+                timer.deleteLater()
             if idx in self._pattern_hold_cleared:
                 self._pattern_hold_cleared.discard(idx)
-                return  # already cleared while held
-            # Guard: if pattern was recording when pressed but has since auto-stopped
-            # and is now playing, don't stop the freshly-started playback.
+                return
             pr = self.patterns[idx] if idx < len(self.patterns) else None
             if (pr is not None
                     and idx in self._pattern_was_recording_at_press
@@ -1309,15 +1383,20 @@ class AppController:
 
     def _pattern_hold_fire(self, idx: int):
         """Timer fired — clear the pattern and update LED immediately."""
+        from mlrvp.config import CR_SLOT_PATTERN
         self._pattern_hold_cleared.add(idx)
         timer = self._pattern_hold_timers.pop(idx, None)
         if timer is not None:
             timer.stop()
+            timer.deleteLater()
         self._gui_pattern_state(idx, "clear")
         if self.window:
             self.window.transport.set_pattern_state(idx, "idle")
-        # Immediately turn off the LED so the user sees feedback
-        self.grid.set_control_led(4 + idx, LED_OFF, 0)
+        # Immediately turn off the LED for the physical slot that maps to this pattern
+        for slot_x, slot in enumerate(self.config.control_row.assignments):
+            if slot.get("type") == CR_SLOT_PATTERN and slot.get("value") == idx:
+                self.grid.set_control_led(slot_x, LED_OFF, 0)
+                break
 
     def _on_control_pattern_toggle(self, idx: int):
         """Toggle pattern recorder from control button.
@@ -1398,6 +1477,16 @@ class AppController:
 
         if not self.grid.info:
             return
+
+        # Re-apply the control row config now that info.rows is known.
+        # configure_control_row resolves -1 → last row using the real height,
+        # so calling it here (after on_grid_ready set info.rows) gives the
+        # correct physical row index and offset.
+        cr = self.config.control_row
+        self.grid.configure_control_row(cr.enabled, cr.monome_row)
+        with self.grid._state_lock:
+            row_offset = self.grid._monome_row_offset
+
         rows = self.grid.info.rows - row_offset  # data rows
         cols = self.grid.info.columns
         # Clamp to engine channel count to avoid index-out-of-bounds
@@ -1418,7 +1507,6 @@ class AppController:
         self._row_was_playing = [False] * MAX_ROWS
 
         if self.window:
-            self.window.channel_view.set_visible_rows(rows)
             self.window.set_grid_dimensions(rows, cols)
             self.window.set_hardware_grid_connected(True)
             self._sync_grid_columns_to_waveforms()
@@ -1432,6 +1520,8 @@ class AppController:
                 self.window.setup_view.grid_panel.set_tilt_enabled(True)
                 self.window.setup_view.midi_panel.set_tilt_visible(True)
                 self.grid.enable_tilt(True)
+            # Monome row setting is editable (this is a monome, not a MIDI grid)
+            self.window.setup_view.grid_panel.set_launchpad_connected(False)
             # Update Setup > Grid panel status label so the user can see the
             # monome is recognised (label already exists; was previously only
             # set for MIDI-grid connects).
@@ -1463,6 +1553,18 @@ class AppController:
         """Force OFF for firmware ghost LEDs after grid connect has settled."""
         if self.grid and self.grid.connected:
             self.grid.force_hardware_led_sync()
+
+    def _check_monome_disconnect(self):
+        """Handle a physical monome unplug detected on the background thread."""
+        with self.grid._state_lock:
+            if not self.grid._pending_monome_disconnect:
+                return
+            self.grid._pending_monome_disconnect = False
+        if self.window:
+            self.window.set_hardware_grid_connected(False)
+            self.window.setup_view.grid_panel.set_connection_status(False)
+            self.window.set_status("Monome grid disconnected")
+        log.info("Monome hardware disconnect processed in UI")
 
     # ------------------------------------------------------------------ #
     #  Sample loading                                                     #
@@ -1568,6 +1670,7 @@ class AppController:
         w.transport.tap_tempo_requested.connect(self._gui_tap_tempo)
         w.transport.group_stop_requested.connect(self._gui_group_stop)
         w.transport.stop_all_requested.connect(self._gui_stop_all)
+        w.transport.link_toggled.connect(self._gui_link_toggled)
 
         # --- Channel view ---
         w.channel_view.sample_load_requested.connect(self.load_sample_to_channel)
@@ -1688,12 +1791,16 @@ class AppController:
         w.setup_view.midi_input_added.connect(self._gui_midi_input_added)
         w.setup_view.midi_input_removed.connect(self._gui_midi_input_removed)
         w.setup_view.tilt_enabled_changed.connect(self._gui_tilt_enabled_changed)
+        w.setup_view.control_row_enabled_changed.connect(self._gui_control_row_enabled_changed)
+        w.setup_view.control_row_setting_changed.connect(self._gui_control_row_setting_changed)
+        w.setup_view.midi_control_row_learn_requested.connect(self._gui_control_row_learn_requested)
         self.midi.learn_completed.connect(self._on_midi_learn_complete)
 
         # --- Virtual grid ---
         w.virtual_grid.button_pressed.connect(
             lambda x, y, state: self._on_grid_button(x, y, state)
         )
+        w.grid_window.grid_size_changed.connect(self._on_virtual_grid_size_changed)
 
         # --- Main window ---
         w.quit_requested.connect(self.stop)
@@ -1738,6 +1845,22 @@ class AppController:
                             strip._speed_spin.setValue(speed)
                             strip._speed_spin.blockSignals(False)
         self.config.tempo = bpm
+
+    def _gui_link_toggled(self, enabled: bool):
+        """Handle Ableton Link toggle from the transport bar."""
+        self.config.link_enabled = enabled
+        if self.clock:
+            ok = self.clock.set_link_enabled(enabled)
+            if enabled and not ok:
+                # aalink not installed — revert the button
+                if self.window:
+                    self.window.transport.set_link_state(
+                        False, 0, available=False
+                    )
+                self.config.link_enabled = False
+                return
+        self._save_startup_settings()
+        log.info("Ableton Link %s", "enabled" if enabled else "disabled")
 
     def _gui_quantize_changed(self, idx: int):
         from mlrvp.config import QuantizeMode
@@ -2272,11 +2395,11 @@ class AppController:
     def _gui_save_preset_file(self, path: str):
         """Save current config to a specific file path (background write)."""
         from pathlib import Path as _Path
-        from mlrvp.preset.manager import _atomic_write_json, _SafeFloatEncoder
+        from mlrvp.preset.manager import _atomic_write_json, _SafeFloatEncoder, CURRENT_PRESET_VERSION
         try:
             data = self.presets._serialize_config(self.config)
             payload = {
-                "version": "0.6.9.16",
+                "version": CURRENT_PRESET_VERSION,
                 "config": data,
                 "midi_mappings": self.midi.get_mappings_serializable(),
                 "tilt_mappings": self._get_tilt_mappings_serializable(),
@@ -2358,6 +2481,54 @@ class AppController:
                 if backend in MONOME_BACKENDS:
                     self.config.monome_backend = backend
                     log.info("Startup settings loaded: monome_backend=%s", backend)
+                # Active groups
+                saved_ag = data.get("active_groups")
+                if saved_ag is not None:
+                    valid_ag = [c for c in (4, 6, 8) if c <= NUM_GROUPS]
+                    try:
+                        ag = int(saved_ag)
+                    except (TypeError, ValueError):
+                        ag = valid_ag[-1]
+                    if ag not in valid_ag:
+                        ag = min(valid_ag, key=lambda x: abs(x - ag))
+                    self.config.active_groups = ag
+                    log.info("Startup settings loaded: active_groups=%d", ag)
+                # Ableton Link
+                if "link_enabled" in data:
+                    self.config.link_enabled = bool(data["link_enabled"])
+                # Control row settings
+                cr_data = data.get("control_row", {})
+                if cr_data:
+                    self.config.control_row.enabled = bool(
+                        cr_data.get("enabled", self.config.control_row.enabled)
+                    )
+                    self.config.control_row.monome_row = int(
+                        cr_data.get("monome_row", self.config.control_row.monome_row)
+                    )
+                    # Load assignments list; fall back to legacy num_group_stops/num_patterns
+                    from mlrvp.config import (
+                        CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, _default_cr_assignments
+                    )
+                    saved_assignments = cr_data.get("assignments")
+                    if saved_assignments and isinstance(saved_assignments, list):
+                        # Pad / truncate to 8
+                        from mlrvp.config import CR_SLOT_EMPTY
+                        empty = {"type": CR_SLOT_EMPTY, "value": 0}
+                        saved_assignments = (saved_assignments + [empty] * 8)[:8]
+                        self.config.control_row.assignments = saved_assignments
+                    elif "num_group_stops" in cr_data or "num_patterns" in cr_data:
+                        # Migrate legacy format
+                        n_grp = max(1, min(7, int(cr_data.get("num_group_stops", 4))))
+                        n_pat = max(1, min(7, int(cr_data.get("num_patterns", 4))))
+                        if n_grp + n_pat > 8:
+                            n_pat = max(1, 8 - n_grp)
+                        from mlrvp.config import CR_SLOT_EMPTY
+                        new_assignments = (
+                            [{"type": CR_SLOT_GROUP_STOP, "value": i} for i in range(n_grp)] +
+                            [{"type": CR_SLOT_PATTERN,    "value": i} for i in range(n_pat)] +
+                            [{"type": CR_SLOT_EMPTY,      "value": 0}] * max(0, 8 - n_grp - n_pat)
+                        )
+                        self.config.control_row.assignments = new_assignments
         except Exception as e:
             log.warning("Could not load startup settings: %s", e)
 
@@ -2366,7 +2537,16 @@ class AppController:
         import json
         from .config import get_defaults_dir
         try:
-            data = {"monome_backend": self.config.monome_backend}
+            data = {
+                "monome_backend": self.config.monome_backend,
+                "active_groups": self.config.active_groups,
+                "link_enabled": getattr(self.config, "link_enabled", False),
+                "control_row": {
+                    "enabled": self.config.control_row.enabled,
+                    "monome_row": self.config.control_row.monome_row,
+                    "assignments": self.config.control_row.assignments,
+                },
+            }
             path = get_defaults_dir() / "startup_settings.json"
             path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception as e:
@@ -2446,6 +2626,7 @@ class AppController:
                 timer = self._live_long_press_timers.pop(row, None)
                 if timer is not None:
                     timer.stop()
+                    timer.deleteLater()
                 self._live_press_time.pop(row, None)
                 self._live_pending_start.pop(row, None)
                 self._live_countin_remaining.pop(row, None)
@@ -2523,6 +2704,13 @@ class AppController:
             ch.pitch_loop = bool(value)
             if self.engine:
                 self.engine.channels[row].state.pitch_loop = bool(value)
+        elif param == "seq_step_div":
+            div_idx = max(0, min(len(SEQ_STEP_DIV_BEATS) - 1, int(value)))
+            ch.seq_step_div = div_idx
+            if self.engine:
+                self.engine.channels[row].state.seq_step_div = div_idx
+                # Reset the column so the next tick picks up the right position
+                self.engine.channels[row]._seq_column = -1
         elif param == "mute":
             ch.mute = value
             if self.engine:
@@ -3429,7 +3617,7 @@ class AppController:
         except Exception as e:
             log.error("Take preview failed: %s", e)
 
-    def _on_library_preview(self, filepath: str):
+    def _on_library_preview(self, filepath: str, volume: float = 0.5):
         """Preview an audio file from the Library tab via the cue bus."""
         import os
         if not filepath or not os.path.isfile(filepath):
@@ -3437,6 +3625,7 @@ class AppController:
         try:
             import soundfile as _sf
             data, sr = _sf.read(filepath, dtype="float32", always_2d=False)
+            self.slicer_preview.set_volume(max(0.0, min(2.0, volume)))
             self.slicer_preview.play(data, sr, loop=False)
         except Exception as e:
             log.error("Library preview failed: %s", e)
@@ -3725,33 +3914,58 @@ class AppController:
 
     def _gui_midi_grid_connect(self, in_port: int, out_port: int):
         """Connect to a MIDI grid controller."""
+        from mlrvp.grid.midi_grid import is_launchpad
+        from mlrvp.config import CR_MONOME_ROW_LAUNCHPAD_CC
         ok = self.grid.connect_midi_grid(in_port, out_port)
         if ok:
             # Forward MIDI messages from the grid adapter to the MIDI handler
             # so MIDI learn can capture Launchpad button presses
             if self.grid._midi_grid:
                 self.grid._midi_grid.set_midi_forward(self.midi.inject_message)
-            # Sync grid dimensions from connected hardware
-            rows = self.grid.info.rows
+            name = self.grid._midi_grid.device_name if self.grid._midi_grid else "MIDI Grid"
+            lp = is_launchpad(name)
+
+            # For Launchpads: default to CC top-row control mode (-2)
+            cr = self.config.control_row
+            if lp and cr.monome_row == 0:
+                # First-time connect or previously on default top — switch to LP CC row
+                cr.monome_row = CR_MONOME_ROW_LAUNCHPAD_CC
+
+            # Apply control row config now that midi_grid is connected; this also
+            # sets _monome_row_offset (0 for CC mode, 1 for note-row top mode, etc.)
+            self.grid.configure_control_row(cr.enabled, cr.monome_row)
+            with self.grid._state_lock:
+                row_offset = self.grid._monome_row_offset
+
+            # Effective data rows (note grid minus any consumed row)
+            total_rows = self.grid.info.rows
             cols = self.grid.info.columns
+            rows = total_rows - row_offset
+            if self.engine:
+                rows = min(rows, len(self.engine.channels))
+            rows = max(1, rows)
+
             self.config.row_count = rows
             self.config.grid_columns = cols
-            # Update channel steps to match grid columns
             for ch in self.config.channels:
                 ch.steps = cols
             if self.engine:
                 for i in range(min(len(self.config.channels), len(self.engine.channels))):
                     self.engine.channels[i].state.steps = cols
             if self.window:
-                self.window.channel_view.set_visible_rows(rows)
                 self.window.set_grid_dimensions(rows, cols)
                 self.window.set_hardware_grid_connected(True)
-                # Sync grid columns to all waveform widgets
                 self._sync_grid_columns_to_waveforms()
-                name = self.grid._midi_grid.device_name if self.grid._midi_grid else "MIDI Grid"
                 self.window.setup_view.grid_panel.set_connection_status(True, name)
                 self.window.set_status(f"Connected: {name} ({cols}×{rows})")
                 self.window._auto_resize_for_rows(rows)
+                if lp:
+                    # Add LP option + auto-select; then sync full config so UI
+                    # reflects any preset that was loaded from saved settings.
+                    self.window.setup_view.grid_panel.set_launchpad_connected(True)
+                    self.window.setup_view.grid_panel.set_control_row_config(
+                        cr.enabled, cr.monome_row, cr.assignments
+                    )
                 log.info("Grid connected: %s — set grid to %dx%d", name, cols, rows)
         else:
             if self.window:
@@ -3760,14 +3974,74 @@ class AppController:
 
     def _gui_midi_grid_disconnect(self):
         """Disconnect the current MIDI grid controller."""
+        from mlrvp.config import CR_MONOME_ROW_LAUNCHPAD_CC
+        cr = self.config.control_row
+        was_lp_cc = (cr.monome_row == CR_MONOME_ROW_LAUNCHPAD_CC)
         self.grid.disconnect_midi_grid()
+        # Reset LP-specific row selection back to top row on disconnect
+        if was_lp_cc:
+            cr.monome_row = 0
+            self.grid.configure_control_row(cr.enabled, 0)
         if self.window:
             self.window.setup_view.grid_panel.set_connection_status(False)
+            self.window.setup_view.grid_panel.set_launchpad_connected(False)
             self.window.set_hardware_grid_connected(False)
             self.window.set_status("MIDI grid disconnected")
 
     def _gui_audio_setting(self, key: str, value):
         setattr(self.config, key, value)
+        if key == "multichannel_output":
+            # Requires engine restart to take effect — do it automatically
+            # so the user doesn't need to toggle the DAC button.
+            if self.engine:
+                self.engine.stop()
+                try:
+                    self.engine.start()
+                    n_ch = self.engine._out_channels
+                    if value and n_ch > 2:
+                        n_grp = (n_ch - 2) // 2
+                        n_grp_wanted = min(
+                            getattr(self.config, 'active_groups', NUM_GROUPS), NUM_GROUPS
+                        )
+                        if n_grp < n_grp_wanted:
+                            msg = (
+                                f"Multi-channel output ON — "
+                                f"{n_ch}ch: Master=1-2, Groups 1-{n_grp}=3-{n_ch} "
+                                f"(device only supports {n_ch} channels; "
+                                f"{n_grp_wanted - n_grp} group(s) not routed)"
+                            )
+                        else:
+                            msg = (
+                                f"Multi-channel output ON — "
+                                f"{n_ch}ch: Master=1-2, Groups 1-{n_grp}=3-{n_ch}"
+                            )
+                    elif value:
+                        msg = (
+                            "Multi-channel output: device only has 2 channels — "
+                            "outputting stereo master only"
+                        )
+                    else:
+                        msg = "Multi-channel output OFF (stereo)"
+                    if self.window:
+                        self.window.set_status(msg)
+                except Exception as e:
+                    log.warning("Audio restart failed after multichannel toggle: %s", e)
+                    # Revert and fall back to stereo so audio keeps working
+                    self.config.multichannel_output = False
+                    if self.window:
+                        self.window.setup_view.audio_panel.set_multichannel_output_state(False)
+                    try:
+                        self.engine.start()
+                        if self.window:
+                            self.window.set_status(
+                                "Multi-channel output failed — reverted to stereo. "
+                                "Use a multi-channel interface or Voicemeeter."
+                            )
+                    except Exception as e2:
+                        log.error("Audio failed to restart after multichannel fallback: %s", e2)
+                        if self.window:
+                            self.window.set_status(f"Audio restart failed: {e2}")
+            return
         if self.window:
             self.window.set_status(f"Audio: {key} = {value} (restart to apply)")
 
@@ -3784,8 +4058,7 @@ class AppController:
         elif key == "row_count":
             self.config.row_count = value
             if self.window:
-                self.window.channel_view.set_visible_rows(value)
-                self.window._auto_resize_for_rows(value)
+                self.window.set_grid_dimensions(value, self.config.grid_columns)
         elif key == "grid_columns":
             self.config.grid_columns = value
             # Sync steps for all channels and recalculate speeds
@@ -3805,6 +4078,19 @@ class AppController:
                 self.window.set_virtual_grid_visible(value)
         elif key == "snap_speed_to_rate":
             self.config.snap_speed_to_rate = bool(value)
+        elif key == "active_groups":
+            # Clamp to valid set: {4, 6, 8} ∩ {n : n <= NUM_GROUPS}
+            valid = [c for c in (4, 6, 8) if c <= NUM_GROUPS]
+            n = int(value)
+            if n not in valid:
+                n = min(valid, key=lambda x: abs(x - n))
+            self.config.active_groups = n
+            if self.window:
+                self.window.mixer_view.set_active_groups(n)
+                self.window.transport.set_active_groups(n)
+                self.window.channel_view.set_active_groups(n)
+                self.window.setup_view._grid_panel.set_active_groups(n)
+            self._save_startup_settings()
 
     def _sync_grid_columns_to_waveforms(self):
         """Push per-channel steps to each waveform widget."""
@@ -3829,6 +4115,8 @@ class AppController:
     def _gui_osc_setting(self, key: str, value):
         """Handle OSC setting changes from the setup panel."""
         setattr(self.config, key, value)
+        if key == "osc_meter_output":
+            return  # live-change; no restart needed
         if key == "osc_enabled":
             if value:
                 # Start OSC
@@ -3923,6 +4211,28 @@ class AppController:
 
         # OSC panel — sync enabled state
         self.window.setup_view.osc_panel.set_enabled_state(self.config.osc_enabled)
+        self.window.setup_view.osc_panel.set_meter_output_state(
+            getattr(self.config, "osc_meter_output", True)
+        )
+
+        # Audio panel — multi-channel output checkbox
+        self.window.setup_view.audio_panel.set_multichannel_output_state(
+            getattr(self.config, "multichannel_output", False)
+        )
+
+        # Ableton Link — restore saved state and update transport button
+        if self.clock:
+            link_was_enabled = getattr(self.config, "link_enabled", False)
+            if link_was_enabled:
+                ok = self.clock.set_link_enabled(True)
+                if not ok:
+                    self.config.link_enabled = False
+                    link_was_enabled = False
+            self.window.transport.set_link_state(
+                link_was_enabled,
+                self.clock.link_num_peers,
+                available=self.clock.link_available,
+            )
 
     def _register_mappable_controls(self):
         """Register all GUI controls that can be MIDI-mapped."""
@@ -3979,7 +4289,7 @@ class AppController:
             w.transport._sync_btn, "transport.sync_bpm", "Sync BPM")
 
         # Group stop buttons and ALL stop
-        for gi in range(4):
+        for gi in range(NUM_GROUPS):
             self._midi_map.register_control(
                 w.transport._grp_stop_btns[gi],
                 f"transport.group_stop.{gi}",
@@ -4385,6 +4695,9 @@ class AppController:
                 self.window.set_status("MIDI Map Mode — Click a control, then move a MIDI knob/button")
         else:
             self._midi_map.deactivate()
+            # Cancel any in-progress learn so the next incoming CC doesn't
+            # silently create a stale mapping for the last selected control.
+            self.midi.stop_learn()
             if self.window:
                 self.window.set_status("MIDI Map Mode off")
         # Sync both MIDI map / learn buttons
@@ -4420,6 +4733,9 @@ class AppController:
                 "toggle": False,
             })
             self.window.set_status(f"Mapped: {param_path} → CC{cc} Ch{channel+1}")
+            # If this is a control row path, update the assignment label
+            if param_path.startswith(("transport.group_stop.", "transport.pattern.")):
+                self._repopulate_control_row_assignments()
 
     def _on_midi_map_learn_done(self, param_path: str, channel: int, cc: int):
         """Final notification after learn overlay updates."""
@@ -4432,6 +4748,8 @@ class AppController:
     def _gui_midi_mapping_removed(self, param_path: str):
         """User deleted a mapping row from the table."""
         self.midi.remove_mapping(param_path)
+        if param_path.startswith(("transport.group_stop.", "transport.pattern.")):
+            self._repopulate_control_row_assignments()
 
     def _gui_midi_toggle_changed(self, param_path: str, toggle: bool):
         """User toggled the toggle checkbox in the mapping table."""
@@ -4528,6 +4846,72 @@ class AppController:
         if self.window:
             self.window.setup_view.midi_panel.set_tilt_visible(enabled)
 
+    def _gui_control_row_enabled_changed(self, enabled: bool):
+        """User toggled the Control Row checkbox."""
+        self.config.control_row.enabled = enabled
+        monome_row = self.config.control_row.monome_row
+        self.grid.configure_control_row(enabled, monome_row)
+        self._save_startup_settings()
+
+    def _gui_control_row_setting_changed(self, key: str, value: object):
+        """User changed a control row sub-setting."""
+        cr = self.config.control_row
+        if key == "monome_row":
+            cr.monome_row = int(value)
+            if cr.enabled:
+                self.grid.configure_control_row(cr.enabled, cr.monome_row)
+            # When an LP is connected and the user switches between CC row and
+            # note-row modes, the effective row count changes.  Recompute it.
+            if self.grid._midi_grid and self.grid._midi_grid.connected:
+                with self.grid._state_lock:
+                    row_offset = self.grid._monome_row_offset
+                total_rows = self.grid.info.rows
+                cols = self.grid.info.columns
+                rows = total_rows - row_offset
+                if self.engine:
+                    rows = min(rows, len(self.engine.channels))
+                rows = max(1, rows)
+                self.config.row_count = rows
+                if self.window:
+                    self.window.channel_view.set_visible_rows(rows)
+                    self.window.set_grid_dimensions(rows, cols)
+                    self.window._auto_resize_for_rows(rows)
+        elif key == "assignments":
+            cr.assignments = value  # full list of 8 slot dicts
+        # Rebuild the MIDI control row actions section
+        if self.window:
+            self.window.setup_view.midi_panel.set_control_row_actions(
+                cr.num_group_stops, cr.num_patterns
+            )
+            self._repopulate_control_row_assignments()
+        self._save_startup_settings()
+
+    def _gui_control_row_learn_requested(self, param_path: str):
+        """User clicked Learn on a control row action row."""
+        self.midi.start_learn(param_path)
+        if self.window:
+            self.window.set_status(f"Waiting for MIDI input for: {param_path}")
+
+    def _repopulate_control_row_assignments(self):
+        """Update all control row assignment labels from current MIDI mappings."""
+        if not self.window:
+            return
+        mappings = {m["param_path"]: m for m in self.midi.get_mappings_serializable()}
+        cr = self.config.control_row
+        paths = (
+            [f"transport.group_stop.{i}" for i in range(cr.num_group_stops)]
+            + [f"transport.pattern.{i}" for i in range(cr.num_patterns)]
+        )
+        for path in paths:
+            m = mappings.get(path)
+            if m:
+                info = f"CC{m['cc']} Ch{m['channel'] + 1}"
+            else:
+                info = ""
+            self.window.setup_view.midi_panel.update_control_row_assignment(path, info)
+
+
+
     def _populate_tilt_targets(self):
         """Populate tilt combo boxes with all registered mappable params."""
         if not self.window:
@@ -4613,6 +4997,11 @@ class AppController:
             self.midi.set_param_callback(param_path,
                 lambda v: QTimer.singleShot(
                     0, self._gui_sync_bpm
+                ) if v > 0.5 else None)
+        elif param_path == "transport.all_stop":
+            self.midi.set_param_callback(param_path,
+                lambda v: QTimer.singleShot(
+                    0, self._gui_stop_all
                 ) if v > 0.5 else None)
         elif parts[0] == "transport" and len(parts) == 3:
             if parts[1] == "group_stop":
@@ -5545,7 +5934,12 @@ class AppController:
                 # Sync virtual grid row color to group
                 w.virtual_grid.set_row_color(i, self.config.channels[i].group)
 
-            w.channel_view.set_visible_rows(self.config.row_count)
+            w.set_grid_dimensions(self.config.row_count, self.config.grid_columns)
+            # Apply active groups to all views
+            w.mixer_view.set_active_groups(self.config.active_groups)
+            w.transport.set_active_groups(self.config.active_groups)
+            w.channel_view.set_active_groups(self.config.active_groups)
+            w.setup_view._grid_panel.set_active_groups(self.config.active_groups)
             self._sync_grid_setup_panel()
 
             # Mixer groups
@@ -5624,8 +6018,17 @@ class AppController:
         if not self.window or not self.engine:
             return
 
-        # Check for async monome connection
+        # Check for async monome connection / disconnection
         self._check_monome_connect()
+        self._check_monome_disconnect()
+
+        # Ableton Link — update peer count on the transport button
+        if self.clock:
+            self.window.transport.set_link_state(
+                self.config.link_enabled,
+                self.clock.link_num_peers,
+                available=self.clock.link_available,
+            )
 
         # Beat position display — wraps bars so counter doesn't run forever
         if self.clock:
@@ -5737,6 +6140,11 @@ class AppController:
         polled = self.engine.poll_meters()
         if polled is not None:
             self._latest_levels = polled
+            # Forward peak levels to any OSC listener (mlrV2-style meter output)
+            if (self.osc is not None
+                    and self.osc._running
+                    and self.config.osc_meter_output):
+                self.osc.send_meters(polled)
 
         # Surface DSP errors to status bar
         dsp_err = self.engine.poll_dsp_errors()
@@ -5760,27 +6168,41 @@ class AppController:
         self.window.effects_view.update_meters(levels)
 
     def _update_control_leds(self, group_active: list[bool]):
-        """Update control row LEDs for group stops and pattern buttons."""
-        # Group stop buttons (x=0..3): lit in group color when group has playing channels
-        for g in range(NUM_GROUPS):
-            brightness = LED_BRIGHT if group_active[g] else LED_OFF
-            self.grid.set_control_led(g, brightness, color=g)
+        """Update control row LEDs based on slot assignments."""
+        from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_ALL_STOP
+        assignments = self.config.control_row.assignments
+        any_group_active = any(group_active[:NUM_GROUPS])
 
-        # Pattern buttons (x=4..7): bright=recording/playing, dim=loaded, off=empty
-        for i, pr in enumerate(self.patterns):
-            if pr.recording:
-                brightness = LED_BRIGHT
-                color = 2  # red
-            elif pr.playing:
-                brightness = LED_BRIGHT
-                color = 0  # amber
-            elif pr.has_events:
-                brightness = LED_DIM
-                color = 0  # amber
-            else:
-                brightness = LED_OFF
-                color = 0
-            self.grid.set_control_led(4 + i, brightness, color)
+        for slot_x, slot in enumerate(assignments):
+            slot_type = slot.get("type", "empty")
+            slot_val = slot.get("value", 0)
+
+            if slot_type == CR_SLOT_GROUP_STOP:
+                g = slot_val
+                brightness = LED_BRIGHT if (g < len(group_active) and group_active[g]) else LED_OFF
+                self.grid.set_control_led(slot_x, brightness, color=g)
+
+            elif slot_type == CR_SLOT_ALL_STOP:
+                brightness = LED_BRIGHT if any_group_active else LED_OFF
+                self.grid.set_control_led(slot_x, brightness, color=0)
+
+            elif slot_type == CR_SLOT_PATTERN:
+                idx = slot_val
+                pr = self.patterns[idx] if idx < len(self.patterns) else None
+                if pr is None:
+                    brightness, color = LED_OFF, 0
+                elif pr.recording:
+                    brightness, color = LED_BRIGHT, 2  # red
+                elif pr.playing:
+                    brightness, color = LED_BRIGHT, 0  # amber
+                elif pr.has_events:
+                    brightness, color = LED_DIM, 0
+                else:
+                    brightness, color = LED_OFF, 0
+                self.grid.set_control_led(slot_x, brightness, color)
+
+            else:  # empty
+                self.grid.set_control_led(slot_x, LED_OFF, 0)
 
 
 # ================================================================== #

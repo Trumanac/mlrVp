@@ -84,7 +84,7 @@ class MidiHandler(QObject):
             midi_in.set_callback(self._midi_callback)
             self._midi_inputs[port] = midi_in
         except Exception as e:
-            print(f"MIDI input error: {e}")
+            log.error("MIDI input error: %s", e)
 
     def close_input(self, port: int):
         """Close a specific MIDI input port."""
@@ -106,7 +106,7 @@ class MidiHandler(QObject):
             self._midi_out = rtmidi.MidiOut()
             self._midi_out.open_port(port)
         except Exception as e:
-            print(f"MIDI output error: {e}")
+            log.error("MIDI output error: %s", e)
 
     def close(self):
         self._closed = True
@@ -321,6 +321,7 @@ class MidiHandler(QObject):
                     "min_val": m.min_val,
                     "max_val": m.max_val,
                     "toggle": m.toggle,
+                    "toggle_state": self._toggle_state.get(path, False),
                 })
             return result
 
@@ -328,6 +329,7 @@ class MidiHandler(QObject):
         """Load mappings from serialized data."""
         new_mappings = {}
         new_cc_to_param = {}
+        new_toggle_state = {}
         _fields = {f.name for f in fields(MidiMapping)}
         for m_data in mappings_data:
             filtered = {k: v for k, v in m_data.items() if k in _fields}
@@ -335,9 +337,12 @@ class MidiHandler(QObject):
             mapping.param_path = m_data.get('param_path', mapping.param_path)
             new_mappings[mapping.param_path] = mapping
             new_cc_to_param[(mapping.channel, mapping.cc)] = mapping.param_path
+            if mapping.toggle and m_data.get('toggle_state', False):
+                new_toggle_state[mapping.param_path] = True
         with self._lock:
             self._mappings = new_mappings
             self._cc_to_param = new_cc_to_param
+            self._toggle_state = new_toggle_state
 
     def update_mapping_range(self, param_path: str, min_val: float, max_val: float):
         """Update the min/max range for an existing mapping."""

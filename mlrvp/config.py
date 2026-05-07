@@ -39,7 +39,7 @@ class QuantizeMode(IntEnum):
 
 MAX_ROWS = 16
 MAX_COLUMNS = 16
-NUM_GROUPS = 4
+NUM_GROUPS = 8
 NUM_PATTERN_RECORDERS = 4
 NUM_PRESETS = 32
 NUM_SETLIST_SLOTS = 32
@@ -62,6 +62,10 @@ DEFAULT_GROUP_COLORS = [
     (0.51, 0.91, 0.46),   # Group 2 — green
     (0.91, 0.51, 0.45),   # Group 3 — salmon/red
     (0.25, 0.71, 0.80),   # Group 4 — teal/cyan
+    (0.77, 0.47, 0.94),   # Group 5 — lavender/purple
+    (0.94, 0.63, 0.19),   # Group 6 — warm orange
+    (0.88, 0.38, 0.75),   # Group 7 — hot pink/magenta
+    (0.22, 0.50, 0.95),   # Group 8 — cobalt blue
 ]
 
 # Grid LED brightness levels
@@ -73,6 +77,12 @@ LED_BRIGHT = 15
 # Pitch mode scale definitions — each list has 16 semitone offsets,
 # sliced to [:grid_columns] at runtime for 8/16/etc layouts.
 PITCH_SCALE_NAMES = ["MAJOR", "MINOR", "PENTA", "CHORD", "CHROM"]
+
+# SEQ mode step-division options — how many beats pass between each step advance.
+# Index 2 (1/4 = 1.0 beat) is the default (one step per quarter note).
+SEQ_STEP_DIV_NAMES = ["1 bar", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64"]
+SEQ_STEP_DIV_BEATS = [4.0, 2.0, 1.0, 0.5, 0.25, 0.125, 0.0625]  # beats per step
+SEQ_STEP_DIV_DEFAULT = 2  # index → 1/4 note
 PITCH_SCALE_MAPS: dict[int, list[int]] = {
     0: [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24, 26],        # MAJOR — 2 octaves diatonic
     1: [0, 2, 3, 5, 7, 8, 10, 12, 14, 15, 17, 19, 20, 22, 24, 26],        # MINOR — natural minor
@@ -108,6 +118,7 @@ class ChannelState:
     pitch_scale: int = 0     # index into PITCH_SCALE_MAPS (0=MAJOR .. 4=CHROM)
     pitch_root: int = 0      # semitone offset for PITCH mode base note (-24 to +24)
     pitch_loop: bool = False  # True = loop in PITCH mode, False = one-shot
+    seq_step_div: int = SEQ_STEP_DIV_DEFAULT  # index into SEQ_STEP_DIV_BEATS (default=1/4)
     playing: bool = False
     playback_pos: float = 0.0
     # LIVE mode — live looper state (only used when mode == PlaybackMode.LIVE)
@@ -708,6 +719,142 @@ class PatternRecorderState:
     events: list = field(default_factory=list)
 
 
+# Slot type constants for control row button assignments
+CR_SLOT_EMPTY = "empty"
+CR_SLOT_GROUP_STOP = "group_stop"   # value: group index (0-based)
+CR_SLOT_PATTERN = "pattern"         # value: pattern index (0-based)
+CR_SLOT_ALL_STOP = "all_stop"       # stops all groups
+
+# Special monome_row value: Launchpad hardware CC top row (separate from note grid)
+CR_MONOME_ROW_LAUNCHPAD_CC = -2
+
+# Built-in presets: list of (label, assignments) where each assignment is
+# a dict {"type": CR_SLOT_*, "value": int} (value ignored for empty/all_stop)
+CR_PRESETS = [
+    # ── 8-group presets (default layout) ────────────────────────────────
+    ("8 Stops", [
+        {"type": CR_SLOT_GROUP_STOP, "value": 0},
+        {"type": CR_SLOT_GROUP_STOP, "value": 1},
+        {"type": CR_SLOT_GROUP_STOP, "value": 2},
+        {"type": CR_SLOT_GROUP_STOP, "value": 3},
+        {"type": CR_SLOT_GROUP_STOP, "value": 4},
+        {"type": CR_SLOT_GROUP_STOP, "value": 5},
+        {"type": CR_SLOT_GROUP_STOP, "value": 6},
+        {"type": CR_SLOT_GROUP_STOP, "value": 7},
+    ]),
+    ("7 Stops + All Stop", [
+        {"type": CR_SLOT_GROUP_STOP, "value": 0},
+        {"type": CR_SLOT_GROUP_STOP, "value": 1},
+        {"type": CR_SLOT_GROUP_STOP, "value": 2},
+        {"type": CR_SLOT_GROUP_STOP, "value": 3},
+        {"type": CR_SLOT_GROUP_STOP, "value": 4},
+        {"type": CR_SLOT_GROUP_STOP, "value": 5},
+        {"type": CR_SLOT_GROUP_STOP, "value": 6},
+        {"type": CR_SLOT_ALL_STOP,   "value": 0},
+    ]),
+    # ── 6-group presets ──────────────────────────────────────────────────
+    ("6 Stops + 2 Patterns", [
+        {"type": CR_SLOT_GROUP_STOP, "value": 0},
+        {"type": CR_SLOT_GROUP_STOP, "value": 1},
+        {"type": CR_SLOT_GROUP_STOP, "value": 2},
+        {"type": CR_SLOT_GROUP_STOP, "value": 3},
+        {"type": CR_SLOT_GROUP_STOP, "value": 4},
+        {"type": CR_SLOT_GROUP_STOP, "value": 5},
+        {"type": CR_SLOT_PATTERN,    "value": 0},
+        {"type": CR_SLOT_PATTERN,    "value": 1},
+    ]),
+    ("6 Stops + All Stop + 1 Pattern", [
+        {"type": CR_SLOT_GROUP_STOP, "value": 0},
+        {"type": CR_SLOT_GROUP_STOP, "value": 1},
+        {"type": CR_SLOT_GROUP_STOP, "value": 2},
+        {"type": CR_SLOT_GROUP_STOP, "value": 3},
+        {"type": CR_SLOT_GROUP_STOP, "value": 4},
+        {"type": CR_SLOT_GROUP_STOP, "value": 5},
+        {"type": CR_SLOT_ALL_STOP,   "value": 0},
+        {"type": CR_SLOT_PATTERN,    "value": 0},
+    ]),
+    ("5 Stops + All Stop + 2 Patterns", [
+        {"type": CR_SLOT_GROUP_STOP, "value": 0},
+        {"type": CR_SLOT_GROUP_STOP, "value": 1},
+        {"type": CR_SLOT_GROUP_STOP, "value": 2},
+        {"type": CR_SLOT_GROUP_STOP, "value": 3},
+        {"type": CR_SLOT_GROUP_STOP, "value": 4},
+        {"type": CR_SLOT_ALL_STOP,   "value": 0},
+        {"type": CR_SLOT_PATTERN,    "value": 0},
+        {"type": CR_SLOT_PATTERN,    "value": 1},
+    ]),
+    # ── Legacy 4-group presets ───────────────────────────────────────────
+    ("4 Stops + 4 Patterns", [
+        {"type": CR_SLOT_GROUP_STOP, "value": 0},
+        {"type": CR_SLOT_GROUP_STOP, "value": 1},
+        {"type": CR_SLOT_GROUP_STOP, "value": 2},
+        {"type": CR_SLOT_GROUP_STOP, "value": 3},
+        {"type": CR_SLOT_PATTERN,    "value": 0},
+        {"type": CR_SLOT_PATTERN,    "value": 1},
+        {"type": CR_SLOT_PATTERN,    "value": 2},
+        {"type": CR_SLOT_PATTERN,    "value": 3},
+    ]),
+    ("3 Stops + All Stop + 4 Patterns", [
+        {"type": CR_SLOT_GROUP_STOP, "value": 0},
+        {"type": CR_SLOT_GROUP_STOP, "value": 1},
+        {"type": CR_SLOT_GROUP_STOP, "value": 2},
+        {"type": CR_SLOT_ALL_STOP,   "value": 0},
+        {"type": CR_SLOT_PATTERN,    "value": 0},
+        {"type": CR_SLOT_PATTERN,    "value": 1},
+        {"type": CR_SLOT_PATTERN,    "value": 2},
+        {"type": CR_SLOT_PATTERN,    "value": 3},
+    ]),
+    ("4 Stops + All Stop + 3 Patterns", [
+        {"type": CR_SLOT_GROUP_STOP, "value": 0},
+        {"type": CR_SLOT_GROUP_STOP, "value": 1},
+        {"type": CR_SLOT_GROUP_STOP, "value": 2},
+        {"type": CR_SLOT_GROUP_STOP, "value": 3},
+        {"type": CR_SLOT_ALL_STOP,   "value": 0},
+        {"type": CR_SLOT_PATTERN,    "value": 0},
+        {"type": CR_SLOT_PATTERN,    "value": 1},
+        {"type": CR_SLOT_PATTERN,    "value": 2},
+    ]),
+    ("All Stop Only", [
+        {"type": CR_SLOT_ALL_STOP,   "value": 0},
+        {"type": CR_SLOT_EMPTY,      "value": 0},
+        {"type": CR_SLOT_EMPTY,      "value": 0},
+        {"type": CR_SLOT_EMPTY,      "value": 0},
+        {"type": CR_SLOT_EMPTY,      "value": 0},
+        {"type": CR_SLOT_EMPTY,      "value": 0},
+        {"type": CR_SLOT_EMPTY,      "value": 0},
+        {"type": CR_SLOT_EMPTY,      "value": 0},
+    ]),
+]
+
+# Default is "8 Stops" (first preset)
+_DEFAULT_CR_ASSIGNMENTS = CR_PRESETS[0][1]
+
+
+def _default_cr_assignments():
+    return [dict(s) for s in _DEFAULT_CR_ASSIGNMENTS]
+
+
+@dataclass
+class ControlRowConfig:
+    """Configuration for the hardware control row (monome top row / Launchpad CC row).
+
+    assignments: list of 8 slot dicts, each {"type": CR_SLOT_*, "value": int}.
+    monome_row only applies to monome hardware; Launchpad CC row position is hardware-fixed.
+    """
+    enabled: bool = True
+    monome_row: int = 0          # 0 = top row; -1 = last row (resolved at connect time)
+    assignments: list = field(default_factory=_default_cr_assignments)
+
+    # ── Legacy helpers kept for any code that still reads these ──────────
+    @property
+    def num_group_stops(self) -> int:
+        return sum(1 for s in self.assignments if s.get("type") == CR_SLOT_GROUP_STOP)
+
+    @property
+    def num_patterns(self) -> int:
+        return sum(1 for s in self.assignments if s.get("type") == CR_SLOT_PATTERN)
+
+
 @dataclass
 class AppConfig:
     """Full application configuration."""
@@ -732,6 +879,9 @@ class AppConfig:
 
     # Groups
     groups: list = field(default_factory=lambda: [GroupState() for _ in range(NUM_GROUPS)])
+    # Number of actively displayed/used groups (4, 6, or 8 — default = NUM_GROUPS).
+    # Audio engine always allocates all NUM_GROUPS buses; unused groups are simply empty.
+    active_groups: int = NUM_GROUPS
 
     # Aux / Effects
     aux_volume: float = 1.0
@@ -998,11 +1148,22 @@ class AppConfig:
     master_lp: float = 20000.0   # Hz, master LP trim (200–20000)
     fadetime: float = 1.2
 
+    # Ableton Link
+    link_enabled: bool = False  # sync tempo with Ableton Live and other Link apps
+
+    # Multi-channel output — route each group to a separate stereo pair so a
+    # DAW (Ableton, Reaper, etc.) can record groups independently.
+    # Requires a multi-channel output device or a virtual cable that supports
+    # multiple channels (e.g. Voicemeeter, ASIO4ALL with multi-channel).
+    # Channel layout: Master = 1-2, Group 1 = 3-4, ..., Group N = 2N+1 to 2N+2
+    multichannel_output: bool = False
+
     # OSC
     osc_enabled: bool = False
     osc_host: str = "127.0.0.1"
     osc_send_port: int = 8000
     osc_recv_port: int = 8001
+    osc_meter_output: bool = True  # broadcast group/master peak levels via OSC at ~30 fps
 
     # MIDI
     midi_in_device: int = -1
@@ -1010,6 +1171,9 @@ class AppConfig:
 
     # Playback
     snap_speed_to_rate: bool = False  # auto-snap speed to nearest clean 0.5x/2x step
+
+    # Control row
+    control_row: ControlRowConfig = field(default_factory=ControlRowConfig)
 
     # UI
     group_colors: list = field(default_factory=lambda: list(DEFAULT_GROUP_COLORS))

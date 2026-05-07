@@ -53,14 +53,22 @@ _LP_CLASSIC_GROUP_COLORS = [
     {0: 0, 4: 28, 8: 44, 15: 60},   # Group 1 — green (g3)
     {0: 0, 4: 13, 8: 14, 15: 15},   # Group 2 — red   (r3)
     {0: 0, 4: 45, 8: 46, 15: 62},   # Group 3 — yellow-green (r2+g3)
+    {0: 0, 4: 17, 8: 18, 15: 19},   # Group 4 — purple approx (r1+g1)
+    {0: 0, 4: 29, 8: 30, 15: 31},   # Group 5 — orange (r3+g1)
+    {0: 0, 4:  5, 8:  6, 15:  7},   # Group 6 — pink/magenta (r1)
+    {0: 0, 4: 41, 8: 42, 15: 43},   # Group 7 — blue approx (r3+g2 mix; no blue LED on Classic)
 ]
 
 # MK2/X/MK3/Pro use velocity as color palette index
 _LP_MK2_GROUP_COLORS = [
-    {0: 0, 4: 11, 8: 10, 15: 9},    # Group 0 — amber/orange
+    {0: 0, 4: 11, 8: 10, 15:  9},   # Group 0 — amber/orange
     {0: 0, 4: 19, 8: 20, 15: 21},   # Group 1 — green
-    {0: 0, 4: 6,  8: 5,  15: 5},    # Group 2 — red
+    {0: 0, 4:  6, 8:  5, 15:  5},   # Group 2 — red
     {0: 0, 4: 35, 8: 36, 15: 37},   # Group 3 — cyan/teal
+    {0: 0, 4: 49, 8: 50, 15: 51},   # Group 4 — purple/violet
+    {0: 0, 4: 85, 8: 86, 15: 87},   # Group 5 — orange
+    {0: 0, 4: 57, 8: 58, 15: 59},   # Group 6 — pink/rose
+    {0: 0, 4: 43, 8: 44, 15: 45},   # Group 7 — cobalt blue
 ]
 
 
@@ -127,6 +135,7 @@ class MidiGridAdapter:
         self._group_color_maps: list[dict[int, int]] = [m.copy() for m in _LP_MK2_GROUP_COLORS]
         self._control_cc_map: dict[int, int] = {}   # CC number → button index
         self._control_cc_out: dict[int, int] = {}   # button index → CC number
+        self._control_row_enabled: bool = True       # when False, CC row acts as data y=0
         self._midi_forward: Optional[Callable] = None
         # Per-cell LED state cache: (y, x) → (velocity, color) to skip unchanged sends
         self._led_cache: dict[tuple[int, int], tuple[int, int]] = {}
@@ -142,6 +151,15 @@ class MidiGridAdapter:
     def set_control_callback(self, callback: Callable):
         """Set callback for control buttons (top row): callback(btn_index, state)."""
         self._control_callback = callback
+
+    def configure_control_row(self, enabled: bool):
+        """Enable or disable the CC control row.
+
+        When disabled, CC buttons are routed to ``_button_callback`` as if they
+        were grid buttons at ``y=0`` so the app can use them as data rows.
+        MIDI mappings for transport paths are never affected here.
+        """
+        self._control_row_enabled = enabled
 
     def set_midi_forward(self, callback: Optional[Callable]):
         """Set callback to forward raw MIDI messages to (e.g. MIDI handler for learn)."""
@@ -293,8 +311,13 @@ class MidiGridAdapter:
                 btn_idx = self._control_cc_map.get(cc)
                 if btn_idx is not None:
                     state = 1 if value > 0 else 0
-                    if self._control_callback:
-                        self._control_callback(btn_idx, state)
+                    if self._control_row_enabled:
+                        if self._control_callback:
+                            self._control_callback(btn_idx, state)
+                    else:
+                        # Control row disabled — route as regular grid button at y=0
+                        if self._button_callback:
+                            self._button_callback(btn_idx, 0, state)
                 return
             else:
                 return

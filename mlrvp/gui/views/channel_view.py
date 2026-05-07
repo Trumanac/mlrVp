@@ -20,6 +20,7 @@ from mlrvp.config import (
     LIVE_STATE_EMPTY, LIVE_STATE_COUNTING_IN, LIVE_STATE_RECORDING,
     LIVE_STATE_OVERDUBBING, LIVE_STATE_ARMED_RERECORD, LIVE_STATE_PLAYING,
     LIVE_QUANTIZE_NAMES,
+    SEQ_STEP_DIV_NAMES, SEQ_STEP_DIV_DEFAULT,
 )
 from mlrvp.gui.styles import (
     GROUP_COLORS, BG_PANEL, BG_BLACK, BG_MAIN, SEPARATOR,
@@ -445,6 +446,24 @@ class ChannelStrip(QFrame):
         self._steps_section = _section("STEP", self._steps_spin)
         top_row.addWidget(self._steps_section)
 
+        # SEQ step-division combo — visible only in SEQ mode
+        self._seq_div_combo = QComboBox()
+        self._seq_div_combo.addItems(SEQ_STEP_DIV_NAMES)
+        self._seq_div_combo.setCurrentIndex(SEQ_STEP_DIV_DEFAULT)
+        self._seq_div_combo.setFixedHeight(20)
+        self._seq_div_combo.setMaximumWidth(64)
+        self._seq_div_combo.setToolTip("SEQ step rate: how long each step lasts")
+        self._seq_div_combo.setStyleSheet(
+            f"QComboBox {{ font-size: 10px; padding: 2px 4px; color: {TEXT_PRIMARY}; }}"
+            f"QComboBox QAbstractItemView {{ min-width: 70px; }}"
+        )
+        self._seq_div_combo.currentIndexChanged.connect(
+            lambda idx: self.param_changed.emit(self._row, "seq_step_div", idx)
+        )
+        self._seq_div_section = _section("DIV", self._seq_div_combo)
+        self._seq_div_section.setVisible(False)
+        top_row.addWidget(self._seq_div_section)
+
         top_row.addWidget(_vdiv())
 
         self._mute_btn = QPushButton("MUTE")
@@ -755,6 +774,7 @@ class ChannelStrip(QFrame):
         """Handle mode combo change — show/hide mode-specific controls."""
         _, mode = self._mode_map[idx]
         is_pitch = mode == PlaybackMode.PITCH
+        is_seq = mode == PlaybackMode.SEQ
         is_shot = mode == PlaybackMode.ONESHOT
         is_live = mode == PlaybackMode.LIVE
         # Show SCALE and ROOT sections only in PTCH mode
@@ -762,7 +782,9 @@ class ChannelStrip(QFrame):
         self._pitch_mode_root.setVisible(is_pitch)
         # Hide standard PITCH (transpose) and STEP in PTCH mode
         self._pitch_section.setVisible(not is_pitch)
-        self._steps_section.setVisible(not is_pitch)
+        # STEP replaced by DIV in SEQ mode
+        self._steps_section.setVisible(not is_pitch and not is_seq)
+        self._seq_div_section.setVisible(is_seq)
         # REV toggle only in SHOT mode
         self._rev_btn.setVisible(is_shot)
         self._hold_btn.setVisible(is_shot)
@@ -801,6 +823,11 @@ class ChannelStrip(QFrame):
         for i, btn in enumerate(self._group_btns):
             btn.setChecked(i == idx)
         self._on_group_changed(idx)
+
+    def set_active_groups(self, n: int):
+        """Show/hide group selector buttons based on active group count."""
+        for i, btn in enumerate(self._group_btns):
+            btn.setVisible(i < n)
 
     def _on_group_changed(self, idx):
         self._current_group_idx = idx
@@ -913,26 +940,20 @@ class ChannelStrip(QFrame):
         self._steps_spin.setValue(state.steps)
         self._steps_spin.blockSignals(False)
         self._waveform.set_grid_columns(state.steps)
-        # Lock steps to grid width in SEQ mode (SEQ always uses one step per column)
-        self._steps_spin.setEnabled(state.mode not in (PlaybackMode.SEQ, PlaybackMode.PITCH))
 
-        # PITCH mode controls
-        self._pitch_scale_combo.blockSignals(True)
-        self._pitch_scale_combo.setCurrentIndex(
-            max(0, min(len(PITCH_SCALE_NAMES) - 1, state.pitch_scale))
-        )
-        self._pitch_scale_combo.blockSignals(False)
-        self._pitch_root_spin.blockSignals(True)
-        self._pitch_root_spin.setValue(state.pitch_root)
-        self._pitch_root_spin.blockSignals(False)
-        self._pitch_loop_btn.blockSignals(True)
-        self._pitch_loop_btn.setChecked(state.pitch_loop)
-        self._pitch_loop_btn.blockSignals(False)
+        # SEQ step-division combo — replaces STEP in SEQ mode
+        is_seq = state.mode == PlaybackMode.SEQ
         is_pitch = state.mode == PlaybackMode.PITCH
-        self._scale_section.setVisible(is_pitch)
-        self._pitch_mode_root.setVisible(is_pitch)
-        self._pitch_section.setVisible(not is_pitch)
-        self._steps_section.setVisible(not is_pitch)
+        self._seq_div_combo.blockSignals(True)
+        self._seq_div_combo.setCurrentIndex(
+            max(0, min(len(SEQ_STEP_DIV_NAMES) - 1, state.seq_step_div))
+        )
+        self._seq_div_combo.blockSignals(False)
+        # DIV visible only in SEQ; STEP visible in all other non-PITCH modes
+        self._seq_div_section.setVisible(is_seq)
+        self._steps_section.setVisible(not is_pitch and not is_seq)
+        # STEP spinner enabled only when visible (not locked by SEQ/PITCH)
+        self._steps_spin.setEnabled(not is_pitch and not is_seq)
 
         # LIVE mode controls — sync from state.live
         is_live = state.mode == PlaybackMode.LIVE
@@ -985,7 +1006,7 @@ class ChannelStrip(QFrame):
             self._gain_fader, self._speed_spin, self._pitch_spin, self._steps_spin,
             self._half_btn, self._double_btn, self._mute_btn, self._stop_btn,
             self._waveform, self._pitch_scale_combo, self._pitch_root_spin,
-            self._pitch_loop_btn, self._rev_btn,
+            self._pitch_loop_btn, self._rev_btn, self._seq_div_combo,
         ):
             w.setEnabled(enabled)
         for btn in self._group_btns:
@@ -1064,6 +1085,11 @@ class ChannelView(QWidget):
     def set_visible_rows(self, count: int):
         for i, strip in enumerate(self._strips):
             strip.setVisible(i < count)
+
+    def set_active_groups(self, n: int):
+        """Propagate active group count to all channel strips."""
+        for strip in self._strips:
+            strip.set_active_groups(n)
 
     def get_strip(self, row: int) -> ChannelStrip:
         if 0 <= row < len(self._strips):

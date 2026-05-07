@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QComboBox, QFrame, QSpinBox
 )
 
-from mlrvp.config import QuantizeMode, NUM_PATTERN_RECORDERS, NUM_PRESETS, NUM_SETLIST_SLOTS
+from mlrvp.config import QuantizeMode, NUM_PATTERN_RECORDERS, NUM_PRESETS, NUM_SETLIST_SLOTS, NUM_GROUPS
 from mlrvp.gui.styles import (
     ACCENT_GOLD, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY,
     GROUP_COLORS, LOGO_MAGENTA
@@ -209,6 +209,7 @@ class TransportView(QWidget):
     tap_tempo_requested = Signal(float)  # tapped BPM value
     group_stop_requested = Signal(int)  # group index
     stop_all_requested = Signal()
+    link_toggled = Signal(bool)  # Ableton Link enable/disable
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -332,6 +333,30 @@ class TransportView(QWidget):
         tap_vl.addWidget(self._tap_btn)
         layout.addWidget(tap_frame)
 
+        # --- Ableton Link ---
+        link_frame = QFrame()
+        link_vl = QVBoxLayout(link_frame)
+        link_vl.setContentsMargins(0, 0, 0, 0)
+        link_vl.setSpacing(1)
+        _link_label = QLabel("LINK")
+        _link_label.setFixedHeight(10)
+        _link_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _link_label.setStyleSheet(
+            f"font-size: 7px; color: {TEXT_SECONDARY}; font-weight: bold; background: transparent;"
+        )
+        link_vl.addWidget(_link_label)
+        self._link_btn = QPushButton("—")
+        self._link_btn.setFixedSize(44, 36)
+        self._link_btn.setCheckable(True)
+        self._link_btn.setToolTip(
+            "Ableton Link — sync tempo with Ableton Live and other Link-enabled apps\n"
+            "on the same network.  Just click — no setup required."
+        )
+        self._link_btn.setStyleSheet(self._link_style(False, 0))
+        self._link_btn.toggled.connect(self._on_link_toggled)
+        link_vl.addWidget(self._link_btn)
+        layout.addWidget(link_frame)
+
         # --- Quantize ---
         quant_frame = QFrame()
         quant_layout = QVBoxLayout(quant_frame)
@@ -387,7 +412,7 @@ class TransportView(QWidget):
                 view.group_stop_requested.emit(grp),
             ))
 
-        for gi in range(4):
+        for gi in range(NUM_GROUPS):
             gc = GROUP_COLORS[gi]
             btn = QPushButton(f"G{gi+1}")
             btn.setFixedSize(36, 36)
@@ -461,7 +486,7 @@ class TransportView(QWidget):
         pattern_btns_layout.setContentsMargins(0, 0, 0, 0)
         pattern_btns_layout.setSpacing(2)
         self._pattern_btns: list[PatternButton] = []
-        pattern_lengths = [4, 8, 16, 32]
+        pattern_lengths = [2, 4, 8, 16]
         for i in range(NUM_PATTERN_RECORDERS):
             btn = PatternButton(i, pattern_lengths[i])
             btn.state_changed.connect(self.pattern_state_changed.emit)
@@ -719,6 +744,57 @@ class TransportView(QWidget):
         self._quant_combo.setCurrentIndex(mode)
         self._quant_combo.blockSignals(False)
 
+    # ------------------------------------------------------------------ #
+    #  Ableton Link                                                       #
+    # ------------------------------------------------------------------ #
+
+    def _link_style(self, enabled: bool, num_peers: int) -> str:
+        """Return the QPushButton stylesheet for the Link button state."""
+        if not enabled:
+            return (
+                f"QPushButton {{ font-size: 11px; font-weight: bold; color: {TEXT_SECONDARY}; "
+                f"background: {BG_BLACK}; border: 1px solid {SEPARATOR}; padding: 0; }}"
+                f"QPushButton:hover {{ border-color: #4A9EFF; color: #4A9EFF; }}"
+                f"QPushButton:checked {{ background: {BG_BLACK}; }}"
+            )
+        if num_peers > 0:
+            # Active with peers — bright blue
+            return (
+                f"QPushButton {{ font-size: 11px; font-weight: bold; color: #0A0A0A; "
+                f"background: #4A9EFF; border: 1px solid #4A9EFF; padding: 0; }}"
+                f"QPushButton:checked {{ background: #4A9EFF; }}"
+            )
+        # Enabled but no peers yet — dim blue outline
+        return (
+            f"QPushButton {{ font-size: 11px; font-weight: bold; color: #4A9EFF; "
+            f"background: {BG_BLACK}; border: 1px solid #4A9EFF; padding: 0; }}"
+            f"QPushButton:checked {{ background: {BG_BLACK}; }}"
+        )
+
+    def _on_link_toggled(self, checked: bool):
+        self._link_btn.setStyleSheet(self._link_style(checked, 0))
+        self.link_toggled.emit(checked)
+
+    def set_link_state(self, enabled: bool, num_peers: int, available: bool = True):
+        """Update the Link button appearance without triggering signals."""
+        self._link_btn.blockSignals(True)
+        self._link_btn.setChecked(enabled)
+        if not available:
+            self._link_btn.setEnabled(False)
+            self._link_btn.setToolTip(
+                "Ableton Link requires the aalink package.\n"
+                "Install it with: pip install aalink"
+            )
+        else:
+            self._link_btn.setEnabled(True)
+        if enabled:
+            peers_str = f"{num_peers}" if num_peers > 0 else "·"
+            self._link_btn.setText(peers_str)
+        else:
+            self._link_btn.setText("—")
+        self._link_btn.setStyleSheet(self._link_style(enabled, num_peers))
+        self._link_btn.blockSignals(False)
+
     def set_pattern_state(self, idx: int, state: str):
         if 0 <= idx < len(self._pattern_btns):
             self._pattern_btns[idx].set_state(state)
@@ -800,3 +876,8 @@ class TransportView(QWidget):
                     f"QPushButton:hover {{ background: {gc}; color: {BG_BLACK}; }}"
                     f"QPushButton:pressed {{ background: {gc}; color: {BG_BLACK}; }}"
                 )
+
+    def set_active_groups(self, n: int):
+        """Show/hide group stop buttons based on active group count."""
+        for i, btn in enumerate(self._grp_stop_btns):
+            btn.setVisible(i < n)

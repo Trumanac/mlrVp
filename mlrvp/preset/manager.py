@@ -345,7 +345,7 @@ class PresetManager:
                 self.active_index = -1
             return True
         except Exception as e:
-            print(f"Setlist load error: {e}")
+            log.error("Setlist load error: %s", e)
             return False
 
     def save_setlist(self):
@@ -396,8 +396,11 @@ class PresetManager:
                         data["name"] = new_name
                         _atomic_write_json(new_fp, data)
                         old_fp.unlink()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.error("Rename setlist I/O failed: %s", e)
+                    # Revert optimistic in-memory update since disk write failed
+                    if self.setlist_name == new_name:
+                        self.setlist_name = old_name
 
             threading.Thread(target=_io, daemon=False).start()
 
@@ -417,9 +420,14 @@ class PresetManager:
     # ------------------------------------------------------------------ #
 
     def add_to_setlist(self, preset_name: str, index: int = -1) -> int:
-        """Add a preset reference to the current setlist. Returns index."""
+        """Add a preset reference to the current setlist. Returns index.
+
+        Returns -1 if the list is full or the preset is already present.
+        """
         if len(self.setlist_presets) >= NUM_SETLIST_SLOTS:
             return -1
+        if preset_name in self.setlist_presets:
+            return self.setlist_presets.index(preset_name)
         if index < 0 or index > len(self.setlist_presets):
             self.setlist_presets.append(preset_name)
             idx = len(self.setlist_presets) - 1
@@ -454,7 +462,14 @@ class PresetManager:
         """Reorder setlist by a list of old indices."""
         with self._io_lock:
             old = list(self.setlist_presets)
-            self.setlist_presets = [old[i] for i in new_order if 0 <= i < len(old)]
+            # Validate that new_order is a permutation of 0..len-1 so no
+            # entries are silently dropped.  Raise early rather than lose data.
+            if sorted(new_order) != list(range(len(old))):
+                raise ValueError(
+                    f"reorder_setlist: new_order {new_order} is not a valid "
+                    f"permutation of 0..{len(old) - 1}"
+                )
+            self.setlist_presets = [old[i] for i in new_order]
             if 0 <= self.active_index < len(new_order):
                 try:
                     self.active_index = new_order.index(self.active_index)
@@ -551,6 +566,10 @@ class PresetManager:
                 except (ValueError, TypeError):
                     pass
                 ch.pitch_loop = bool(ch_data.get("pitch_loop", ch_data.get("pitch_hold", ch.pitch_loop)))
+                try:
+                    ch.seq_step_div = max(0, min(6, int(ch_data.get("seq_step_div", ch.seq_step_div))))
+                except (ValueError, TypeError):
+                    pass
 
                 # LIVE looper state
                 live_data = ch_data.get("live")
@@ -827,6 +846,27 @@ class PresetManager:
                 loaded.append(StowawayState(slot_index=len(loaded)))
             config.stowaway_slots = loaded
 
+        # Control row
+        cr_data = cfg_data.get("control_row", {})
+        if cr_data:
+            config.control_row.enabled = bool(cr_data.get("enabled", config.control_row.enabled))
+            config.control_row.monome_row = int(cr_data.get("monome_row", config.control_row.monome_row))
+            from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_EMPTY
+            saved_assignments = cr_data.get("assignments")
+            if saved_assignments and isinstance(saved_assignments, list):
+                empty = {"type": CR_SLOT_EMPTY, "value": 0}
+                config.control_row.assignments = (saved_assignments + [empty] * 8)[:8]
+            elif "num_group_stops" in cr_data or "num_patterns" in cr_data:
+                n_grp = max(1, min(7, int(cr_data.get("num_group_stops", 4))))
+                n_pat = max(1, min(7, int(cr_data.get("num_patterns", 4))))
+                if n_grp + n_pat > 8:
+                    n_pat = max(1, 8 - n_grp)
+                config.control_row.assignments = (
+                    [{"type": CR_SLOT_GROUP_STOP, "value": i} for i in range(n_grp)] +
+                    [{"type": CR_SLOT_PATTERN,    "value": i} for i in range(n_pat)] +
+                    [{"type": CR_SLOT_EMPTY,      "value": 0}] * max(0, 8 - n_grp - n_pat)
+                )
+
         return config
 
     def _serialize_config(self, config: AppConfig) -> dict:
@@ -864,6 +904,7 @@ class PresetManager:
                     "pitch_scale": ch.pitch_scale,
                     "pitch_root": ch.pitch_root,
                     "pitch_loop": ch.pitch_loop,
+                    "seq_step_div": ch.seq_step_div,
                     "live": {
                         "bars": ch.live.bars,
                         "quantize": ch.live.quantize,
@@ -1727,5 +1768,11 @@ class PresetManager:
             result["stowaway_slots"] = [
                 s.to_dict() for s in config.stowaway_slots
             ]
+
+        result["control_row"] = {
+            "enabled": config.control_row.enabled,
+            "monome_row": config.control_row.monome_row,
+            "assignments": config.control_row.assignments,
+        }
 
         return result

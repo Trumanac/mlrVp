@@ -117,6 +117,41 @@ class OscHandler:
         """Send playback position via OSC."""
         self.send("/mlrvp/position", row, position)
 
+    def send_meters(self, md: dict):
+        """Broadcast audio peak levels to any OSC listener (~30 fps).
+
+        Addresses emitted:
+          /mlrvp/meter/master       f f   (L peak, R peak, 0.0–1.0+)
+          /mlrvp/meter/group/<N>    f     (peak, N = 1-based group number)
+          /mlrvp/meter/fx/<N>       f f   (L peak, R peak, N = 1–4)
+
+        These addresses are compatible with any OSC client — TouchOSC,
+        Max for Live, SuperCollider, etc.  In Ableton use a Max for Live
+        patch (e.g. OSCMonitor or a custom m4l device) listening on the
+        configured send port.
+        """
+        if self._client is None:
+            return
+        try:
+            master = md.get("master")
+            if master:
+                self._client.send_message("/mlrvp/meter/master",
+                                          [float(master[0]), float(master[1])])
+            groups = md.get("groups")
+            if groups:
+                for i, lvl in enumerate(groups):
+                    self._client.send_message(f"/mlrvp/meter/group/{i + 1}",
+                                              float(lvl))
+            for bus_idx in range(1, 5):
+                bus_key = f"fx{bus_idx}"
+                bus = md.get(bus_key)
+                if bus:
+                    self._client.send_message(f"/mlrvp/meter/fx/{bus_idx}",
+                                              [float(bus[0]), float(bus[1])])
+        except Exception as e:
+            import logging
+            logging.getLogger("mlrvp").debug("OSC send_meters failed: %s", e)
+
     def _default_handler(self, address, *args):
         """Default handler for unmapped OSC addresses."""
         import logging

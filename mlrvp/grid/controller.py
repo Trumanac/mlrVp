@@ -300,33 +300,272 @@ def _find_monome_ftdi_ports() -> list[tuple[str, str]]:
     return found
 
 
-def _windows_stop_serialosc_service(com_port: str = "") -> None:
-    """Request UAC-elevated stop of serialosc + kill any child processes.
+def _windows_stop_serialosc_service(com_port: str = "") -> bool:
+    """Synchronously stop the serialosc service with UAC elevation.
 
-    Used when entering 40h direct mode: we need exclusive access to the
-    COM port, so serialosc must not be holding it.  Fire-and-forget.
+    Disables auto-restart, stops the service, and force-kills the process
+    by PID.  Captures the elevated script's output to a log file so we can
+    see exactly what happened (UAC declined, access denied, etc).
+
+    Returns True if the elevated script appeared to succeed, False otherwise.
+    Blocks until UAC is resolved (up to 2 minutes).
     """
     if sys.platform != "win32":
-        return
-    ps_script = (
-        "Stop-Service serialosc -Force -ErrorAction SilentlyContinue;"
-        "Get-Process -Name 'serialosc*' -EA SilentlyContinue "
-        "| Stop-Process -Force -EA SilentlyContinue;"
-        "Write-Host 'serialosc stopped for 40h direct mode'"
+        return False
+
+    import tempfile
+
+    # Output log written by the elevated script — we read it after.
+    log_path = os.path.join(tempfile.gettempdir(), "mlrvp_serialosc_stop.log")
+    try:
+        if os.path.exists(log_path):
+            os.remove(log_path)
+    except Exception:
+        pass
+
+    # Elevated script: aggressive multi-stage kill.
+    #   1. Disable failure-recovery actions so the service won't auto-restart
+    #      if killed.
+    #   2. Set start mode to "demand" — service will not auto-start at boot
+    #      while mlrVp is using the port (user can re-enable from services.msc).
+    #   3. Try graceful Stop-Service.
+    #   4. Look up the service PID from SCM and Stop-Process -Force it.
+    #   5. Kill any remaining serialosc* processes by name.
+    #   6. Verify final service state and log everything.
+    elevated_script = f'''
+$ErrorActionPreference = "Continue"
+$logFile = "{log_path}"
+function Log($msg) {{ Add-Content -Path $logFile -Value $msg }}
+
+Log "=== mlrVp serialosc stop $(Get-Date) ==="
+
+# 1. Disable failure recovery so killed service won't relaunch.
+& sc.exe failure serialosc reset= 0 actions= "" 2>&1 | ForEach-Object {{ Log "failure: $_" }}
+
+# 2. Set to manual start (next reboot won't auto-start either).
+& sc.exe config serialosc start= demand 2>&1 | ForEach-Object {{ Log "config: $_" }}
+
+# 3. Graceful stop.
+& sc.exe stop serialosc 2>&1 | ForEach-Object {{ Log "stop: $_" }}
+Start-Sleep -Milliseconds 500
+
+# 4. Find service PID and kill.
+$svcPid = 0
+try {{
+    $svc = Get-CimInstance Win32_Service -Filter "Name='serialosc'" -EA Stop
+    $svcPid = [int]$svc.ProcessId
+    Log "service PID: $svcPid (state=$($svc.State))"
+}} catch {{
+    Log "CIM lookup failed: $_"
+}}
+if ($svcPid -gt 0) {{
+    try {{
+        Stop-Process -Id $svcPid -Force -EA Stop
+        Log "Stop-Process $svcPid OK"
+    }} catch {{
+        Log "Stop-Process $svcPid FAILED: $_"
+    }}
+}}
+
+# 5. Kill any remaining processes by name.
+Get-Process | Where-Object {{ $_.ProcessName -like "serialosc*" }} | ForEach-Object {{
+    try {{
+        Stop-Process -Id $_.Id -Force -EA Stop
+        Log "killed by name: $($_.ProcessName) (PID=$($_.Id))"
+    }} catch {{
+        Log "kill by name FAILED: $($_.ProcessName) (PID=$($_.Id)): $_"
+    }}
+}}
+
+# 6. Verify.
+Start-Sleep -Milliseconds 500
+try {{
+    $svc = Get-CimInstance Win32_Service -Filter "Name='serialosc'" -EA Stop
+    Log "FINAL state=$($svc.State) PID=$($svc.ProcessId)"
+}} catch {{
+    Log "FINAL CIM lookup failed: $_"
+}}
+Log "=== done ==="
+'''
+    # Write the elevated script to a temp file (avoids all quoting issues).
+    script_path = os.path.join(tempfile.gettempdir(), "mlrvp_serialosc_stop.ps1")
+    try:
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(elevated_script)
+    except Exception as e:
+        log.warning("Could not write elevated script: %s", e)
+        return False
+
+    # Outer (non-elevated) powershell launches the script via Start-Process
+    # -Verb RunAs, which triggers UAC.  -Wait blocks until elevated child exits.
+    # If UAC is declined, Start-Process throws; we capture that.
+    outer_cmd = (
+        f"try {{ "
+        f"Start-Process powershell -Verb RunAs -Wait "
+        f"-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',"
+        f"'-File','{script_path}'; "
+        f"Write-Host 'OUTER_OK' "
+        f"}} catch {{ Write-Host \"OUTER_FAIL: $_\" }}"
     )
     try:
-        subprocess.Popen(
-            ["powershell", "-WindowStyle", "Hidden", "-Command",
-             f"Start-Process powershell -Verb RunAs "
-             f"-ArgumentList '-WindowStyle','Hidden','-Command','{ps_script}'"],
-            creationflags=0x00000008,  # DETACHED_PROCESS
-        )
         log.info(
-            "Requested elevated stop of serialosc (40h direct mode%s)",
-            f" on {com_port}" if com_port else "",
+            "Requesting elevated Stop-Service — please click YES on the UAC dialog%s",
+            f" (for {com_port})" if com_port else "",
         )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-WindowStyle", "Hidden", "-Command", outer_cmd],
+            capture_output=True, text=True, timeout=120.0,
+        )
+        outer_out = (result.stdout or "").strip()
+        if "OUTER_FAIL" in outer_out:
+            log.warning("UAC declined or elevation failed: %s", outer_out)
+            return False
+        log.info("Elevated stop completed (outer: %s)", outer_out or "ok")
+    except subprocess.TimeoutExpired:
+        log.warning("Elevated stop timed out — UAC dialog ignored?")
+        return False
     except Exception as e:
-        log.warning("Could not request serialosc stop: %s", e)
+        log.warning("Could not run elevated serialosc stop: %s", e)
+        return False
+
+    # Read what the elevated script logged.
+    try:
+        if os.path.exists(log_path):
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+            if content:
+                log.info("Elevated script log:\n  %s", content.replace("\n", "\n  "))
+    except Exception:
+        pass
+
+    return True
+
+
+def _poll_com_port_free(com_port: str, timeout: float = 8.0, interval: float = 0.5) -> bool:
+    """Poll until we can open *com_port* exclusively, or *timeout* elapses.
+
+    Returns True when the port is free, False if it remains locked.
+    """
+    import serial  # pyserial — already required by monome40h
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            s = serial.Serial(com_port, timeout=0)
+            s.close()
+            return True
+        except Exception:
+            time.sleep(interval)
+    return False
+
+
+def _kill_serialosc_for_direct_mode(com_port: str) -> bool:
+    """Kill serialosc so the 40h-direct serial connection can claim *com_port*.
+
+    Strategy (cross-platform):
+    1. Non-elevated kill — works when serialosc was launched by the current
+       user (common on macOS/Linux, and on Windows when started manually).
+    2. Poll for the COM port to become free (up to 8 s total).
+    3. Windows only: if still locked, fire an elevated PowerShell stop and
+       keep polling for up to 8 more seconds.
+
+    Returns True once the port is confirmed free, False if it remains locked.
+    """
+    # ── Step 1: non-elevated kill ─────────────────────────────────────────
+    if sys.platform == "win32":
+        # ① Query the serialosc service PID from SCM and kill by PID.
+        #    More reliable than by name — works even if the exe was renamed,
+        #    and targets the exact process holding the device.
+        try:
+            r = subprocess.run(
+                ["sc", "queryex", "serialosc"],
+                capture_output=True, text=True, timeout=5.0,
+            )
+            for line in r.stdout.splitlines():
+                if "PID" in line and ":" in line:
+                    _, _, pid_s = line.partition(":")
+                    svc_pid = int(pid_s.strip())
+                    if svc_pid > 0:
+                        log.info("serialosc service PID=%d — attempting non-elevated kill", svc_pid)
+                        subprocess.run(
+                            ["taskkill", "/F", "/PID", str(svc_pid)],
+                            capture_output=True, timeout=4.0,
+                        )
+        except Exception as e:
+            log.debug("Service PID lookup failed: %s", e)
+
+        # ② Try stopping the service via SC (uses SCM; occasionally succeeds
+        #    without full elevation when the user is in the Administrators group).
+        for svc in ("serialosc", "serialosc-device"):
+            try:
+                subprocess.run(["sc", "stop", svc], capture_output=True, timeout=6.0)
+            except Exception:
+                pass
+
+        # ③ Kill by known exe names (handles user-mode / manually-started installs).
+        for exe in ("serialosc-device.exe", "serialoscd.exe", "serialosc.exe"):
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", exe],
+                    capture_output=True, timeout=4.0,
+                )
+            except Exception:
+                pass
+
+        # ④ Log which serialosc processes are visible in the session (diagnostic).
+        try:
+            r = subprocess.run(
+                ["wmic", "process", "where", "name like 'serialosc%'",
+                 "get", "Name,ProcessId,ExecutablePath", "/FORMAT:LIST"],
+                capture_output=True, text=True, timeout=5.0,
+            )
+            visible = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+            if visible:
+                log.info("serialosc processes visible to this session:\n  %s",
+                         "\n  ".join(visible))
+            else:
+                log.info("No serialosc processes visible in current session "
+                         "(service may run as SYSTEM)")
+        except Exception:
+            pass
+
+        log.info("Attempted non-elevated serialosc kill for %s", com_port)
+    else:
+        # macOS / Linux: pkill by process name.
+        for name in ("serialoscd", "serialosc-device", "serialosc"):
+            try:
+                subprocess.run(["pkill", "-f", name], capture_output=True, timeout=4.0)
+            except FileNotFoundError:
+                # pkill not available on some minimal Linux installs
+                try:
+                    subprocess.run(["killall", name], capture_output=True, timeout=4.0)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        log.info("Attempted pkill of serialosc for %s", com_port)
+
+    # ── Step 2: poll for port to become free (up to 8 s) ─────────────────
+    if _poll_com_port_free(com_port, timeout=8.0):
+        log.info("COM port %s is now free after non-elevated serialosc kill", com_port)
+        return True
+
+    # ── Step 3: Windows elevated fallback ────────────────────────────────
+    if sys.platform == "win32":
+        # _windows_stop_serialosc_service is now SYNCHRONOUS — it blocks until
+        # the UAC dialog is handled and the elevated stop has completed.
+        # A short poll afterward confirms the port is free.
+        _windows_stop_serialosc_service(com_port)
+        if _poll_com_port_free(com_port, timeout=3.0):
+            log.info("COM port %s free after elevated serialosc stop", com_port)
+            return True
+        log.warning(
+            "COM port %s still locked after elevated stop — another process "
+            "(not serialosc) may be holding the port, or the UAC dialog "
+            "was declined", com_port,
+        )
+
+    return False
 
 
 def _windows_kill_stuck_devices() -> int:
@@ -476,8 +715,12 @@ class GridController:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._asyncio_stop: Optional[asyncio.Event] = None  # set inside asyncio thread
-        self._monome_row_offset = 0  # 1 when monome connected (top row = control)
+        self._monome_row_offset = 0  # 1 when top row is control row, else 0
+        self._control_row_index = 0   # resolved physical row used as control (0=top)
+        self._control_row_config = 0  # raw configured value: 0=top, -1=bottom, N=custom
+        self._control_row_enabled = True  # whether control row is active
         self._pending_monome_connect = False
+        self._pending_monome_disconnect = False
         self._state_lock = threading.Lock()  # guards _connected / _monome_row_offset
 
         # Thread-safe bridge for forwarding grid events to Qt main thread
@@ -501,9 +744,9 @@ class GridController:
 
     @property
     def has_control_row(self) -> bool:
-        """True if the grid uses a physical control row (monome top row)."""
+        """True if the grid currently has a physical control row active."""
         with self._state_lock:
-            return self._monome_row_offset > 0
+            return self._control_row_enabled and self._connected
 
     @property
     def led_state(self) -> list[list[int]]:
@@ -552,6 +795,95 @@ class GridController:
                 self._monome.grid.tilt_set(0, 1 if enabled else 0)
             except Exception as e:
                 log.debug("Tilt enable failed: %s", e)
+
+    def _resolve_control_row_index(self, rows: int) -> int:
+        """Resolve the raw _control_row_config value to a physical row index."""
+        if self._control_row_config == -2:
+            return 0   # Launchpad CC top row — no note row consumed
+        if self._control_row_config == -1:
+            return max(0, rows - 1)  # -1 → last row
+        return max(0, min(self._control_row_config, rows - 1))
+
+    def configure_control_row(self, enabled: bool, monome_row_index: int = 0):
+        """Enable or disable the physical control row and set which row to use.
+
+        *enabled*          – when False the hardware row is freed as a data row;
+                             MIDI mappings for transport.group_stop.* /
+                             transport.pattern.* are not touched.
+        *monome_row_index* – 0 = top row, -1 = last row (resolved at connect),
+                             a fixed physical row number, or -2 for the
+                             Launchpad hardware CC top row (separate from the
+                             note grid, so all 8 note rows remain data rows).
+        """
+        from mlrvp.config import CR_MONOME_ROW_LAUNCHPAD_CC
+        with self._state_lock:
+            # Capture old values before overwriting so we can blank the old row.
+            old_ctrl_idx = self._control_row_index
+            old_cr_config = self._control_row_config
+            old_offset = self._monome_row_offset
+            old_connected = self._connected
+            monome = self._monome
+            midi_grid = self._midi_grid
+            midi_grid_connected = midi_grid is not None and midi_grid.connected
+            cols = self.info.columns if self.info.columns > 0 else 8
+
+            self._control_row_enabled = enabled
+            self._control_row_config = monome_row_index
+            # Resolve immediately if rows are known (grid is connected)
+            rows = self.info.rows if self.info.rows > 0 else 8
+            resolved = self._resolve_control_row_index(rows)
+            self._control_row_index = resolved
+            # LP CC mode: CC row is separate — no note row consumed, offset stays 0.
+            # Note-row mode (monome or LP): offset=1 only when top row is control.
+            lp_cc_mode = (monome_row_index == CR_MONOME_ROW_LAUNCHPAD_CC)
+            if enabled and not lp_cc_mode:
+                self._monome_row_offset = 1 if resolved == 0 else 0
+            else:
+                self._monome_row_offset = 0
+            new_offset = self._monome_row_offset
+            # Clear caches for both monome and MIDI-grid paths so the next
+            # update cycle re-sends LED state to the new row location.
+            if old_connected or midi_grid_connected:
+                self._row_sent.clear()
+                self._control_led_sent.clear()
+
+        # Clear old physical control row on hardware if it moved or was disabled.
+        if old_connected and monome is not None:
+            if old_ctrl_idx != resolved or not enabled:
+                blank = [0] * cols
+                try:
+                    monome.grid.led_level_row(0, old_ctrl_idx, blank)
+                except Exception:
+                    pass
+            # When the offset changes (top↔bottom), every data row shifts by
+            # one physical slot.  Push a full LED refresh so stale physical
+            # rows (those no longer mapped to any logical row) get overwritten
+            # with the correct content rather than showing a hanging LED.
+            if new_offset != old_offset:
+                self._refresh_leds()
+
+        if midi_grid is not None:
+            # LP CC mode → enable the hardware CC top row as control.
+            # Note-row mode → CC top row is not control (routed as data y=0).
+            midi_grid.configure_control_row(enabled and lp_cc_mode)
+
+        # For MIDI grid: blank the old control row position so stale LEDs
+        # don't persist at the old location, then flush its per-cell cache
+        # so the next set_row / set_control_led calls all go through.
+        if midi_grid_connected:
+            old_was_cc = (old_cr_config == CR_MONOME_ROW_LAUNCHPAD_CC)
+            new_is_cc = lp_cc_mode
+            if old_was_cc and not new_is_cc:
+                # Was CC top-row: clear the hardware CC buttons
+                for i in range(cols):
+                    midi_grid.set_control_led(i, 0, 0)
+            elif not old_was_cc and (new_is_cc or old_ctrl_idx != resolved or not enabled):
+                # Was note-row: clear the old note-row cells
+                for x in range(cols):
+                    midi_grid.set_led(x, old_ctrl_idx, 0, 0)
+            # Flush the per-cell cache so every position gets a fresh send
+            # on the next update cycle regardless of whether values changed.
+            midi_grid._led_cache.clear()
 
     def force_hardware_led_sync(self):
         """Force OFF to hardware for any dark cells.
@@ -716,8 +1048,15 @@ class GridController:
         """
         backend_mode = self._effective_backend_mode()
         if backend_mode == MONOME_BACKEND_40H_DIRECT:
-            if not (self.connected and isinstance(self._monome, Monome40hApp)):
-                self.restart_monome()
+            # If the thread is alive but not yet connected, it is in the middle
+            # of the kill-serialosc + open sequence — don't interrupt it.
+            thread_connecting = (
+                self._thread is not None and self._thread.is_alive()
+                and not self.connected
+            )
+            if thread_connecting or (self.connected and isinstance(self._monome, Monome40hApp)):
+                return
+            self.restart_monome()
             return
         if backend_mode == MONOME_BACKEND_LEGACY_OSC:
             if isinstance(self._monome, MonomeSerialApp):
@@ -846,8 +1185,28 @@ class GridController:
             cb(sensor, x, y, z)
 
     def _on_midi_grid_button(self, x: int, y: int, state: int):
-        """Forward MIDI grid button events to the main callback (on Qt thread)."""
-        self._bridge.button_event.emit(x, y, state)
+        """Forward MIDI grid button events to the main callback (on Qt thread).
+
+        Mirrors the monome on_grid_key logic: in note-row control mode, the
+        physical control row is intercepted and routed to control_event; all
+        other rows get the offset subtracted so logical row 0 = top data row.
+        """
+        from mlrvp.config import CR_MONOME_ROW_LAUNCHPAD_CC
+        with self._state_lock:
+            ctrl_enabled = self._control_row_enabled
+            ctrl_idx = self._control_row_index
+            offset = self._monome_row_offset
+            cr_config = self._control_row_config
+
+        if cr_config == CR_MONOME_ROW_LAUNCHPAD_CC:
+            # CC top-row mode: all note-grid rows are data rows, no offset needed
+            self._bridge.button_event.emit(x, y, state)
+        elif ctrl_enabled and y == ctrl_idx:
+            # Note-row control mode: this physical row IS the control row
+            self._bridge.control_event.emit(x, state)
+        else:
+            # Subtract offset so logical row 0 always maps to first data row
+            self._bridge.button_event.emit(x, y - offset, state)
 
     def _on_midi_grid_control_button(self, btn_idx: int, state: int):
         """Forward MIDI grid control button events (on Qt thread)."""
@@ -874,13 +1233,16 @@ class GridController:
         class _MlrMonomeSerialApp(MonomeSerialApp):
             def on_grid_ready(self):
                 with controller._state_lock:
-                    controller._connected = True
-                    controller.info.rows = self.grid.height
+                    rows = self.grid.height
+                    controller.info.rows = rows
                     controller.info.columns = self.grid.width
                     controller.info.id = self.grid.id or "monomeserial"
                     controller.info.rotation = 0
                     controller.info.type = "monome-monomeserial"
-                    controller._monome_row_offset = 1
+                    resolved = controller._resolve_control_row_index(rows)
+                    controller._control_row_index = resolved
+                    enabled = controller._control_row_enabled
+                    controller._monome_row_offset = 1 if (enabled and resolved == 0) else 0
                     controller._pending_monome_connect = True
                     controller._row_sent.clear()
                     controller._control_led_sent.clear()
@@ -902,7 +1264,7 @@ class GridController:
                     )
 
             def on_grid_key(self, x, y, s):
-                if controller._monome_row_offset > 0 and y == 0:
+                if controller._control_row_enabled and y == controller._control_row_index:
                     controller._bridge.control_event.emit(x, s)
                 else:
                     adj_y = y - controller._monome_row_offset
@@ -911,6 +1273,7 @@ class GridController:
             def on_grid_disconnect(self, *_):
                 with controller._state_lock:
                     controller._connected = False
+                    controller._pending_monome_disconnect = True
                     controller._monome_row_offset = 0
                     controller._row_sent.clear()
                     controller._control_led_sent.clear()
@@ -960,12 +1323,16 @@ class GridController:
             def on_grid_ready(self):
                 with controller._state_lock:
                     controller._connected = True
-                    controller.info.rows = self.grid.height
+                    rows = self.grid.height
+                    controller.info.rows = rows
                     controller.info.columns = self.grid.width
                     controller.info.id = self.grid.id or ""
                     controller.info.rotation = 0
                     controller.info.type = "monome-40h"
-                    controller._monome_row_offset = 1
+                    resolved = controller._resolve_control_row_index(rows)
+                    controller._control_row_index = resolved
+                    enabled = controller._control_row_enabled
+                    controller._monome_row_offset = 1 if (enabled and resolved == 0) else 0
                     controller._pending_monome_connect = True
                     controller._row_sent.clear()
                     controller._control_led_sent.clear()
@@ -984,7 +1351,7 @@ class GridController:
                         pass
 
             def on_grid_key(self, x, y, s):
-                if controller._monome_row_offset > 0 and y == 0:
+                if controller._control_row_enabled and y == controller._control_row_index:
                     controller._bridge.control_event.emit(x, s)
                 else:
                     adj_y = y - controller._monome_row_offset
@@ -993,6 +1360,7 @@ class GridController:
             def on_grid_disconnect(self, *_):
                 with controller._state_lock:
                     controller._connected = False
+                    controller._pending_monome_disconnect = True
                     controller._monome_row_offset = 0
                     controller._row_sent.clear()
                     controller._control_led_sent.clear()
@@ -1112,13 +1480,14 @@ class GridController:
                         self._loop.run_forever()
                         return  # finally: block below handles cleanup
 
-                    if sys.platform == "win32":
-                        log.info(
-                            "40h direct open failed on %s — stopping serialosc and retrying",
-                            com_port,
-                        )
-                        _windows_stop_serialosc_service(com_port)
-                        time.sleep(3.0)  # let service stop and release COM port
+                    # Direct open failed — serialosc is probably holding the port.
+                    # Try a cross-platform kill (non-elevated first, elevated on Windows
+                    # if needed) and poll until the port is free.
+                    log.info(
+                        "40h direct open failed on %s — attempting to free port "
+                        "by killing serialosc", com_port,
+                    )
+                    _kill_serialosc_for_direct_mode(com_port)
                     if self._activate_40h_direct(com_port):
                         # Hold the asyncio loop open until disconnect.
                         stop_event = asyncio.Event()
@@ -1211,12 +1580,16 @@ class GridController:
                 def on_grid_ready(self):
                     with controller._state_lock:
                         controller._connected = True
-                        controller.info.rows = self.grid.height
+                        rows = self.grid.height
+                        controller.info.rows = rows
                         controller.info.columns = self.grid.width
                         controller.info.id = self.grid.id or ""
                         controller.info.rotation = self.grid.rotation or 0
                         controller.info.type = "monome"
-                        controller._monome_row_offset = 1  # top row = controls
+                        resolved = controller._resolve_control_row_index(rows)
+                        controller._control_row_index = resolved
+                        enabled = controller._control_row_enabled
+                        controller._monome_row_offset = 1 if (enabled and resolved == 0) else 0
                         controller._pending_monome_connect = True
                         # Force LED refresh — clear dedupe caches so the next
                         # set_row / set_control_led actually transmits.
@@ -1236,8 +1609,8 @@ class GridController:
                             pass
 
                 def on_grid_key(self, x, y, s):
-                    if controller._monome_row_offset > 0 and y == 0:
-                        # Top row → control buttons
+                    if controller._control_row_enabled and y == controller._control_row_index:
+                        # Control row → control buttons
                         controller._bridge.control_event.emit(x, s)
                     else:
                         # Data rows: offset y for channel mapping
@@ -1247,6 +1620,7 @@ class GridController:
                 def on_grid_disconnect(self, *_):
                     with controller._state_lock:
                         controller._connected = False
+                        controller._pending_monome_disconnect = True
                         controller._monome_row_offset = 0
                         controller._row_sent.clear()
                         controller._control_led_sent.clear()
@@ -1424,12 +1798,12 @@ class GridController:
                                     )
                                     # Stop serialosc to free the COM port, then take
                                     # exclusive control via direct serial I/O.
-                                    if sys.platform == "win32":
-                                        await asyncio.get_running_loop().run_in_executor(
-                                            None,
-                                            lambda: _windows_stop_serialosc_service(com_port),
-                                        )
-                                        await asyncio.sleep(3.0)
+                                    # _kill_serialosc_for_direct_mode is cross-platform
+                                    # and polls until the port is actually free.
+                                    await asyncio.get_running_loop().run_in_executor(
+                                        None,
+                                        lambda: _kill_serialosc_for_direct_mode(com_port),
+                                    )
                                     ok = await asyncio.get_running_loop().run_in_executor(
                                         None,
                                         lambda: self._activate_40h_direct(com_port),
@@ -1507,7 +1881,12 @@ class GridController:
             except RuntimeError:
                 pass  # loop already closed
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            # In force_40h mode the thread may be blocking inside
+            # _kill_serialosc_for_direct_mode (which now waits for a UAC
+            # dialog) — give it up to 130 s to finish before declaring it
+            # stuck.  All other backends exit the asyncio loop in <1 s.
+            _kill_join = self._monome_backend == MONOME_BACKEND_40H_DIRECT
+            self._thread.join(timeout=130.0 if _kill_join else 2.0)
             if self._thread.is_alive():
                 log.warning("Grid asyncio thread did not exit within timeout")
             self._thread = None
@@ -1534,10 +1913,10 @@ class GridController:
                 except Exception:
                     pass
             if self._midi_grid is not None and self._midi_grid.connected:
-                self._midi_grid.set_led(x, y, brightness, color)
+                self._midi_grid.set_led(x, y + offset, brightness, color)
 
     def set_control_led(self, x: int, brightness: int, color: int = 0):
-        """Set an LED on the control row (monome top row / LP CC buttons)."""
+        """Set an LED on the control row (monome control row / LP CC buttons)."""
         if 0 <= x < MAX_COLUMNS:
             key = (x, brightness, color)
             with self._state_lock:
@@ -1546,14 +1925,22 @@ class GridController:
                 self._control_led_sent[x] = key
                 self._control_led_state[x] = brightness
                 connected = self._connected
-                offset = self._monome_row_offset
-            if connected and self._monome is not None and offset > 0:
+                ctrl_enabled = self._control_row_enabled
+                ctrl_row_idx = self._control_row_index
+                cr_config = self._control_row_config
+            if connected and self._monome is not None and ctrl_enabled:
                 try:
-                    self._monome.grid.led_level_set(x, 0, brightness)
+                    self._monome.grid.led_level_set(x, ctrl_row_idx, brightness)
                 except Exception:
                     pass
             if self._midi_grid is not None and self._midi_grid.connected:
-                self._midi_grid.set_control_led(x, brightness, color)
+                from mlrvp.config import CR_MONOME_ROW_LAUNCHPAD_CC
+                if cr_config == CR_MONOME_ROW_LAUNCHPAD_CC:
+                    # LP CC top-row mode: send via CC buttons
+                    self._midi_grid.set_control_led(x, brightness, color)
+                else:
+                    # LP note-row mode: send to the note-grid cell for the control row
+                    self._midi_grid.set_led(x, ctrl_row_idx, brightness, color)
 
     def set_row(self, y: int, values: list[int], color: int = 0):
         """Set an entire row of LEDs (logical channel row coordinates)."""
@@ -1580,7 +1967,7 @@ class GridController:
                 except Exception:
                     pass
             if self._midi_grid is not None and self._midi_grid.connected:
-                self._midi_grid.set_row(y, values, color)
+                self._midi_grid.set_row(y + offset, values, color)
 
     def set_all(self, brightness: int):
         """Set all LEDs to the same brightness."""
@@ -1599,23 +1986,25 @@ class GridController:
         with self._state_lock:
             connected = self._connected
             offset = self._monome_row_offset
+            ctrl_idx = self._control_row_index
+            ctrl_enabled = self._control_row_enabled
             cols = self.info.columns
             rows = self.info.rows
             # Snapshot LED state under lock to avoid races with Qt thread
             ctrl_leds = self._control_led_state[:cols].copy()
-            data_rows = rows - offset
+            data_rows = rows - (1 if ctrl_enabled else 0)
             led_snapshot = [
                 self._led_state[y][:cols].copy()
                 for y in range(min(data_rows, MAX_ROWS))
             ]
         if connected and self._monome is not None:
-            # Control row at physical y=0 for monome
-            if offset > 0:
+            # Control row at its physical index (0 = top, rows-1 = bottom)
+            if ctrl_enabled:
                 try:
-                    self._monome.grid.led_level_row(0, 0, ctrl_leds)
+                    self._monome.grid.led_level_row(0, ctrl_idx, ctrl_leds)
                 except Exception:
                     pass
-            # Data rows offset by monome_row_offset
+            # Data rows: physical_y = logical_y + offset (offset=1 for top, 0 for bottom)
             for y, row_leds in enumerate(led_snapshot):
                 try:
                     physical_y = y + offset

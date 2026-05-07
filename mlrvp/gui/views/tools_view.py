@@ -11,9 +11,10 @@ from PySide6.QtWidgets import (
     QTabWidget, QFrame, QComboBox, QSpinBox, QDoubleSpinBox,
     QLineEdit, QCheckBox, QGridLayout, QSizePolicy, QFileDialog,
     QMenu, QScrollArea, QMessageBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QProgressBar, QListWidget, QAbstractItemView
+    QHeaderView, QProgressBar, QListWidget, QAbstractItemView,
+    QTreeWidget, QTreeWidgetItem, QStackedWidget, QSlider,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QMimeData, QUrl, QThread
+from PySide6.QtCore import Qt, Signal, QTimer, QMimeData, QUrl, QThread, QModelIndex
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QMouseEvent, QWheelEvent, QDrag
 )
@@ -2956,6 +2957,170 @@ class _LibraryTable(QTableWidget):
         super().sortByColumn(column, order)
 
 
+def _make_folder_style(item: QTreeWidgetItem):
+    """Style a folder/directory tree node.
+
+    Col 0 (COL_PLAY): shows the +/- expand indicator.
+    Col 1 (COL_NAME): folder label, bold, bright accent colour.
+    All columns get a subtle dark-tinted background.
+    """
+    from PySide6.QtGui import QFont as _QFont, QBrush as _QBrush
+    # Col 0 — expand indicator (starts expanded → '−')
+    item.setText(0, "\u2212")  # −
+    item.setTextAlignment(0, Qt.AlignmentFlag.AlignCenter)
+    item.setForeground(0, QColor(ACCENT_GOLD))
+    _ind_font = _QFont()
+    _ind_font.setPointSize(10)
+    _ind_font.setBold(True)
+    item.setFont(0, _ind_font)
+    # Col 1 — folder name, bold, visually distinct colour
+    _name_font = _QFont()
+    _name_font.setBold(True)
+    _name_font.setPointSize(9)
+    item.setFont(1, _name_font)
+    item.setForeground(1, QColor("#7ecfea"))  # bright cyan-blue
+    # Subtle row background tint for all columns
+    _bg = _QBrush(QColor("#1a2530"))
+    for _c in range(9):
+        item.setBackground(_c, _bg)
+
+
+class _LibraryFolderTree(QTreeWidget):
+    """QTreeWidget showing sample library as a collapsible folder hierarchy.
+
+    Columns match _LibraryTable (9 columns for the SAMPLES tab).
+    Signals mirror those used by _LibraryTable for consistent wiring.
+    """
+
+    delete_pressed = Signal()
+    play_requested = Signal(str)   # filepath — emitted on COL_PLAY click
+    load_requested = Signal(str)   # filepath — emitted on item double-click
+
+    def __init__(self, columns: list[str], parent=None):
+        super().__init__(parent)
+        self.setHeaderLabels(columns)
+        self.setColumnCount(len(columns))
+        self.setSortingEnabled(False)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setAlternatingRowColors(True)
+        self.setUniformRowHeights(True)
+        self.setIndentation(8)
+        header = self.header()
+        header.setStretchLastSection(True)
+        header.setSectionsMovable(False)
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        self.setStyleSheet(
+            f"QTreeWidget {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 11px; alternate-background-color: #1a1a1a; border: none; }}"
+            f"QTreeWidget::item {{ padding: 1px 0; }}"
+            f"QTreeWidget::item:selected {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
+            # Suppress ALL default branch indicators and connector lines
+            f"QTreeWidget::branch {{ background: {BG_BLACK}; image: none; border-image: none; }}"
+            f"QTreeWidget::branch:has-siblings:!adjoins-item {{ image: none; border-image: none; }}"
+            f"QTreeWidget::branch:has-siblings:adjoins-item {{ image: none; border-image: none; }}"
+            f"QTreeWidget::branch:!has-children:!has-siblings:adjoins-item {{ image: none; border-image: none; }}"
+            f"QTreeWidget::branch:closed:has-children:has-siblings {{ image: none; border-image: none; }}"
+            f"QTreeWidget::branch:closed:has-children:!has-siblings {{ image: none; border-image: none; }}"
+            f"QTreeWidget::branch:open:has-children:has-siblings {{ image: none; border-image: none; }}"
+            f"QTreeWidget::branch:open:has-children:!has-siblings {{ image: none; border-image: none; }}"
+            f"QHeaderView::section {{ background: {BG_PANEL}; color: {TEXT_SECONDARY}; "
+            f"font-size: 9px; font-weight: bold; padding: 2px 4px; "
+            f"border: 0px; border-right: 1px solid {SEPARATOR}; }}"
+        )
+        self.verticalHeader().setDefaultSectionSize(22) if hasattr(self, 'verticalHeader') else None
+        self.itemClicked.connect(self._on_item_clicked)
+        self.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.itemExpanded.connect(self._on_item_expanded)
+        self.itemCollapsed.connect(self._on_item_collapsed)
+
+    # ── Event handling ────────────────────────────────────────────────
+
+    def _on_item_clicked(self, item: QTreeWidgetItem, column: int):
+        if item.childCount() > 0:
+            # Folder node: clicking the +/- indicator (col 0) toggles expand
+            if column == 0:
+                item.setExpanded(not item.isExpanded())
+            return
+        if column == 0:  # COL_PLAY
+            fp = item.data(1, Qt.ItemDataRole.UserRole + 1)
+            if fp:
+                self.play_requested.emit(str(fp))
+
+    def _on_item_expanded(self, item: QTreeWidgetItem):
+        if item.childCount() > 0:
+            item.setText(0, "\u2212")  # −
+
+    def _on_item_collapsed(self, item: QTreeWidgetItem):
+        if item.childCount() > 0:
+            item.setText(0, "+")
+
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
+        if item.childCount() > 0:
+            return  # Folder node — toggle expand instead
+        fp = item.data(1, Qt.ItemDataRole.UserRole + 1)
+        if fp:
+            self.load_requested.emit(str(fp))
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.delete_pressed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def startDrag(self, supportedActions):
+        paths: list[str] = []
+        for item in self.selectedItems():
+            if item.childCount() > 0:
+                continue  # Skip folder nodes
+            fp = item.data(1, Qt.ItemDataRole.UserRole + 1)
+            if fp:
+                paths.append(str(fp))
+        if not paths:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
+        from PySide6.QtGui import QPixmap, QPainter, QFont, QFontMetrics
+        label = os.path.basename(paths[0])
+        if len(paths) > 1:
+            label = f"{len(paths)} files"
+        fm_font = QFont()
+        fm_font.setPointSize(8)
+        fm = QFontMetrics(fm_font)
+        w = fm.horizontalAdvance(label) + 16
+        h = 18
+        pm = QPixmap(w, h)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setFont(fm_font)
+        p.fillRect(0, 0, w, h, QColor("#3a3a2a"))
+        p.setPen(QColor("#c8aa5a"))
+        p.drawText(8, 13, label)
+        p.end()
+        drag.setPixmap(pm)
+        drag.setHotSpot(pm.rect().center())
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
+
+    # ── Selection helper ──────────────────────────────────────────────
+
+    def selected_filepaths(self) -> list[str]:
+        """Return filepaths for all selected leaf (sample) items."""
+        out = []
+        for item in self.selectedItems():
+            if item.childCount() > 0:
+                continue
+            fp = item.data(1, Qt.ItemDataRole.UserRole + 1)
+            if fp:
+                out.append(str(fp))
+        return out
+
+
 class _LibraryTableBase(QWidget):
     """Shared base for SLICES/SAMPLES sub-tabs.
 
@@ -2966,7 +3131,7 @@ class _LibraryTableBase(QWidget):
 
     load_to_slicer = Signal(str)
     load_to_channel = Signal(str, int)  # filepath, ch_idx (-1 = active)
-    preview_requested = Signal(str)
+    preview_requested = Signal(str, float)  # filepath, volume 0.0–1.0
 
     # Column-index constants for shared columns (subclasses define rest)
     COL_NAME = 1
@@ -2978,6 +3143,8 @@ class _LibraryTableBase(QWidget):
         self._scan_worker: _AnalysisWorker | None = None
         self._row_filepaths: list[str] = []   # row_index → filepath (matches model order)
         self._meta: dict[str, dict] = {}      # filepath → metadata dict
+        self._view_mode: str = "all"          # "all" or "folder"
+        self._stack: QStackedWidget | None = None  # set by subclass if folder view supported
 
         vb = QVBoxLayout(self)
         vb.setContentsMargins(2, 2, 2, 2)
@@ -2990,6 +3157,7 @@ class _LibraryTableBase(QWidget):
         self._search_edit.setPlaceholderText("Search\u2026")
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.setFixedHeight(20)
+        self._search_edit.setMaximumWidth(300)
         self._search_edit.setStyleSheet(
             f"QLineEdit {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
@@ -2999,21 +3167,21 @@ class _LibraryTableBase(QWidget):
         self._search_debounce.setSingleShot(True)
         self._search_debounce.setInterval(250)
         self._search_debounce.timeout.connect(self._apply_filter)
-        row1.addWidget(self._search_edit, stretch=1)
+        row1.addWidget(self._search_edit)
 
-        self._refresh_btn = QPushButton("\u21BB")
-        self._refresh_btn.setFixedSize(22, 20)
-        self._refresh_btn.setToolTip("Refresh")
+        self._refresh_btn = QPushButton("Refresh")
+        self._refresh_btn.setFixedSize(50, 20)
+        self._refresh_btn.setToolTip("Refresh sample list")
         self._refresh_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
-            f"font-size: 10px; border: 1px solid {SEPARATOR}; }}"
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
             f"QPushButton:hover {{ color: {ACCENT_GOLD}; }}"
         )
         self._refresh_btn.clicked.connect(self.refresh)
         row1.addWidget(self._refresh_btn)
 
-        self._scan_btn = QPushButton("Scan BPM + Key")
-        self._scan_btn.setFixedHeight(20)
+        self._scan_btn = QPushButton("Scan BPM")
+        self._scan_btn.setFixedSize(60, 20)
         self._scan_btn.setToolTip("Detect BPM and musical key for unscanned files")
         self._scan_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_BLUE}; "
@@ -3033,6 +3201,7 @@ class _LibraryTableBase(QWidget):
         self._batch_del_btn.setVisible(False)
         self._batch_del_btn.clicked.connect(self._on_delete_selected)
         row1.addWidget(self._batch_del_btn)
+        self._toolbar_row1 = row1  # exposed so subclasses can insert extra buttons
         vb.addLayout(row1)
 
         # Filter row 2: Key + BPM range + Clear
@@ -3044,13 +3213,14 @@ class _LibraryTableBase(QWidget):
         row2.addWidget(_kl)
         self._key_filter = QComboBox()
         self._key_filter.setFixedHeight(20)
+        self._key_filter.setFixedWidth(90)
         self._key_filter.setStyleSheet(
             f"QComboBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
         )
         self._key_filter.addItem("All Keys", "")
         self._key_filter.currentIndexChanged.connect(lambda _i: self._apply_filter())
-        row2.addWidget(self._key_filter, stretch=1)
+        row2.addWidget(self._key_filter)
 
         _bl = QLabel("BPM:")
         _bl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 8px;")
@@ -3061,7 +3231,7 @@ class _LibraryTableBase(QWidget):
         self._bpm_min.setSingleStep(1)
         self._bpm_min.setSpecialValueText("Min")
         self._bpm_min.setFixedHeight(20)
-        self._bpm_min.setFixedWidth(54)
+        self._bpm_min.setFixedWidth(58)
         self._bpm_min.setStyleSheet(
             f"QDoubleSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 0px 2px; }}"
@@ -3077,23 +3247,45 @@ class _LibraryTableBase(QWidget):
         self._bpm_max.setSingleStep(1)
         self._bpm_max.setSpecialValueText("Max")
         self._bpm_max.setFixedHeight(20)
-        self._bpm_max.setFixedWidth(54)
+        self._bpm_max.setFixedWidth(58)
         self._bpm_max.setStyleSheet(
             f"QDoubleSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 0px 2px; }}"
         )
         self._bpm_max.valueChanged.connect(lambda _v: self._apply_filter())
         row2.addWidget(self._bpm_max)
-        self._clear_filter_btn = QPushButton("\u2715")
-        self._clear_filter_btn.setFixedSize(20, 20)
-        self._clear_filter_btn.setToolTip("Clear filters")
+        self._clear_filter_btn = QPushButton("Clear")
+        self._clear_filter_btn.setFixedHeight(20)
+        self._clear_filter_btn.setToolTip("Clear all filters")
         self._clear_filter_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
-            f"font-size: 9px; border: 1px solid {SEPARATOR}; }}"
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
             f"QPushButton:hover {{ color: {ACCENT_GOLD}; }}"
         )
         self._clear_filter_btn.clicked.connect(self._clear_filters)
         row2.addWidget(self._clear_filter_btn)
+
+        # Preview volume (right after Clear, group pushed left by trailing stretch)
+        _vl = QLabel("Vol:")
+        _vl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 8px;")
+        row2.addWidget(_vl)
+        self._vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._vol_slider.setRange(0, 100)
+        self._vol_slider.setValue(50)
+        self._vol_slider.setFixedWidth(80)
+        self._vol_slider.setFixedHeight(18)
+        self._vol_slider.setToolTip("Preview playback volume")
+        self._vol_slider.setStyleSheet(
+            f"QSlider::groove:horizontal {{ background: {SEPARATOR}; height: 4px; "
+            f"border-radius: 2px; }}"
+            f"QSlider::handle:horizontal {{ background: {ACCENT_GOLD}; width: 10px; height: 10px; "
+            f"margin: -3px 0; border-radius: 5px; }}"
+            f"QSlider::sub-page:horizontal {{ background: {ACCENT_GOLD}; height: 4px; "
+            f"border-radius: 2px; }}"
+        )
+        row2.addWidget(self._vol_slider)
+        row2.addStretch(1)  # push all filter controls left
+
         vb.addLayout(row2)
 
         # Table
@@ -3146,6 +3338,9 @@ class _LibraryTableBase(QWidget):
         self._search_debounce.start()
 
     def _apply_filter(self):
+        if self._view_mode == "folder":
+            self._apply_filter_tree()
+            return
         query = self._search_edit.text().strip().lower()
         key_filter = self._key_filter.currentData() or ""
         bpm_min = self._bpm_min.value()
@@ -3175,6 +3370,10 @@ class _LibraryTableBase(QWidget):
                     except (TypeError, ValueError):
                         pass
             self._table.setRowHidden(r, not visible)
+
+    def _apply_filter_tree(self):
+        """Override in subclasses that support folder view."""
+        pass
 
     def _clear_filters(self):
         self._search_edit.clear()
@@ -3225,7 +3424,7 @@ class _LibraryTableBase(QWidget):
             if name_item:
                 fp = name_item.data(Qt.ItemDataRole.UserRole + 1)
                 if fp:
-                    self.preview_requested.emit(str(fp))
+                    self.preview_requested.emit(str(fp), self._vol_slider.value() / 100.0)
 
     def _on_double_click(self, item: QTableWidgetItem):
         r = item.row()
@@ -3625,6 +3824,56 @@ class _LibrarySamplesTab(_LibraryTableBase):
         self._dirs_panel.setVisible(False)
         self.layout().addWidget(self._dirs_panel)
 
+        # ── Folder view setup ────────────────────────────────────────
+        # Replace self._table in the base layout with a QStackedWidget so we
+        # can swap between the flat table (All) and the tree (Folder) views.
+        vb = self.layout()
+        table_idx: int | None = None
+        for _i in range(vb.count()):
+            _item = vb.itemAt(_i)
+            if _item and _item.widget() is self._table:
+                table_idx = _i
+                vb.takeAt(_i)
+                break
+
+        # Tree widget
+        self._tree = _LibraryFolderTree(self._columns())
+        self._tree.delete_pressed.connect(self._on_delete_selected)
+        self._tree.play_requested.connect(lambda fp: self.preview_requested.emit(fp, self._vol_slider.value() / 100.0))
+        self._tree.load_requested.connect(self._handle_double_click)
+        self._tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._on_tree_context_menu)
+        self._tree.header().sectionClicked.connect(self._on_tree_header_clicked)
+
+        # Stack: index 0 = flat table (All view), index 1 = tree (Folder view)
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._table)
+        self._stack.addWidget(self._tree)
+
+        _insert_at = table_idx if table_idx is not None else max(0, vb.count() - 1)
+        vb.insertWidget(_insert_at, self._stack, 1)
+
+        # Toggle button: inserted into toolbar row 1 between ↻ and Scan
+        self._folder_view_btn = QPushButton("All")
+        self._folder_view_btn.setFixedSize(36, 20)
+        self._folder_view_btn.setCheckable(True)
+        self._folder_view_btn.setToolTip("Switch between flat list (All) and folder tree view (Dir)")
+        self._folder_view_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; font-weight: bold; border: 1px solid {SEPARATOR}; padding: 0 4px; }}"
+            f"QPushButton:hover {{ color: {ACCENT_GOLD}; }}"
+            f"QPushButton:checked {{ color: {ACCENT_GOLD}; background: {SEPARATOR}; border-color: {ACCENT_GOLD}; }}"
+        )
+        self._folder_view_btn.clicked.connect(self._on_toggle_view)
+        # row1 layout order: search(0), refresh(1), [insert here at 2], scan(2→3), del(3→4)
+        self._toolbar_row1.insertWidget(2, self._folder_view_btn)
+
+        # Tree sort state
+        self._tree_sort_col: int = self.COL_NAME
+        self._tree_sort_asc: bool = True
+        # ─────────────────────────────────────────────────────────────
+
         self.refresh()
 
     def _on_toggle_dirs(self):
@@ -3723,6 +3972,9 @@ class _LibrarySamplesTab(_LibraryTableBase):
         self._table.setColumnWidth(self.COL_CH, 35)
         self._table.setColumnWidth(self.COL_SR, 65)
         self._table.setColumnWidth(self.COL_SIZE, 65)
+        # Build folder tree (reuses already-warmed self._meta — no extra I/O)
+        if hasattr(self, "_tree"):
+            self._build_tree()
 
     def _add_row(self, fpath: str, fname: str, meta: dict, duration: float,
                  channels: int, samplerate: int, filesize: int):
@@ -3785,6 +4037,306 @@ class _LibrarySamplesTab(_LibraryTableBase):
             cached["key"] = key
         self._cache[filepath] = cached
         self._save_cache()
+
+    def _on_scan_result_persist(self, filepath: str, bpm: float, key: str):
+        import math as _m
+        cached = dict(self._cache.get(filepath, {}) or {})
+        if not _m.isnan(bpm) and bpm > 0:
+            cached["bpm"] = float(bpm)
+        if key:
+            cached["key"] = key
+        self._cache[filepath] = cached
+        self._save_cache()
+
+    def _on_scan_result(self, filepath: str, bpm: float, key: str):
+        """Override: update table (via super) then also live-update tree item."""
+        super()._on_scan_result(filepath, bpm, key)
+        self._update_tree_item_meta(filepath, self._meta.get(filepath, {}) or {})
+
+    # ── Folder view: toggle ───────────────────────────────────────────
+
+    def _on_toggle_view(self, checked: bool):
+        self._view_mode = "folder" if checked else "all"
+        self._stack.setCurrentIndex(1 if checked else 0)
+        self._folder_view_btn.setText("Dir" if checked else "All")
+        self._apply_filter()
+
+    # ── Folder view: tree selection / context menu ────────────────────
+
+    def _on_tree_selection_changed(self):
+        n = len(self._tree.selected_filepaths())
+        if n > 1:
+            self._batch_del_btn.setText(f"Delete ({n})")
+            self._batch_del_btn.setVisible(True)
+        elif n == 1:
+            self._batch_del_btn.setText("Delete")
+            self._batch_del_btn.setVisible(True)
+        else:
+            self._batch_del_btn.setVisible(False)
+
+    def _on_tree_context_menu(self, pos):
+        paths = self._tree.selected_filepaths()
+        item = self._tree.itemAt(pos)
+        if item and item.childCount() == 0:
+            fp = item.data(self.COL_NAME, Qt.ItemDataRole.UserRole + 1)
+            if fp and fp not in paths:
+                self._tree.clearSelection()
+                item.setSelected(True)
+                paths = [str(fp)]
+        if not paths:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background: rgba(30, 30, 30, 230); color: {TEXT_PRIMARY}; "
+            f"border: 1px solid {SEPARATOR}; font-size: 9px; }}"
+            f"QMenu::item {{ padding: 4px 16px; }}"
+            f"QMenu::item:selected {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
+        )
+        self._build_context_menu(menu, paths)
+        menu.exec(self._tree.viewport().mapToGlobal(pos))
+
+    # ── Folder view: column sort ──────────────────────────────────────
+
+    def _on_tree_header_clicked(self, col: int):
+        if col == self.COL_PLAY:
+            return
+        if self._tree_sort_col == col:
+            self._tree_sort_asc = not self._tree_sort_asc
+        else:
+            self._tree_sort_col = col
+            self._tree_sort_asc = True
+        order = (Qt.SortOrder.AscendingOrder if self._tree_sort_asc
+                 else Qt.SortOrder.DescendingOrder)
+        self._tree.header().setSortIndicator(col, order)
+        root = self._tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            self._sort_tree_item(root.child(i), col, self._tree_sort_asc)
+
+    def _sort_tree_item(self, item: QTreeWidgetItem, col: int, ascending: bool):
+        """Sort immediate sample children of item by col; recurse into subfolders."""
+        if item.childCount() == 0:
+            return
+        folders: list[QTreeWidgetItem] = []
+        leaves: list[QTreeWidgetItem] = []
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if child.childCount() > 0:
+                folders.append(child)
+            else:
+                leaves.append(child)
+
+        def _leaf_key(child_item: QTreeWidgetItem):
+            raw = child_item.data(col, Qt.ItemDataRole.UserRole)
+            if raw is not None:
+                try:
+                    v = float(raw)
+                    if not math.isnan(v):
+                        return (0, v, "")
+                    return (1, 0.0, "")   # NaN sorts last
+                except (TypeError, ValueError):
+                    pass
+            return (0, 0.0, child_item.text(col).lower())
+
+        folders.sort(key=lambda x: x.text(1).lower())  # sort by name (col 1 = COL_NAME)
+        leaves.sort(key=_leaf_key, reverse=not ascending)
+
+        # Re-insert in sorted order (folders first, then leaves)
+        taken = item.takeChildren()  # noqa — detaches all children
+        for f in folders:
+            item.addChild(f)
+        for lv in leaves:
+            item.addChild(lv)
+
+        for f in folders:
+            self._sort_tree_item(f, col, ascending)
+
+    # ── Folder view: filter ───────────────────────────────────────────
+
+    def _apply_filter_tree(self):
+        """Hide/show tree items to match active search, key, and BPM filters."""
+        query = self._search_edit.text().strip().lower()
+        key_filter = self._key_filter.currentData() or ""
+        bpm_min = self._bpm_min.value()
+        bpm_max = self._bpm_max.value()
+        filter_active = bool(query or key_filter or bpm_min > 0 or bpm_max > 0)
+
+        def _filter_item(item: QTreeWidgetItem) -> bool:
+            if item.childCount() > 0:
+                # Folder node: visible if any child is visible
+                any_visible = False
+                for i in range(item.childCount()):
+                    if _filter_item(item.child(i)):
+                        any_visible = True
+                item.setHidden(not any_visible)
+                # Only auto-expand to reveal filter matches; never collapse/expand
+                # when the user has cleared all filters.
+                if filter_active and any_visible:
+                    item.setExpanded(True)
+                return any_visible
+            # Leaf (sample) node
+            visible = True
+            name = item.text(self.COL_NAME).lower()
+            if query and query not in name:
+                visible = False
+            if visible and key_filter:
+                if item.text(self.COL_KEY) != key_filter:
+                    visible = False
+            if visible and (bpm_min > 0 or bpm_max > 0):
+                try:
+                    bpm_val = float(item.data(self.COL_BPM, Qt.ItemDataRole.UserRole))
+                    if not math.isnan(bpm_val):
+                        if bpm_min > 0 and bpm_val < bpm_min:
+                            visible = False
+                        if bpm_max > 0 and bpm_val > bpm_max:
+                            visible = False
+                except (TypeError, ValueError):
+                    pass
+            item.setHidden(not visible)
+            return visible
+
+        root = self._tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            _filter_item(root.child(i))
+
+    # ── Folder view: build tree ───────────────────────────────────────
+
+    def _build_tree(self):
+        """Populate _tree to mirror the watched-dir hierarchy on disk."""
+        self._tree.clear()
+        seen: set[str] = set()
+        for base_dir in self._watched_dirs:
+            if not os.path.isdir(base_dir):
+                continue
+            root_item = QTreeWidgetItem(self._tree)
+            label = os.path.basename(base_dir) or base_dir
+            _make_folder_style(root_item)          # sets col 0 indicator + col 1 styling
+            root_item.setText(self.COL_NAME, label)  # folder name in Name column
+            root_item.setData(0, Qt.ItemDataRole.UserRole, base_dir)
+            root_item.setToolTip(self.COL_NAME, base_dir)
+            self._build_tree_dir(root_item, base_dir, seen)
+            root_item.setExpanded(True)
+        # Match column widths to the flat table
+        h = self._tree.header()
+        h.setStretchLastSection(True)
+        for c in range(self._tree.columnCount()):
+            h.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+        self._tree.setColumnWidth(self.COL_PLAY, 52)
+        self._tree.setColumnWidth(self.COL_NAME, 200)
+        self._tree.setColumnWidth(self.COL_BPM, 55)
+        self._tree.setColumnWidth(self.COL_KEY, 55)
+        self._tree.setColumnWidth(self.COL_DUR, 70)
+        self._tree.setColumnWidth(self.COL_CH, 35)
+        self._tree.setColumnWidth(self.COL_SR, 65)
+        self._tree.setColumnWidth(self.COL_SIZE, 65)
+
+    def _build_tree_dir(self, parent: QTreeWidgetItem, dir_path: str, seen: set):
+        """Recursively add subdirectory and sample leaf nodes under parent."""
+        try:
+            entries = sorted(os.scandir(dir_path), key=lambda e: (not e.is_dir(), e.name.lower()))
+        except PermissionError:
+            return
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                dir_item = QTreeWidgetItem(parent)
+                _make_folder_style(dir_item)               # col 0 indicator + col 1 style
+                dir_item.setText(self.COL_NAME, entry.name)  # name in Name column
+                dir_item.setData(0, Qt.ItemDataRole.UserRole, entry.path)
+                dir_item.setToolTip(self.COL_NAME, entry.path)
+                self._build_tree_dir(dir_item, entry.path, seen)
+                # Auto-expand only if it has children
+                if dir_item.childCount() > 0:
+                    dir_item.setExpanded(True)
+                else:
+                    parent.removeChild(dir_item)  # prune empty dirs
+            elif entry.is_file():
+                if os.path.splitext(entry.name)[1].lower() not in AUDIO_EXTENSIONS:
+                    continue
+                fpath = entry.path
+                if fpath in seen:
+                    continue
+                seen.add(fpath)
+                meta = self._meta.get(fpath, {}) or {}
+                self._add_tree_row(parent, fpath, entry.name, meta)
+
+    def _add_tree_row(self, parent: QTreeWidgetItem, fpath: str, fname: str, meta: dict):
+        """Add a leaf sample item to a tree node."""
+        item = QTreeWidgetItem(parent)
+        # COL_PLAY — larger play button so it's easy to click
+        from PySide6.QtGui import QFont as _QFont
+        item.setText(self.COL_PLAY, "\u25B6")
+        item.setTextAlignment(self.COL_PLAY, Qt.AlignmentFlag.AlignCenter)
+        item.setForeground(self.COL_PLAY, QColor(ACCENT_GOLD))
+        _play_font = _QFont()
+        _play_font.setPointSize(10)
+        item.setFont(self.COL_PLAY, _play_font)
+        # COL_NAME
+        item.setText(self.COL_NAME, fname)
+        item.setData(self.COL_NAME, Qt.ItemDataRole.UserRole + 1, fpath)
+        item.setToolTip(self.COL_NAME, fpath)
+        # COL_BPM
+        bpm_val = meta.get("bpm")
+        item.setText(self.COL_BPM, f"{bpm_val:.0f}" if bpm_val else "")
+        item.setData(self.COL_BPM, Qt.ItemDataRole.UserRole,
+                     float(bpm_val) if bpm_val else float("nan"))
+        item.setTextAlignment(self.COL_BPM, Qt.AlignmentFlag.AlignCenter)
+        # COL_KEY
+        item.setText(self.COL_KEY, meta.get("key") or "")
+        item.setTextAlignment(self.COL_KEY, Qt.AlignmentFlag.AlignCenter)
+        # COL_DUR
+        duration = meta.get("duration_sec") or 0.0
+        dur_text = f"{int(duration // 60)}:{duration % 60:04.1f}" if duration > 0 else ""
+        item.setText(self.COL_DUR, dur_text)
+        item.setData(self.COL_DUR, Qt.ItemDataRole.UserRole,
+                     float(duration) if duration > 0 else float("nan"))
+        item.setTextAlignment(self.COL_DUR, Qt.AlignmentFlag.AlignCenter)
+        # COL_CH
+        channels = meta.get("channels") or 0
+        item.setText(self.COL_CH, str(channels) if channels else "")
+        item.setData(self.COL_CH, Qt.ItemDataRole.UserRole,
+                     float(channels) if channels else float("nan"))
+        item.setTextAlignment(self.COL_CH, Qt.AlignmentFlag.AlignCenter)
+        # COL_SR
+        samplerate = meta.get("samplerate") or 0
+        item.setText(self.COL_SR, f"{samplerate // 1000}k" if samplerate else "")
+        item.setData(self.COL_SR, Qt.ItemDataRole.UserRole,
+                     float(samplerate) if samplerate else float("nan"))
+        item.setTextAlignment(self.COL_SR, Qt.AlignmentFlag.AlignCenter)
+        # COL_SIZE
+        filesize = meta.get("filesize") or 0
+        item.setText(self.COL_SIZE, _human_size(filesize) if filesize else "")
+        item.setData(self.COL_SIZE, Qt.ItemDataRole.UserRole,
+                     float(filesize) if filesize else 0.0)
+        item.setTextAlignment(self.COL_SIZE,
+                              Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # COL_PATH — folder name only; full path in tooltip
+        item.setText(self.COL_PATH, os.path.dirname(fpath))
+        item.setToolTip(self.COL_PATH, fpath)
+
+    def _update_tree_item_meta(self, filepath: str, meta: dict):
+        """Find the leaf tree item for filepath and refresh its BPM/Key columns."""
+        def _walk(item: QTreeWidgetItem):
+            if item.childCount() > 0:
+                for i in range(item.childCount()):
+                    _walk(item.child(i))
+            else:
+                fp = item.data(self.COL_NAME, Qt.ItemDataRole.UserRole + 1)
+                if fp == filepath:
+                    bpm_val = meta.get("bpm")
+                    item.setText(self.COL_BPM, f"{bpm_val:.0f}" if bpm_val else "")
+                    item.setData(self.COL_BPM, Qt.ItemDataRole.UserRole,
+                                 float(bpm_val) if bpm_val else float("nan"))
+                    item.setText(self.COL_KEY, meta.get("key") or "")
+
+        root = self._tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            _walk(root.child(i))
+
+    # ── Override: selection aware of active view ──────────────────────
+
+    def _selected_filepaths(self) -> list[str]:
+        if self._view_mode == "folder":
+            return self._tree.selected_filepaths()
+        return super()._selected_filepaths()
 
     def _handle_double_click(self, filepath: str):
         # Default: load to slicer (use right-click "Load to Channel" for direct channel load)
@@ -3858,7 +4410,7 @@ class LibraryPanel(QFrame):
 
     load_to_slicer = Signal(str)
     load_to_channel = Signal(str, int)
-    preview_requested = Signal(str)
+    preview_requested = Signal(str, float)  # filepath, volume 0.0–1.0
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3881,8 +4433,8 @@ class LibraryPanel(QFrame):
         self._tabs.setDocumentMode(True)
         self._slices_tab = _LibrarySlicesTab()
         self._samples_tab = _LibrarySamplesTab()
-        self._tabs.addTab(self._slices_tab, "SLICES")
         self._tabs.addTab(self._samples_tab, "SAMPLES")
+        self._tabs.addTab(self._slices_tab, "SLICES")
         vb.addWidget(self._tabs, stretch=1)
 
         # Bubble all signals

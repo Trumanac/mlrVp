@@ -120,6 +120,8 @@ class LiveLoopRecorder:
                     src = np.column_stack([src, src])
                 elif src.shape[1] == 1:
                     src = np.column_stack([src[:, 0], src[:, 0]])
+                elif src.shape[1] > 2:
+                    src = src[:, :2]  # discard extra channels — buffer is always stereo
 
                 num_frames = src.shape[0]
                 buf_data = src.astype(np.float32, copy=True)
@@ -210,8 +212,11 @@ class LiveLoopRecorder:
                 in_stereo = np.column_stack([mono, mono])
 
             if is_overdub:
-                # Mix input on top of existing buffer contents
+                # Mix input on top of existing buffer contents, then clamp so
+                # repeated overdub layers can't push values outside ±1.0.
                 buf[wp:wp + frames_to_write] += in_stereo
+                np.clip(buf[wp:wp + frames_to_write], -1.0, 1.0,
+                        out=buf[wp:wp + frames_to_write])
             else:
                 # Fresh recording: overwrite
                 buf[wp:wp + frames_to_write] = in_stereo
@@ -233,25 +238,28 @@ class LiveLoopRecorder:
         Returns a NEW SampleBuffer whose length may be slightly shorter than
         the recording (trimmed by the crossfade length to keep the loop seamless).
         """
+        # Snapshot the buffer reference and reset state under the lock so the
+        # audio thread is never blocked waiting for the numpy crossfade work.
         with self._lock:
             if self._buffer is None:
                 return None
-            new_data = self._make_seamless_loop(self._buffer.data, fade_ms)
-            result = SampleBuffer(
-                data=new_data,
-                sample_rate=self.sr,
-                num_frames=new_data.shape[0],
-                num_channels=new_data.shape[1],
-                filename=f"live_row{self.row:02d}",
-                duration_sec=new_data.shape[0] / self.sr,
-            )
-            # Reset for reuse
+            buf_data = self._buffer.data
             self._buffer = None
             self._is_overdub = False
             self._target_frames = 0
             self._write_pos = 0
             self._state = _RecState.EMPTY
-            return result
+
+        # Numpy operations happen outside the lock — audio thread can proceed.
+        new_data = self._make_seamless_loop(buf_data, fade_ms)
+        return SampleBuffer(
+            data=new_data,
+            sample_rate=self.sr,
+            num_frames=new_data.shape[0],
+            num_channels=new_data.shape[1],
+            filename=f"live_row{self.row:02d}",
+            duration_sec=new_data.shape[0] / self.sr,
+        )
 
     def _make_seamless_loop(self, data: np.ndarray, fade_ms: float) -> np.ndarray:
         """Return new buffer with last N frames crossfaded into the first N

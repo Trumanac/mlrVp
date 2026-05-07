@@ -4,17 +4,25 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QGroupBox,
     QGridLayout, QTabWidget, QLineEdit, QFrame, QScrollArea,
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QMenu, QSizePolicy,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QColor, QPalette, QAction
 
 from mlrvp.config import (
     AppConfig,
     MAX_ROWS,
+    NUM_GROUPS,
     MONOME_BACKEND_AUTO,
     MONOME_BACKEND_SERIALOSC,
     MONOME_BACKEND_40H_DIRECT,
     MONOME_BACKEND_LEGACY_OSC,
+    CR_SLOT_EMPTY,
+    CR_SLOT_GROUP_STOP,
+    CR_SLOT_PATTERN,
+    CR_SLOT_ALL_STOP,
+    CR_PRESETS,
 )
 from mlrvp.gui.styles import ACCENT_BLUE, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY
 
@@ -89,6 +97,27 @@ class AudioSetupPanel(QFrame):
         grid.addWidget(self._buf_combo, 4, 1)
 
         layout.addLayout(grid)
+
+        # Multi-channel output
+        self._mc_cb = QCheckBox("Multi-channel output (DAW stem recording)")
+        self._mc_cb.setChecked(False)
+        self._mc_cb.setToolTip(
+            "Route each group to a separate stereo pair on the output device so\n"
+            "a DAW (Ableton, Reaper…) can record groups as individual tracks.\n\n"
+            "Requires a multi-channel output device or a free virtual router:\n"
+            "  • Voicemeeter (free, Windows) — use as ASIO output device\n"
+            "  • VB-Cable A+B / Banana / Potato (Windows)\n"
+            "  • BlackHole (macOS, free)\n\n"
+            "Channel layout (applies after restart):\n"
+            "  1-2   Master (post-FX)\n"
+            "  3-4   Group 1 (pre-FX, post-fader)\n"
+            "  5-6   Group 2\n"
+            "  …     (one stereo pair per active group)"
+        )
+        self._mc_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("multichannel_output", v)
+        )
+        layout.addWidget(self._mc_cb)
 
         # Rescan button
         self._rescan_btn = QPushButton("Rescan Audio Devices")
@@ -182,6 +211,12 @@ class AudioSetupPanel(QFrame):
     def rescan_button(self) -> QPushButton:
         return self._rescan_btn
 
+    def set_multichannel_output_state(self, enabled: bool):
+        """Sync the multi-channel output checkbox without firing the signal."""
+        self._mc_cb.blockSignals(True)
+        self._mc_cb.setChecked(enabled)
+        self._mc_cb.blockSignals(False)
+
     # ── private helpers ─────────────────────────────────────────────── #
 
     def _selected_driver(self) -> str:
@@ -257,6 +292,8 @@ class GridSetupPanel(QFrame):
     save_default_requested = Signal(str)  # name
     tilt_enabled_changed = Signal(bool)  # tilt checkbox toggled
     load_default_requested = Signal(str)  # name
+    control_row_enabled_changed = Signal(bool)
+    control_row_setting_changed = Signal(str, object)  # key, value
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -290,6 +327,26 @@ class GridSetupPanel(QFrame):
         grid.addWidget(QLabel("Grid Columns:"), 1, 0)
         grid.addWidget(self._cols_combo, 1, 1)
 
+        # Active groups
+        self._active_groups_combo = QComboBox()
+        _valid_group_counts = [c for c in (4, 6, 8) if c <= NUM_GROUPS]
+        for c in _valid_group_counts:
+            self._active_groups_combo.addItem(str(c), c)
+        self._active_groups_combo.setCurrentText(str(NUM_GROUPS))
+        self._active_groups_combo.currentIndexChanged.connect(
+            lambda _: self.setting_changed.emit(
+                "active_groups",
+                self._active_groups_combo.currentData()
+            )
+        )
+        self._active_groups_combo.setToolTip(
+            "Number of audio groups available.\n"
+            "Lower values simplify the mixer and reduce memory.\n"
+            "Minimum: 4.  Channels assigned to hidden groups still route correctly."
+        )
+        grid.addWidget(QLabel("Active Groups:"), 2, 0)
+        grid.addWidget(self._active_groups_combo, 2, 1)
+
         # Monome backend
         self._backend_combo = QComboBox()
         self._backend_combo.addItem("Auto", MONOME_BACKEND_AUTO)
@@ -302,15 +359,15 @@ class GridSetupPanel(QFrame):
             "Auto uses serialosc first and keeps the legacy backends available\n"
             "when you need them explicitly."
         )
-        grid.addWidget(QLabel("Monome Backend:"), 2, 0)
-        grid.addWidget(self._backend_combo, 2, 1)
+        grid.addWidget(QLabel("Monome Backend:"), 3, 0)
+        grid.addWidget(self._backend_combo, 3, 1)
 
         # Connected grid device
         self._grid_combo = QComboBox()
         self._grid_combo.addItem("Virtual Grid (built-in)")
         self._grid_combo.setToolTip("Select the hardware grid controller to connect to")
-        grid.addWidget(QLabel("Grid Device:"), 3, 0)
-        grid.addWidget(self._grid_combo, 3, 1)
+        grid.addWidget(QLabel("Grid Device:"), 4, 0)
+        grid.addWidget(self._grid_combo, 4, 1)
 
         layout.addLayout(grid)
 
@@ -368,6 +425,110 @@ class GridSetupPanel(QFrame):
         )
         self._tilt_chk.toggled.connect(self.tilt_enabled_changed.emit)
         layout.addWidget(self._tilt_chk)
+
+        # Control row enable
+        self._control_row_chk = QCheckBox("Control Row")
+        self._control_row_chk.setChecked(True)
+        self._control_row_chk.setToolTip(
+            "Reserve a row of hardware buttons for group stop and pattern triggers.\n"
+            "Monome: configurable row (default: top).  Launchpad: CC row (hardware-fixed).\n"
+            "When unchecked the physical row becomes a full data row — MIDI mappings\n"
+            "for group stops and patterns still work from any MIDI controller."
+        )
+        self._control_row_chk.toggled.connect(self._on_control_row_toggled)
+        layout.addWidget(self._control_row_chk)
+
+        # ── Control row sub-settings (hidden when unchecked) ──
+        self._control_row_container = QWidget()
+        cr_layout = QVBoxLayout(self._control_row_container)
+        cr_layout.setContentsMargins(16, 2, 0, 2)
+        cr_layout.setSpacing(6)
+
+        _cr_lbl_ss = "color: #aaa; font-size: 10px;"
+        _cr_spin_ss = (
+            "QSpinBox { background: #1a1a1a; color: #ccc; "
+            "border: 1px solid #333; font-size: 9px; }"
+        )
+
+        # Control Row selector
+        monome_row_row_widget = QWidget()
+        monome_row_row_layout = QHBoxLayout(monome_row_row_widget)
+        monome_row_row_layout.setContentsMargins(0, 0, 0, 0)
+        monome_row_row_layout.setSpacing(4)
+        monome_row_lbl = QLabel("Control Row:")
+        monome_row_lbl.setStyleSheet(_cr_lbl_ss)
+        self._monome_row_combo = QComboBox()
+        self._monome_row_combo.addItem("Top (row 0)", 0)
+        self._monome_row_combo.addItem("Bottom (last row)", -1)
+        self._monome_row_combo.addItem("Custom", -99)
+        self._monome_row_combo.setStyleSheet(
+            "QComboBox { font-size: 10px; background: #1a1a1a; color: #ccc; "
+            "border: 1px solid #333; }"
+        )
+        self._monome_row_combo.currentIndexChanged.connect(self._on_monome_row_combo_changed)
+        self._monome_row_spin = QSpinBox()
+        self._monome_row_spin.setRange(0, 15)
+        self._monome_row_spin.setValue(0)
+        self._monome_row_spin.setFixedWidth(52)
+        self._monome_row_spin.setStyleSheet(_cr_spin_ss)
+        self._monome_row_spin.setVisible(False)
+        self._monome_row_spin.valueChanged.connect(
+            lambda v: self.control_row_setting_changed.emit("monome_row", v)
+        )
+        monome_row_row_layout.addWidget(monome_row_lbl)
+        monome_row_row_layout.addWidget(self._monome_row_combo)
+        monome_row_row_layout.addWidget(self._monome_row_spin)
+        monome_row_row_layout.addStretch()
+        cr_layout.addWidget(monome_row_row_widget)
+
+        # Preset selector row
+        preset_row_widget = QWidget()
+        preset_row_layout = QHBoxLayout(preset_row_widget)
+        preset_row_layout.setContentsMargins(0, 0, 0, 0)
+        preset_row_layout.setSpacing(4)
+        preset_lbl = QLabel("Preset:")
+        preset_lbl.setStyleSheet(_cr_lbl_ss)
+        self._cr_preset_combo = QComboBox()
+        for preset_name, _ in CR_PRESETS:
+            self._cr_preset_combo.addItem(preset_name)
+        self._cr_preset_combo.addItem("Custom")
+        self._cr_preset_combo.setStyleSheet(
+            "QComboBox { font-size: 10px; background: #1a1a1a; color: #ccc; "
+            "border: 1px solid #333; min-width: 180px; }"
+        )
+        self._cr_preset_combo.currentIndexChanged.connect(self._on_cr_preset_changed)
+        preset_row_layout.addWidget(preset_lbl)
+        preset_row_layout.addWidget(self._cr_preset_combo)
+        preset_row_layout.addStretch()
+        cr_layout.addWidget(preset_row_widget)
+
+        # Visual 8-button strip
+        strip_lbl = QLabel("Button layout  (click to reassign):")
+        strip_lbl.setStyleSheet(_cr_lbl_ss)
+        cr_layout.addWidget(strip_lbl)
+
+        strip_widget = QWidget()
+        strip_layout = QHBoxLayout(strip_widget)
+        strip_layout.setContentsMargins(0, 2, 0, 2)
+        strip_layout.setSpacing(3)
+        self._cr_buttons: list[QPushButton] = []
+        for i in range(8):
+            btn = QPushButton()
+            btn.setFixedSize(QSize(36, 36))
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn.setToolTip(f"Button {i+1}: click to reassign")
+            btn.clicked.connect(lambda checked=False, idx=i: self._on_cr_button_clicked(idx))
+            self._cr_buttons.append(btn)
+            strip_layout.addWidget(btn)
+        strip_layout.addStretch()
+        cr_layout.addWidget(strip_widget)
+
+        # Default assignments (4 stops + 4 patterns)
+        from mlrvp.config import _default_cr_assignments
+        self._cr_assignments: list[dict] = _default_cr_assignments()
+        self._refresh_cr_button_visuals()
+
+        layout.addWidget(self._control_row_container)
 
         # ── Default Presets section ──
         sep_def = QFrame()
@@ -463,6 +624,226 @@ class GridSetupPanel(QFrame):
         self._tilt_chk.blockSignals(False)
         self.tilt_enabled_changed.emit(enabled)
 
+    def set_control_row_config(
+        self,
+        enabled: bool,
+        monome_row: int,
+        assignments: list,
+    ):
+        """Programmatically restore control row settings (e.g. on preset load)."""
+        self._control_row_chk.blockSignals(True)
+        self._control_row_chk.setChecked(enabled)
+        self._control_row_chk.blockSignals(False)
+        self._control_row_container.setVisible(enabled)
+
+        # Restore monome_row combo
+        self._monome_row_combo.blockSignals(True)
+        if monome_row == -2:   # Launchpad CC top row
+            idx = self._monome_row_combo.findData(-2)
+            if idx >= 0:
+                self._monome_row_combo.setCurrentIndex(idx)
+            else:
+                self._monome_row_combo.setCurrentIndex(0)  # fallback: Top
+            self._monome_row_spin.setVisible(False)
+        elif monome_row == 0:
+            self._monome_row_combo.setCurrentIndex(
+                max(0, self._monome_row_combo.findData(0))
+            )
+            self._monome_row_spin.setVisible(False)
+        elif monome_row == -1:
+            self._monome_row_combo.setCurrentIndex(
+                max(0, self._monome_row_combo.findData(-1))
+            )
+            self._monome_row_spin.setVisible(False)
+        else:
+            idx = self._monome_row_combo.findData(-99)
+            self._monome_row_combo.setCurrentIndex(max(0, idx))
+            self._monome_row_spin.setValue(monome_row)
+            self._monome_row_spin.setVisible(True)
+        self._monome_row_combo.blockSignals(False)
+
+        # Restore assignments
+        self._cr_assignments = list(assignments) if assignments else []
+        while len(self._cr_assignments) < 8:
+            self._cr_assignments.append({"type": CR_SLOT_EMPTY, "value": 0})
+        self._cr_assignments = self._cr_assignments[:8]
+        self._refresh_cr_button_visuals()
+        self._sync_cr_preset_combo()
+
+    def set_launchpad_connected(self, connected: bool):
+        """Add or remove the 'Launchpad (CC top row)' option in the control row combo.
+
+        When *connected* is True the LP option is inserted at position 0 and
+        auto-selected so the default Launchpad behaviour (CC top row) is active.
+        When *connected* is False the LP option is removed; if it was selected
+        the combo falls back to 'Top (row 0)'.
+        """
+        from mlrvp.config import CR_MONOME_ROW_LAUNCHPAD_CC
+        lp_item_data = CR_MONOME_ROW_LAUNCHPAD_CC  # -2
+        existing_idx = self._monome_row_combo.findData(lp_item_data)
+
+        if connected:
+            if existing_idx < 0:  # not yet present
+                self._monome_row_combo.blockSignals(True)
+                self._monome_row_combo.insertItem(0, "Launchpad (CC top row)", lp_item_data)
+                self._monome_row_combo.blockSignals(False)
+            # Auto-select LP item (fires _on_monome_row_combo_changed → emits signal)
+            lp_idx = self._monome_row_combo.findData(lp_item_data)
+            if self._monome_row_combo.currentIndex() != lp_idx:
+                self._monome_row_combo.setCurrentIndex(lp_idx)
+        else:
+            if existing_idx >= 0:
+                was_selected = (self._monome_row_combo.currentIndex() == existing_idx)
+                self._monome_row_combo.blockSignals(True)
+                self._monome_row_combo.removeItem(existing_idx)
+                if was_selected:
+                    # Fall back to Top (row 0)
+                    self._monome_row_combo.setCurrentIndex(
+                        max(0, self._monome_row_combo.findData(0))
+                    )
+                self._monome_row_combo.blockSignals(False)
+                if was_selected:
+                    # Emit so app knows monome_row reset to 0
+                    self.control_row_setting_changed.emit("monome_row", 0)
+
+    def _on_control_row_toggled(self, enabled: bool):
+        self._control_row_container.setVisible(enabled)
+        self.control_row_enabled_changed.emit(enabled)
+
+    def _on_monome_row_combo_changed(self, index: int):
+        val = self._monome_row_combo.itemData(index)
+        if val == -99:  # Custom
+            self._monome_row_spin.setVisible(True)
+            self.control_row_setting_changed.emit("monome_row", self._monome_row_spin.value())
+        else:
+            self._monome_row_spin.setVisible(False)
+            self.control_row_setting_changed.emit("monome_row", val)
+
+    # ── Visual 8-button strip helpers ──────────────────────────────────────────
+
+    # Color scheme per slot type
+    _CR_BTN_STYLES = {
+        CR_SLOT_GROUP_STOP: (
+            "background: #cc7700; color: #fff; border: 1px solid #ff9900; "
+            "font-size: 8px; font-weight: bold;"
+        ),
+        CR_SLOT_PATTERN: (
+            "background: #005fcc; color: #fff; border: 1px solid #3399ff; "
+            "font-size: 8px; font-weight: bold;"
+        ),
+        CR_SLOT_ALL_STOP: (
+            "background: #aa1111; color: #fff; border: 1px solid #ff3333; "
+            "font-size: 8px; font-weight: bold;"
+        ),
+        CR_SLOT_EMPTY: (
+            "background: #222; color: #555; border: 1px solid #333; "
+            "font-size: 8px;"
+        ),
+    }
+
+    def _slot_label(self, slot: dict) -> str:
+        t = slot.get("type", CR_SLOT_EMPTY)
+        v = slot.get("value", 0)
+        if t == CR_SLOT_GROUP_STOP:
+            return f"GS{v+1}"
+        if t == CR_SLOT_PATTERN:
+            return f"P{v+1}"
+        if t == CR_SLOT_ALL_STOP:
+            return "ALL\nSTP"
+        return "—"
+
+    def _refresh_cr_button_visuals(self):
+        for i, btn in enumerate(self._cr_buttons):
+            slot = self._cr_assignments[i] if i < len(self._cr_assignments) else {"type": CR_SLOT_EMPTY, "value": 0}
+            t = slot.get("type", CR_SLOT_EMPTY)
+            style = self._CR_BTN_STYLES.get(t, self._CR_BTN_STYLES[CR_SLOT_EMPTY])
+            btn.setStyleSheet(f"QPushButton {{ {style} border-radius: 4px; }}")
+            btn.setText(self._slot_label(slot))
+            v = slot.get("value", 0)
+            if t == CR_SLOT_GROUP_STOP:
+                tip = f"Button {i+1}: Group Stop {v+1}"
+            elif t == CR_SLOT_PATTERN:
+                tip = f"Button {i+1}: Pattern {v+1}"
+            elif t == CR_SLOT_ALL_STOP:
+                tip = f"Button {i+1}: All Stop (stops all groups)"
+            else:
+                tip = f"Button {i+1}: Unassigned"
+            btn.setToolTip(tip + "\nClick to reassign")
+
+    def _sync_cr_preset_combo(self):
+        """Select the matching preset, or 'Custom' if none matches."""
+        self._cr_preset_combo.blockSignals(True)
+        for idx, (_, preset_assignments) in enumerate(CR_PRESETS):
+            if self._cr_assignments == preset_assignments:
+                self._cr_preset_combo.setCurrentIndex(idx)
+                self._cr_preset_combo.blockSignals(False)
+                return
+        # Custom
+        self._cr_preset_combo.setCurrentIndex(len(CR_PRESETS))
+        self._cr_preset_combo.blockSignals(False)
+
+    def _on_cr_preset_changed(self, index: int):
+        if index < len(CR_PRESETS):
+            _, assignments = CR_PRESETS[index]
+            self._cr_assignments = [dict(s) for s in assignments]
+            self._refresh_cr_button_visuals()
+            self.control_row_setting_changed.emit("assignments", list(self._cr_assignments))
+        # 'Custom' selected: no action, user will click individual buttons
+
+    def _on_cr_button_clicked(self, btn_idx: int):
+        """Show a context menu to reassign the clicked control row button."""
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background: #1a1a1a; color: #ccc; border: 1px solid #444; font-size: 10px; }"
+            "QMenu::item:selected { background: #333; }"
+        )
+
+        # Group Stop sub-menu
+        gs_menu = menu.addMenu("Group Stop")
+        for g in range(8):
+            act = QAction(f"Group Stop {g+1}", self)
+            act.triggered.connect(
+                lambda checked=False, g=g: self._assign_cr_slot(
+                    btn_idx, {"type": CR_SLOT_GROUP_STOP, "value": g}
+                )
+            )
+            gs_menu.addAction(act)
+
+        # Pattern sub-menu
+        pat_menu = menu.addMenu("Pattern")
+        for p in range(8):
+            act = QAction(f"Pattern {p+1}", self)
+            act.triggered.connect(
+                lambda checked=False, p=p: self._assign_cr_slot(
+                    btn_idx, {"type": CR_SLOT_PATTERN, "value": p}
+                )
+            )
+            pat_menu.addAction(act)
+
+        # All Stop
+        all_stop_act = QAction("All Stop", self)
+        all_stop_act.triggered.connect(
+            lambda: self._assign_cr_slot(btn_idx, {"type": CR_SLOT_ALL_STOP, "value": 0})
+        )
+        menu.addAction(all_stop_act)
+
+        # Empty
+        empty_act = QAction("Unassigned (empty)", self)
+        empty_act.triggered.connect(
+            lambda: self._assign_cr_slot(btn_idx, {"type": CR_SLOT_EMPTY, "value": 0})
+        )
+        menu.addAction(empty_act)
+
+        menu.exec(self._cr_buttons[btn_idx].mapToGlobal(
+            self._cr_buttons[btn_idx].rect().bottomLeft()
+        ))
+
+    def _assign_cr_slot(self, btn_idx: int, slot: dict):
+        self._cr_assignments[btn_idx] = slot
+        self._refresh_cr_button_visuals()
+        self._sync_cr_preset_combo()
+        self.control_row_setting_changed.emit("assignments", list(self._cr_assignments))
+
     def set_connection_status(self, connected: bool, device_name: str = ""):
         if connected:
             self._status_label.setText(f"Connected: {device_name}")
@@ -532,6 +913,14 @@ class GridSetupPanel(QFrame):
         text = self._default_combo.currentText()
         return "" if text == "(blank)" else text
 
+    def set_active_groups(self, n: int):
+        """Update the Active Groups combo to reflect the current value."""
+        self._active_groups_combo.blockSignals(True)
+        idx = self._active_groups_combo.findData(n)
+        if idx >= 0:
+            self._active_groups_combo.setCurrentIndex(idx)
+        self._active_groups_combo.blockSignals(False)
+
 
 class MidiSetupPanel(QFrame):
     """MIDI configuration, learn mode, and active mapping list."""
@@ -546,6 +935,7 @@ class MidiSetupPanel(QFrame):
     tilt_sensitivity_changed = Signal(int, float)        # axis_index, sensitivity multiplier
     midi_input_added = Signal(int)                       # port index
     midi_input_removed = Signal(int)                     # port index
+    control_row_learn_requested = Signal(str)            # param_path
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -678,6 +1068,49 @@ class MidiSetupPanel(QFrame):
         self._clear_all_btn.clicked.connect(self._on_clear_all)
         self._clear_all_btn.setToolTip("Remove all active MIDI CC mappings")
         layout.addWidget(self._clear_all_btn)
+
+        # ── Control Row Actions (collapsible) ──
+        cr_sep = QFrame()
+        cr_sep.setFrameShape(QFrame.Shape.HLine)
+        cr_sep.setStyleSheet("color: #444;")
+        layout.addWidget(cr_sep)
+
+        self._cr_toggle_btn = QPushButton("CONTROL ROW ACTIONS  \u25BE")
+        self._cr_toggle_btn.setCheckable(True)
+        self._cr_toggle_btn.setChecked(False)
+        self._cr_toggle_btn.setFixedHeight(22)
+        self._cr_toggle_btn.setStyleSheet(
+            "QPushButton { background: #1a1a1a; color: #666; font-weight: bold; "
+            "font-size: 10px; border: none; text-align: left; padding: 0 4px; }"
+            "QPushButton:hover { color: #aaa; }"
+            "QPushButton:checked { color: #aaa; }"
+        )
+        self._cr_toggle_btn.clicked.connect(self._on_toggle_control_row)
+        layout.addWidget(self._cr_toggle_btn)
+
+        self._control_row_panel = QWidget()
+        cr_panel_layout = QVBoxLayout(self._control_row_panel)
+        cr_panel_layout.setContentsMargins(0, 2, 0, 0)
+        cr_panel_layout.setSpacing(4)
+
+        cr_hint = QLabel(
+            "Map MIDI inputs to group stop and pattern actions. "
+            "Works for any controller — hardware control row optional."
+        )
+        cr_hint.setStyleSheet("font-size: 9px; color: #555; font-style: italic;")
+        cr_hint.setWordWrap(True)
+        cr_panel_layout.addWidget(cr_hint)
+
+        self._control_row_rows_container = QWidget()
+        self._control_row_rows_layout = QVBoxLayout(self._control_row_rows_container)
+        self._control_row_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._control_row_rows_layout.setSpacing(2)
+        cr_panel_layout.addWidget(self._control_row_rows_container)
+
+        self._control_row_panel.setVisible(False)
+        layout.addWidget(self._control_row_panel)
+        self._control_row_rows: list[dict] = []
+        # Populated by set_control_row_actions() called from app
 
         # ── Tilt / Accelerometer mapping (hidden by default) ──
         self._tilt_container = QWidget()
@@ -818,6 +1251,95 @@ class MidiSetupPanel(QFrame):
         """Show or hide the tilt mapping section."""
         self._tilt_container.setVisible(visible)
 
+    def set_control_row_actions(self, num_groups: int, num_patterns: int):
+        """Rebuild the control row action rows for the given counts.
+
+        Called by the app whenever num_group_stops or num_patterns changes, and
+        on startup / preset load. Clears existing rows then rebuilds them.
+        """
+        # Remove old rows
+        for row_info in self._control_row_rows:
+            row_info["container"].setParent(None)
+            row_info["container"].deleteLater()
+        self._control_row_rows.clear()
+
+        _btn_ss = (
+            "QPushButton { background: #2a2a2a; color: #aaa; border: 1px solid #444; "
+            "font-size: 9px; padding: 2px 6px; }"
+            "QPushButton:hover { background: #3a3a3a; color: #fff; }"
+        )
+        _clr_ss = (
+            "QPushButton { background: transparent; color: #cc4444; "
+            "font-weight: bold; border: none; font-size: 11px; }"
+            "QPushButton:hover { color: #ff6666; }"
+        )
+
+        entries = (
+            [(f"Group Stop {i + 1}", f"transport.group_stop.{i}") for i in range(num_groups)]
+            + [(f"Pattern {i + 1}", f"transport.pattern.{i}") for i in range(num_patterns)]
+        )
+
+        for label_text, param_path in entries:
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(4)
+
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color: #aaa; font-size: 10px;")
+            lbl.setFixedWidth(90)
+            row_layout.addWidget(lbl)
+
+            assign_lbl = QLabel("\u2014")
+            assign_lbl.setStyleSheet("color: #555; font-size: 9px; font-style: italic;")
+            assign_lbl.setFixedWidth(80)
+            row_layout.addWidget(assign_lbl)
+
+            learn_btn = QPushButton("Learn")
+            learn_btn.setFixedHeight(20)
+            learn_btn.setStyleSheet(_btn_ss)
+            learn_btn.setToolTip(f"MIDI Learn: next incoming CC/Note \u2192 {label_text}")
+            learn_btn.clicked.connect(
+                lambda _checked=False, p=param_path: self.control_row_learn_requested.emit(p)
+            )
+            row_layout.addWidget(learn_btn)
+
+            clear_btn = QPushButton("\u2715")
+            clear_btn.setFixedSize(20, 20)
+            clear_btn.setStyleSheet(_clr_ss)
+            clear_btn.setToolTip(f"Clear MIDI mapping for {label_text}")
+            clear_btn.clicked.connect(
+                lambda _checked=False, p=param_path: self.mapping_removed.emit(p)
+            )
+            row_layout.addWidget(clear_btn)
+            row_layout.addStretch()
+
+            self._control_row_rows_layout.addWidget(row_widget)
+            self._control_row_rows.append({
+                "param_path": param_path,
+                "assign_lbl": assign_lbl,
+                "container": row_widget,
+            })
+
+    def update_control_row_assignment(self, param_path: str, info: str):
+        """Update the assignment label for one control row action row.
+
+        Pass an empty string to show the 'not mapped' dash.
+        """
+        for row_info in self._control_row_rows:
+            if row_info["param_path"] == param_path:
+                if info:
+                    row_info["assign_lbl"].setText(info)
+                    row_info["assign_lbl"].setStyleSheet(
+                        "color: #7fc97f; font-size: 9px;"
+                    )
+                else:
+                    row_info["assign_lbl"].setText("\u2014")
+                    row_info["assign_lbl"].setStyleSheet(
+                        "color: #555; font-size: 9px; font-style: italic;"
+                    )
+                break
+
     def update_tilt_live(self, x: float, y: float):
         """Update live tilt value display (called from app when data arrives)."""
         self._tilt_live_label.setStyleSheet(
@@ -825,6 +1347,12 @@ class MidiSetupPanel(QFrame):
         )
         self._tilt_live_label.setText(
             f"X={x:.2f}  Y={y:.2f}"
+        )
+
+    def _on_toggle_control_row(self, checked: bool):
+        self._control_row_panel.setVisible(checked)
+        self._cr_toggle_btn.setText(
+            "CONTROL ROW ACTIONS  \u25B4" if checked else "CONTROL ROW ACTIONS  \u25BE"
         )
 
     def _on_add_input(self):
@@ -1112,6 +1640,23 @@ class OscSetupPanel(QFrame):
         grid.addWidget(self._recv_port, 2, 1)
 
         layout.addLayout(grid)
+
+        # Meter output toggle
+        self._meter_output_cb = QCheckBox("Send meter levels (OSC output)")
+        self._meter_output_cb.setChecked(True)
+        self._meter_output_cb.setToolTip(
+            "Broadcast group and master peak levels at ~30 fps so external\n"
+            "OSC clients (TouchOSC, Max for Live, SuperCollider) can display\n"
+            "them. Uses addresses:\n"
+            "  /mlrvp/meter/master       f f  (L, R)\n"
+            "  /mlrvp/meter/group/<N>    f    (N = 1-based)\n"
+            "  /mlrvp/meter/fx/<N>       f f  (N = 1-4)"
+        )
+        self._meter_output_cb.toggled.connect(
+            lambda v: self.setting_changed.emit("osc_meter_output", v)
+        )
+        layout.addWidget(self._meter_output_cb)
+
         layout.addStretch()
 
         # Apply initial enabled state to controls
@@ -1125,6 +1670,7 @@ class OscSetupPanel(QFrame):
         self._host_edit.setEnabled(enabled)
         self._send_port.setEnabled(enabled)
         self._recv_port.setEnabled(enabled)
+        self._meter_output_cb.setEnabled(enabled)
 
     def set_enabled_state(self, enabled: bool):
         """Set the checkbox state without emitting (for preset load)."""
@@ -1132,6 +1678,12 @@ class OscSetupPanel(QFrame):
         self._enable_cb.setChecked(enabled)
         self._enable_cb.blockSignals(False)
         self._set_fields_enabled(enabled)
+
+    def set_meter_output_state(self, enabled: bool):
+        """Sync the meter output checkbox without emitting (for preset load)."""
+        self._meter_output_cb.blockSignals(True)
+        self._meter_output_cb.setChecked(enabled)
+        self._meter_output_cb.blockSignals(False)
 
 
 class SetupView(QWidget):
@@ -1156,6 +1708,9 @@ class SetupView(QWidget):
     save_default_requested = Signal(str)
     load_default_requested = Signal(str)
     tilt_enabled_changed = Signal(bool)
+    control_row_enabled_changed = Signal(bool)
+    control_row_setting_changed = Signal(str, object)   # key, value
+    midi_control_row_learn_requested = Signal(str)      # param_path
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1178,7 +1733,15 @@ class SetupView(QWidget):
         self._grid_panel.save_default_requested.connect(self.save_default_requested.emit)
         self._grid_panel.load_default_requested.connect(self.load_default_requested.emit)
         self._grid_panel.tilt_enabled_changed.connect(self.tilt_enabled_changed.emit)
-        tabs.addTab(self._grid_panel, "Grid")
+        self._grid_panel.control_row_enabled_changed.connect(self.control_row_enabled_changed.emit)
+        self._grid_panel.control_row_setting_changed.connect(self.control_row_setting_changed.emit)
+        _grid_scroll = QScrollArea()
+        _grid_scroll.setWidget(self._grid_panel)
+        _grid_scroll.setWidgetResizable(True)
+        _grid_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _grid_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        _grid_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        tabs.addTab(_grid_scroll, "Grid")
 
         self._midi_panel = MidiSetupPanel()
         self._midi_panel.setting_changed.connect(self.midi_setting_changed.emit)
@@ -1189,6 +1752,7 @@ class SetupView(QWidget):
         self._midi_panel.tilt_mapping_changed.connect(self.midi_tilt_mapping_changed.emit)
         self._midi_panel.tilt_range_changed.connect(self.midi_tilt_range_changed.emit)
         self._midi_panel.tilt_sensitivity_changed.connect(self.midi_tilt_sensitivity_changed.emit)
+        self._midi_panel.control_row_learn_requested.connect(self.midi_control_row_learn_requested.emit)
         self._midi_panel.midi_input_added.connect(self.midi_input_added.emit)
         self._midi_panel.midi_input_removed.connect(self.midi_input_removed.emit)
         tabs.addTab(self._midi_panel, "MIDI")
