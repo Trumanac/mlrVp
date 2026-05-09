@@ -15,11 +15,19 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class PatternEvent:
-    """A single recorded event."""
+    """A single recorded event.
+
+    event_type is one of:
+      'trigger'    — grid button press (row/column required)
+      'stop'       — grid row stop   (row required)
+      'automation' — parameter value change (param_path/value required)
+    """
     beat_position: float     # when in the pattern (in beats)
-    event_type: str          # 'trigger' or 'stop'
-    row: int
+    event_type: str          # 'trigger', 'stop', or 'automation'
+    row: int = 0
     column: int = 0
+    param_path: str = ""    # set for automation events
+    value: float = 0.0      # set for automation events
 
 
 class PatternRecorder:
@@ -40,6 +48,7 @@ class PatternRecorder:
         self._last_playback_pos: float = -1.0
         self._trigger_callback: Optional[Callable] = None
         self._state_change_callback: Optional[Callable] = None
+        self._automation_callback: Optional[Callable] = None  # (param_path, value)
 
     @property
     def recording(self) -> bool:
@@ -60,6 +69,10 @@ class PatternRecorder:
     def set_state_change_callback(self, callback: Callable):
         """Set callback for auto state changes: callback(index, state_str)."""
         self._state_change_callback = callback
+
+    def set_automation_callback(self, callback: Callable):
+        """Set callback for automation playback: callback(param_path, value)."""
+        self._automation_callback = callback
 
     def set_length(self, length_beats: int):
         """Update the pattern loop length in beats."""
@@ -107,7 +120,7 @@ class PatternRecorder:
 
     def record_event(self, current_beat: float, row: int, column: int,
                      event_type: str = 'trigger'):
-        """Record a grid event during recording."""
+        """Record a grid trigger/stop event during recording."""
         with self._lock:
             if not self._recording:
                 return
@@ -130,6 +143,22 @@ class PatternRecorder:
                 event_type=event_type,
                 row=row,
                 column=column,
+            ))
+
+    def record_automation(self, current_beat: float, param_path: str, value: float):
+        """Record a parameter automation event during recording."""
+        with self._lock:
+            if not self._recording:
+                return
+            if len(self.events) >= 10000:
+                del self.events[:1000]
+            length = self.length_beats
+            pos_in_pattern = (current_beat - self._start_beat) % length
+            self.events.append(PatternEvent(
+                beat_position=pos_in_pattern,
+                event_type='automation',
+                param_path=param_path,
+                value=value,
             ))
 
     def update(self, current_beat: float):
@@ -157,6 +186,7 @@ class PatternRecorder:
             if self._playing and self.events and self._trigger_callback is not None:
                 events_snapshot = list(self.events)
                 trigger_cb = self._trigger_callback
+                automation_cb = self._automation_callback
                 start_beat = self._start_beat
                 length_beats = self.length_beats
                 last_pos = self._last_playback_pos
@@ -190,17 +220,24 @@ class PatternRecorder:
 
         fired = 0
         for event in events_snapshot:
+            in_window = False
             # Check if event falls in the window
             if last_pos <= event.beat_position < pos:
-                fired += 1
-                try:
-                    trigger_cb(event.row, event.column, event.event_type)
-                except Exception as exc:
-                    log.warning("Pattern trigger callback error: %s", exc)
+                in_window = True
             elif pos < last_pos:
                 # Wrapped around
                 if event.beat_position >= last_pos or event.beat_position < pos:
-                    fired += 1
+                    in_window = True
+
+            if in_window:
+                fired += 1
+                if event.event_type == 'automation':
+                    if automation_cb is not None:
+                        try:
+                            automation_cb(event.param_path, event.value)
+                        except Exception as exc:
+                            log.warning("Pattern automation callback error: %s", exc)
+                else:
                     try:
                         trigger_cb(event.row, event.column, event.event_type)
                     except Exception as exc:

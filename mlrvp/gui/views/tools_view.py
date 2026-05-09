@@ -2995,15 +2995,22 @@ class _LibraryFolderTree(QTreeWidget):
     delete_pressed = Signal()
     play_requested = Signal(str)   # filepath — emitted on COL_PLAY click
     load_requested = Signal(str)   # filepath — emitted on item double-click
+    files_move_requested = Signal(list, str)  # [src_paths], dest_dir
 
-    def __init__(self, columns: list[str], parent=None):
+    def __init__(self, columns: list[str], drop_enabled: bool = False, parent=None):
         super().__init__(parent)
+        self._drop_enabled = drop_enabled
         self.setHeaderLabels(columns)
         self.setColumnCount(len(columns))
         self.setSortingEnabled(False)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setDragEnabled(True)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        if drop_enabled:
+            self.setAcceptDrops(True)
+            self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+            self.setDropIndicatorShown(True)
+        else:
+            self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setAlternatingRowColors(True)
         self.setUniformRowHeights(True)
@@ -3107,7 +3114,46 @@ class _LibraryFolderTree(QTreeWidget):
         drag.setMimeData(mime)
         drag.exec(Qt.DropAction.CopyAction)
 
-    # ── Selection helper ──────────────────────────────────────────────
+    # ── Drop support (when drop_enabled=True) ─────────────────────────
+
+    def dragEnterEvent(self, event):
+        if self._drop_enabled and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if not self._drop_enabled or not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        target = self.itemAt(event.position().toPoint())
+        # Walk up to a folder node
+        while target and target.childCount() == 0:
+            target = target.parent()
+        if target is not None:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if not self._drop_enabled or not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        pos = event.position().toPoint()
+        target = self.itemAt(pos)
+        while target and target.childCount() == 0:
+            target = target.parent()
+        if target is None:
+            event.ignore()
+            return
+        dest_dir = target.data(0, Qt.ItemDataRole.UserRole)
+        if not dest_dir:
+            event.ignore()
+            return
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if paths:
+            self.files_move_requested.emit(paths, str(dest_dir))
+        event.acceptProposedAction()
 
     def selected_filepaths(self) -> list[str]:
         """Return filepaths for all selected leaf (sample) items."""
@@ -3132,6 +3178,7 @@ class _LibraryTableBase(QWidget):
     load_to_slicer = Signal(str)
     load_to_channel = Signal(str, int)  # filepath, ch_idx (-1 = active)
     preview_requested = Signal(str, float)  # filepath, volume 0.0–1.0
+    preview_stop_requested = Signal()        # stop current preview
 
     # Column-index constants for shared columns (subclasses define rest)
     COL_NAME = 1
@@ -3145,6 +3192,7 @@ class _LibraryTableBase(QWidget):
         self._meta: dict[str, dict] = {}      # filepath → metadata dict
         self._view_mode: str = "all"          # "all" or "folder"
         self._stack: QStackedWidget | None = None  # set by subclass if folder view supported
+        self._previewing_fp: str = ""         # filepath currently being previewed ("" = none)
 
         vb = QVBoxLayout(self)
         vb.setContentsMargins(2, 2, 2, 2)
@@ -3284,7 +3332,23 @@ class _LibraryTableBase(QWidget):
             f"border-radius: 2px; }}"
         )
         row2.addWidget(self._vol_slider)
+
+        # Stop-preview button
+        self._stop_preview_btn = QPushButton("■")
+        self._stop_preview_btn.setFixedSize(22, 18)
+        self._stop_preview_btn.setToolTip("Stop preview playback")
+        self._stop_preview_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 10px; border: 1px solid {SEPARATOR}; padding: 0; }}"
+            f"QPushButton:hover {{ color: #ff6666; border-color: #ff6666; }}"
+            f"QPushButton:disabled {{ color: #333; border-color: #333; }}"
+        )
+        self._stop_preview_btn.setEnabled(False)
+        self._stop_preview_btn.clicked.connect(self._on_stop_preview_clicked)
+        row2.addWidget(self._stop_preview_btn)
+
         row2.addStretch(1)  # push all filter controls left
+        self._toolbar_row2 = row2  # exposed for subclasses
 
         vb.addLayout(row2)
 
@@ -3369,11 +3433,17 @@ class _LibraryTableBase(QWidget):
                                 visible = False
                     except (TypeError, ValueError):
                         pass
+            if visible:
+                visible = self._extra_row_visible(r)
             self._table.setRowHidden(r, not visible)
 
     def _apply_filter_tree(self):
         """Override in subclasses that support folder view."""
         pass
+
+    def _extra_row_visible(self, r: int) -> bool:
+        """Hook: return False to additionally hide a row. Called after standard filters."""
+        return True
 
     def _clear_filters(self):
         self._search_edit.clear()
@@ -3422,9 +3492,30 @@ class _LibraryTableBase(QWidget):
         if col == self.COL_PLAY:
             name_item = self._table.item(row, self.COL_NAME)
             if name_item:
-                fp = name_item.data(Qt.ItemDataRole.UserRole + 1)
-                if fp:
-                    self.preview_requested.emit(str(fp), self._vol_slider.value() / 100.0)
+                fp = str(name_item.data(Qt.ItemDataRole.UserRole + 1) or "")
+                if not fp:
+                    return
+                if fp == self._previewing_fp:
+                    # Clicking the same row again — stop
+                    self._do_stop_preview()
+                else:
+                    self._previewing_fp = fp
+                    self._stop_preview_btn.setEnabled(True)
+                    self.preview_requested.emit(fp, self._vol_slider.value() / 100.0)
+
+    def _on_stop_preview_clicked(self):
+        self._do_stop_preview()
+
+    def _do_stop_preview(self):
+        """Emit stop signal and reset local playing state."""
+        self._previewing_fp = ""
+        self._stop_preview_btn.setEnabled(False)
+        self.preview_stop_requested.emit()
+
+    def notify_preview_stopped(self):
+        """Called externally (e.g. from AppController) when playback ends naturally."""
+        self._previewing_fp = ""
+        self._stop_preview_btn.setEnabled(False)
 
     def _on_double_click(self, item: QTableWidgetItem):
         r = item.row()
@@ -3527,19 +3618,125 @@ class _LibraryTableBase(QWidget):
 
 
 class _LibrarySlicesTab(_LibraryTableBase):
-    """SLICES sub-tab — scans data/slices/ directory."""
+    """SLICES sub-tab — scans data/slices/ with folder tree, favorites, tags, recents."""
 
-    # Column indices: ▶ | Name | BPM | Key | Bars | Duration | Date
+    # Column indices: ▶ | Name | BPM | Key | Bars | Duration | Date | Tags
     COL_PLAY = 0
     COL_BARS = 4
     COL_DUR = 5
     COL_DATE = 6
+    COL_TAGS = 7
 
     def _columns(self) -> list[str]:
-        return ["▶", "Name", "BPM", "Key", "Bars", "Duration", "Date"]
+        return ["▶", "Name", "BPM", "Key", "Bars", "Duration", "Date", "Tags"]
 
     def __init__(self, parent=None):
+        from mlrvp.config import (get_slice_favorites, get_slice_recents,
+                                   get_slice_tags, get_slice_hidden)
         super().__init__(parent)
+        self._favorites: set = set(get_slice_favorites())
+        self._recents: list = list(get_slice_recents())
+        self._tags: dict = dict(get_slice_tags())
+        self._hidden: set = set(get_slice_hidden())
+
+        # ── Folder tree setup ─────────────────────────────────────────
+        vb = self.layout()
+        table_idx: int | None = None
+        for _i in range(vb.count()):
+            _item = vb.itemAt(_i)
+            if _item and _item.widget() is self._table:
+                table_idx = _i
+                vb.takeAt(_i)
+                break
+
+        self._tree = _LibraryFolderTree(self._columns(), drop_enabled=True)
+        self._tree.delete_pressed.connect(self._on_delete_selected)
+        self._tree.play_requested.connect(self._on_tree_play_requested)
+        self._tree.load_requested.connect(self._handle_double_click)
+        self._tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._on_tree_context_menu)
+        self._tree.header().sectionClicked.connect(self._on_tree_header_clicked)
+        self._tree.files_move_requested.connect(self._on_files_move_requested)
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._table)
+        self._stack.addWidget(self._tree)
+        _insert_at = table_idx if table_idx is not None else max(0, vb.count() - 1)
+        vb.insertWidget(_insert_at, self._stack, 1)
+
+        # View toggle button
+        self._folder_view_btn = QPushButton("All")
+        self._folder_view_btn.setFixedSize(36, 20)
+        self._folder_view_btn.setCheckable(True)
+        self._folder_view_btn.setToolTip("Switch between flat list and folder tree")
+        self._folder_view_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; font-weight: bold; border: 1px solid {SEPARATOR}; padding: 0 4px; }}"
+            f"QPushButton:hover {{ color: {ACCENT_GOLD}; }}"
+            f"QPushButton:checked {{ color: {ACCENT_GOLD}; background: {SEPARATOR}; "
+            f"border-color: {ACCENT_GOLD}; }}"
+        )
+        self._folder_view_btn.clicked.connect(self._on_toggle_view)
+        self._toolbar_row1.insertWidget(2, self._folder_view_btn)
+
+        # ★ Favs filter
+        self._fav_filter_btn = QPushButton("★ Favs")
+        self._fav_filter_btn.setCheckable(True)
+        self._fav_filter_btn.setFixedSize(52, 20)
+        self._fav_filter_btn.setToolTip("Show only favorited slices")
+        self._fav_filter_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
+            f"QPushButton:hover {{ color: {ACCENT_GOLD}; }}"
+            f"QPushButton:checked {{ color: {BG_BLACK}; background: {ACCENT_GOLD}; "
+            f"border: 1px solid {ACCENT_GOLD}; }}"
+        )
+        self._fav_filter_btn.clicked.connect(self._apply_filter)
+        self._toolbar_row1.addWidget(self._fav_filter_btn)
+
+        # Recent filter
+        self._recent_filter_btn = QPushButton("Recent")
+        self._recent_filter_btn.setCheckable(True)
+        self._recent_filter_btn.setFixedSize(52, 20)
+        self._recent_filter_btn.setToolTip("Show only recently used slices")
+        self._recent_filter_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
+            f"QPushButton:hover {{ color: {ACCENT_GOLD}; }}"
+            f"QPushButton:checked {{ color: {BG_BLACK}; background: {ACCENT_GOLD}; "
+            f"border: 1px solid {ACCENT_GOLD}; }}"
+        )
+        self._recent_filter_btn.clicked.connect(self._apply_filter)
+        self._toolbar_row1.addWidget(self._recent_filter_btn)
+
+        # Tag filter (in row2 before the trailing stretch)
+        _ins = self._toolbar_row2.count() - 1
+        _tl = QLabel("Tag:")
+        _tl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 8px;")
+        self._toolbar_row2.insertWidget(_ins, _tl)
+        self._tag_filter_edit = QLineEdit()
+        self._tag_filter_edit.setPlaceholderText("tag\u2026")
+        self._tag_filter_edit.setClearButtonEnabled(True)
+        self._tag_filter_edit.setFixedHeight(20)
+        self._tag_filter_edit.setMaximumWidth(110)
+        self._tag_filter_edit.setStyleSheet(
+            f"QLineEdit {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
+        )
+        self._tag_filter_edit.textChanged.connect(self._on_search_changed)
+        self._toolbar_row2.insertWidget(_ins + 1, self._tag_filter_edit)
+
+        # Tree sort state
+        self._tree_sort_col: int = self.COL_NAME
+        self._tree_sort_asc: bool = True
+
+        # Default to folder view
+        self._view_mode = "folder"
+        self._folder_view_btn.setChecked(True)
+        self._folder_view_btn.setText("Dir")
+        self._stack.setCurrentIndex(1)
+
         self.refresh()
 
     def refresh(self):
@@ -3552,41 +3749,40 @@ class _LibrarySlicesTab(_LibraryTableBase):
         if not os.path.isdir(slices_dir):
             self._table.setSortingEnabled(True)
             return
-        try:
-            files = sorted(
-                f for f in os.listdir(slices_dir)
-                if os.path.splitext(f)[1].lower() in AUDIO_EXTENSIONS
-            )
-        except OSError:
-            files = []
         import json as _json
-        for fname in files:
-            fpath = os.path.join(slices_dir, fname)
-            meta = {}
-            sidecar = os.path.splitext(fpath)[0] + ".json"
-            if os.path.isfile(sidecar):
+        seen: set[str] = set()
+        for root, _dirs, files in os.walk(slices_dir):
+            for fname in sorted(files):
+                if os.path.splitext(fname)[1].lower() not in AUDIO_EXTENSIONS:
+                    continue
+                fpath = os.path.join(root, fname)
+                if fpath in seen or fpath in self._hidden:
+                    continue
+                seen.add(fpath)
+                meta = {}
+                sidecar = os.path.splitext(fpath)[0] + ".json"
+                if os.path.isfile(sidecar):
+                    try:
+                        with open(sidecar, "r", encoding="utf-8") as f:
+                            meta = _json.load(f) or {}
+                    except (ValueError, OSError):
+                        meta = {}
                 try:
-                    with open(sidecar, "r", encoding="utf-8") as f:
-                        meta = _json.load(f) or {}
-                except (ValueError, OSError):
-                    meta = {}
-            try:
-                mtime = os.path.getmtime(fpath)
-            except OSError:
-                mtime = 0.0
-            try:
-                info = sf.info(fpath)
-                duration = info.frames / float(info.samplerate or 1)
-            except Exception:
-                duration = 0.0
-            meta["_duration"] = duration  # runtime-only, for bars computation
-            self._meta[fpath] = meta
-            self._row_filepaths.append(fpath)
-            self._add_row(fpath, fname, meta, duration, mtime)
+                    mtime = os.path.getmtime(fpath)
+                except OSError:
+                    mtime = 0.0
+                try:
+                    info = sf.info(fpath)
+                    duration = info.frames / float(info.samplerate or 1)
+                except Exception:
+                    duration = 0.0
+                meta["_duration"] = duration
+                self._meta[fpath] = meta
+                self._row_filepaths.append(fpath)
+                self._add_row(fpath, fname, meta, duration, mtime)
         self._table.setSortingEnabled(True)
         self._refresh_key_filter_options()
         self._apply_filter()
-        # All columns user-resizable; last column stretches to fill space
         h = self._table.horizontalHeader()
         h.setStretchLastSection(True)
         for c in range(self._table.columnCount()):
@@ -3597,46 +3793,42 @@ class _LibrarySlicesTab(_LibraryTableBase):
         self._table.setColumnWidth(self.COL_KEY, 55)
         self._table.setColumnWidth(self.COL_BARS, 45)
         self._table.setColumnWidth(self.COL_DUR, 70)
+        self._table.setColumnWidth(self.COL_TAGS, 120)
+        if hasattr(self, "_tree"):
+            self._build_tree()
 
     def _add_row(self, fpath: str, fname: str, meta: dict, duration: float, mtime: float):
         import math as _m
         from datetime import datetime as _dt
         r = self._table.rowCount()
         self._table.insertRow(r)
-        # Play item (▶ text, click handled via cellClicked in base class)
         play_item = QTableWidgetItem("▶")
         play_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         play_item.setForeground(QColor(ACCENT_GOLD))
         play_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         self._table.setItem(r, self.COL_PLAY, play_item)
-        # Name
         name_item = QTableWidgetItem(fname)
         name_item.setData(Qt.ItemDataRole.UserRole + 1, fpath)
         name_item.setToolTip(fpath)
         self._table.setItem(r, self.COL_NAME, name_item)
-        # BPM (numeric)
         bpm_val = meta.get("bpm")
         bpm_item = _NumericTableItem(f"{bpm_val:.0f}" if bpm_val else "")
         bpm_item.setData(Qt.ItemDataRole.UserRole, float(bpm_val) if bpm_val else float("nan"))
         bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self._table.setItem(r, self.COL_BPM, bpm_item)
-        # Key
         key_item = QTableWidgetItem(meta.get("key") or "")
         key_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self._table.setItem(r, self.COL_KEY, key_item)
-        # Bars (numeric) — from sidecar, or derived from BPM + duration
         bars_val = meta.get("bars") or _snap_to_bars(duration, meta.get("bpm"))
         bars_item = _NumericTableItem(str(int(bars_val)) if bars_val else "")
         bars_item.setData(Qt.ItemDataRole.UserRole, float(bars_val) if bars_val else float("nan"))
         bars_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self._table.setItem(r, self.COL_BARS, bars_item)
-        # Duration (numeric, displayed mm:ss.s)
         dur_text = f"{int(duration // 60)}:{duration % 60:04.1f}" if duration > 0 else ""
         dur_item = _NumericTableItem(dur_text)
         dur_item.setData(Qt.ItemDataRole.UserRole, float(duration) if duration > 0 else float("nan"))
         dur_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self._table.setItem(r, self.COL_DUR, dur_item)
-        # Date (numeric mtime, displayed YYYY-MM-DD)
         try:
             date_text = _dt.fromtimestamp(mtime).strftime("%Y-%m-%d") if mtime > 0 else ""
         except (OSError, ValueError):
@@ -3644,61 +3836,181 @@ class _LibrarySlicesTab(_LibraryTableBase):
         date_item = _NumericTableItem(date_text)
         date_item.setData(Qt.ItemDataRole.UserRole, float(mtime))
         self._table.setItem(r, self.COL_DATE, date_item)
+        tags_list = self._tags.get(fpath, [])
+        tags_item = QTableWidgetItem(", ".join(tags_list))
+        tags_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        tags_item.setForeground(QColor(TEXT_SECONDARY))
+        self._table.setItem(r, self.COL_TAGS, tags_item)
+        if fpath in self._favorites:
+            name_item.setForeground(QColor(ACCENT_GOLD))
 
-    def _on_scan_result_persist(self, filepath: str, bpm: float, key: str):
-        import json as _json
-        import math as _m
-        sidecar = os.path.splitext(filepath)[0] + ".json"
-        existing = {}
-        if os.path.isfile(sidecar):
-            try:
-                with open(sidecar, "r", encoding="utf-8") as f:
-                    existing = _json.load(f) or {}
-            except (ValueError, OSError):
-                existing = {}
-        if not _m.isnan(bpm) and bpm > 0:
-            existing["bpm"] = float(bpm)
-            # Compute bars from BPM + duration and persist
-            duration = self._meta.get(filepath, {}).get("_duration", 0.0)
-            bars = _snap_to_bars(duration, bpm)
-            if bars:
-                existing["bars"] = bars
-        if key:
-            existing["key"] = key
+    def _add_tree_row(self, parent: QTreeWidgetItem, fpath: str, fname: str, meta: dict):
+        """Add a leaf slice item to a tree node."""
+        from PySide6.QtGui import QFont as _QFont
+        from datetime import datetime as _dt
+        item = QTreeWidgetItem(parent)
+        item.setText(self.COL_PLAY, "\u25B6")
+        item.setTextAlignment(self.COL_PLAY, Qt.AlignmentFlag.AlignCenter)
+        item.setForeground(self.COL_PLAY, QColor(ACCENT_GOLD))
+        _pf = _QFont()
+        _pf.setPointSize(10)
+        item.setFont(self.COL_PLAY, _pf)
+        item.setText(self.COL_NAME, fname)
+        item.setData(self.COL_NAME, Qt.ItemDataRole.UserRole + 1, fpath)
+        item.setToolTip(self.COL_NAME, fpath)
+        bpm_val = meta.get("bpm")
+        item.setText(self.COL_BPM, f"{bpm_val:.0f}" if bpm_val else "")
+        item.setData(self.COL_BPM, Qt.ItemDataRole.UserRole,
+                     float(bpm_val) if bpm_val else float("nan"))
+        item.setTextAlignment(self.COL_BPM, Qt.AlignmentFlag.AlignCenter)
+        item.setText(self.COL_KEY, meta.get("key") or "")
+        item.setTextAlignment(self.COL_KEY, Qt.AlignmentFlag.AlignCenter)
+        duration = meta.get("_duration") or 0.0
+        bars_val = meta.get("bars") or _snap_to_bars(duration, bpm_val)
+        item.setText(self.COL_BARS, str(int(bars_val)) if bars_val else "")
+        item.setData(self.COL_BARS, Qt.ItemDataRole.UserRole,
+                     float(bars_val) if bars_val else float("nan"))
+        item.setTextAlignment(self.COL_BARS, Qt.AlignmentFlag.AlignCenter)
+        dur_text = f"{int(duration // 60)}:{duration % 60:04.1f}" if duration > 0 else ""
+        item.setText(self.COL_DUR, dur_text)
+        item.setData(self.COL_DUR, Qt.ItemDataRole.UserRole,
+                     float(duration) if duration > 0 else float("nan"))
+        item.setTextAlignment(self.COL_DUR, Qt.AlignmentFlag.AlignCenter)
         try:
-            with open(sidecar, "w", encoding="utf-8") as f:
-                _json.dump(existing, f, indent=2)
-        except OSError:
-            pass
+            mtime = os.path.getmtime(fpath)
+            date_text = _dt.fromtimestamp(mtime).strftime("%Y-%m-%d") if mtime > 0 else ""
+        except (OSError, ValueError):
+            date_text = ""
+        item.setText(self.COL_DATE, date_text)
+        item.setTextAlignment(self.COL_DATE, Qt.AlignmentFlag.AlignCenter)
+        tags_list = self._tags.get(fpath, [])
+        item.setText(self.COL_TAGS, ", ".join(tags_list))
+        item.setForeground(self.COL_TAGS, QColor(TEXT_SECONDARY))
+        if fpath in self._favorites:
+            item.setForeground(self.COL_NAME, QColor(ACCENT_GOLD))
 
     def _handle_double_click(self, filepath: str):
         self.load_to_slicer.emit(filepath)
 
+    # ── Context menu ──────────────────────────────────────────────────
+
     def _build_context_menu(self, menu: QMenu, filepaths: list[str]) -> None:
         n = len(filepaths)
+        # Favorites
+        if n == 1:
+            fp = filepaths[0]
+            is_fav = fp in self._favorites
+            act_fav = menu.addAction("★ Remove from Favorites" if is_fav else "☆ Add to Favorites")
+            act_fav.triggered.connect(lambda _c=False, p=fp: self._toggle_favorite([p]))
+        else:
+            act_fav = menu.addAction(f"☆ Add to Favorites ({n})")
+            act_fav.triggered.connect(lambda _c=False: self._toggle_favorite(filepaths))
+        # Tags (single only)
+        if n == 1:
+            fp = filepaths[0]
+            cur_tags = self._tags.get(fp, [])
+            tag_lbl = f"Tags: {', '.join(cur_tags)}" if cur_tags else "Edit Tags\u2026"
+            act_tags = menu.addAction(tag_lbl)
+            act_tags.triggered.connect(lambda _c=False, p=fp: self._edit_tags_dialog(p))
+            if cur_tags:
+                act_clr = menu.addAction("Clear Tags")
+                act_clr.triggered.connect(lambda _c=False, p=fp: self._set_tags(p, []))
+        menu.addSeparator()
+        # Rename (single only)
+        if n == 1:
+            act_rename = menu.addAction("Rename\u2026")
+            act_rename.triggered.connect(lambda _c=False, p=filepaths[0]: self._on_rename(p))
+        # Load / Reveal
         if n == 1:
             act_load = menu.addAction("Load to Slicer")
             act_load.triggered.connect(lambda: self.load_to_slicer.emit(filepaths[0]))
             ch_menu = menu.addMenu("Load to Channel")
             for ch in range(8):
                 a = ch_menu.addAction(f"Channel {ch + 1}")
-                a.triggered.connect(lambda _c=False, c=ch, p=filepaths[0]: self.load_to_channel.emit(p, c))
+                a.triggered.connect(lambda _c=False, c=ch, p=filepaths[0]:
+                                    self.load_to_channel.emit(p, c))
             act_reveal = menu.addAction("Reveal in Explorer")
             act_reveal.triggered.connect(lambda: _reveal_in_explorer(filepaths[0]))
-            menu.addSeparator()
-        act_del = menu.addAction(f"Delete Selected ({n})" if n > 1 else "Delete")
-        act_del.triggered.connect(self._on_delete_selected)
+        menu.addSeparator()
+        # Group into folder
+        act_grp = menu.addAction(f"Group into Folder\u2026 ({n})" if n > 1
+                                 else "Group into Folder\u2026")
+        act_grp.triggered.connect(lambda _c=False: self._on_new_folder(filepaths))
+        menu.addSeparator()
+        # Remove from view (non-destructive)
+        act_hide = menu.addAction(f"Remove from View ({n})" if n > 1 else "Remove from View")
+        act_hide.triggered.connect(lambda _c=False: self._on_hide_selected(filepaths))
+        # Delete from disk
+        act_del = menu.addAction(f"Delete File\u2026 ({n})" if n > 1 else "Delete File\u2026")
+        act_del.triggered.connect(lambda _c=False: self._on_disk_delete(filepaths))
+
+    # ── Folder tree: tree-level context menu ──────────────────────────
+
+    def _on_tree_context_menu(self, pos):
+        item = self._tree.itemAt(pos)
+        # If clicking a folder node, offer folder actions
+        if item and item.childCount() > 0:
+            menu = QMenu(self)
+            menu.setStyleSheet(
+                f"QMenu {{ background: rgba(30,30,30,230); color: {TEXT_PRIMARY}; "
+                f"border: 1px solid {SEPARATOR}; font-size: 9px; }}"
+                f"QMenu::item {{ padding: 4px 16px; }}"
+                f"QMenu::item:selected {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
+            )
+            dir_path = item.data(0, Qt.ItemDataRole.UserRole)
+            act_ren = menu.addAction("Rename Folder\u2026")
+            act_ren.triggered.connect(lambda _c=False, d=dir_path, i=item:
+                                      self._on_rename_folder(d, i))
+            act_del = menu.addAction("Delete Folder + Contents\u2026")
+            act_del.triggered.connect(lambda _c=False, d=dir_path: self._on_delete_folder(d))
+            menu.exec(self._tree.viewport().mapToGlobal(pos))
+            return
+        # Leaf (sample) selection
+        paths = self._tree.selected_filepaths()
+        if item and item.childCount() == 0:
+            fp = item.data(self.COL_NAME, Qt.ItemDataRole.UserRole + 1)
+            if fp and fp not in paths:
+                self._tree.clearSelection()
+                item.setSelected(True)
+                paths = [str(fp)]
+        if not paths:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background: rgba(30,30,30,230); color: {TEXT_PRIMARY}; "
+            f"border: 1px solid {SEPARATOR}; font-size: 9px; }}"
+            f"QMenu::item {{ padding: 4px 16px; }}"
+            f"QMenu::item:selected {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
+        )
+        self._build_context_menu(menu, paths)
+        menu.exec(self._tree.viewport().mapToGlobal(pos))
+
+    # ── Delete / hide ─────────────────────────────────────────────────
 
     def _on_delete_selected(self):
+        """Delete key: hide from view (non-destructive)."""
         paths = self._selected_filepaths()
         if not paths:
             return
+        self._on_hide_selected(paths)
+
+    def _on_hide_selected(self, paths: list[str]):
+        """Remove slices from the library view without touching disk."""
+        from mlrvp.config import save_slice_hidden
+        for p in paths:
+            self._hidden.add(p)
+        save_slice_hidden(self._hidden)
+        self.refresh()
+
+    def _on_disk_delete(self, paths: list[str]):
+        """Permanently delete slice files (and sidecars) from disk."""
         names = [os.path.basename(p) for p in paths]
-        msg = f"Delete {len(paths)} slice(s)?\n" + "\n".join(names[:10])
+        msg = (f"PERMANENTLY delete {len(paths)} slice(s) from disk?\n"
+               f"This cannot be undone.\n\n" + "\n".join(names[:10]))
         if len(names) > 10:
             msg += f"\n\u2026and {len(names) - 10} more"
-        reply = QMessageBox.question(
-            self, "Delete Slices", msg,
+        reply = QMessageBox.warning(
+            self, "Delete Slices from Disk", msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -3716,6 +4028,509 @@ class _LibrarySlicesTab(_LibraryTableBase):
                 except OSError:
                     pass
         self.refresh()
+
+    # ── Rename ────────────────────────────────────────────────────────
+
+    def _on_rename(self, filepath: str):
+        from PySide6.QtWidgets import QInputDialog
+        old_name = os.path.splitext(os.path.basename(filepath))[0]
+        ext = os.path.splitext(filepath)[1]
+        text, ok = QInputDialog.getText(self, "Rename Slice", "New name:", text=old_name)
+        if not ok or not text.strip():
+            return
+        new_name = text.strip()
+        if not new_name.lower().endswith(ext.lower()):
+            new_name += ext
+        dest = os.path.join(os.path.dirname(filepath), new_name)
+        if os.path.exists(dest):
+            QMessageBox.warning(self, "Rename", f"A file named '{new_name}' already exists.")
+            return
+        try:
+            os.rename(filepath, dest)
+        except OSError as e:
+            QMessageBox.warning(self, "Rename", str(e))
+            return
+        old_sidecar = os.path.splitext(filepath)[0] + ".json"
+        new_sidecar = os.path.splitext(dest)[0] + ".json"
+        if os.path.isfile(old_sidecar):
+            try:
+                os.rename(old_sidecar, new_sidecar)
+            except OSError:
+                pass
+        self.refresh()
+
+    # ── Folder management ─────────────────────────────────────────────
+
+    def _on_new_folder(self, filepaths: list[str]):
+        """Create a new subfolder inside slices dir and move the selected files into it."""
+        import shutil
+        from PySide6.QtWidgets import QInputDialog
+        from mlrvp.config import get_slices_dir
+        slices_dir = str(get_slices_dir())
+        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
+        if not ok or not name.strip():
+            return
+        folder = os.path.join(slices_dir, name.strip())
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as e:
+            QMessageBox.warning(self, "New Folder", str(e))
+            return
+        for src in filepaths:
+            if not os.path.isfile(src):
+                continue
+            fname = os.path.basename(src)
+            dest = os.path.join(folder, fname)
+            try:
+                shutil.move(src, dest)
+                sidecar_src = os.path.splitext(src)[0] + ".json"
+                sidecar_dst = os.path.splitext(dest)[0] + ".json"
+                if os.path.isfile(sidecar_src):
+                    shutil.move(sidecar_src, sidecar_dst)
+            except OSError:
+                pass
+        self.refresh()
+
+    def _on_rename_folder(self, dir_path: str, tree_item: QTreeWidgetItem):
+        from PySide6.QtWidgets import QInputDialog
+        old_name = os.path.basename(dir_path)
+        name, ok = QInputDialog.getText(self, "Rename Folder", "New name:", text=old_name)
+        if not ok or not name.strip() or name.strip() == old_name:
+            return
+        dest = os.path.join(os.path.dirname(dir_path), name.strip())
+        if os.path.exists(dest):
+            QMessageBox.warning(self, "Rename Folder", f"'{name.strip()}' already exists.")
+            return
+        try:
+            os.rename(dir_path, dest)
+        except OSError as e:
+            QMessageBox.warning(self, "Rename Folder", str(e))
+            return
+        self.refresh()
+
+    def _on_delete_folder(self, dir_path: str):
+        import shutil
+        from mlrvp.config import get_slices_dir
+        slices_dir = str(get_slices_dir())
+        # Safety: must be inside slices dir
+        if not os.path.abspath(dir_path).startswith(os.path.abspath(slices_dir)):
+            return
+        name = os.path.basename(dir_path)
+        reply = QMessageBox.warning(
+            self, "Delete Folder",
+            f"PERMANENTLY delete folder '{name}' and ALL its contents?\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            shutil.rmtree(dir_path)
+        except OSError as e:
+            QMessageBox.warning(self, "Delete Folder", str(e))
+            return
+        self.refresh()
+
+    # ── Favorites + Tags + Recents helpers ───────────────────────────
+
+    def _toggle_favorite(self, filepaths: list[str]):
+        any_not_fav = any(fp not in self._favorites for fp in filepaths)
+        for fp in filepaths:
+            if any_not_fav:
+                self._favorites.add(fp)
+            else:
+                self._favorites.discard(fp)
+        self._save_favorites()
+        for fp in filepaths:
+            self._refresh_fav_visual(fp, fp in self._favorites)
+        self._apply_filter()
+
+    def _edit_tags_dialog(self, filepath: str):
+        from PySide6.QtWidgets import QInputDialog
+        cur = ", ".join(self._tags.get(filepath, []))
+        fname = os.path.basename(filepath)
+        text, ok = QInputDialog.getText(
+            self, "Edit Tags", f"Tags for {fname}\n(comma-separated):", text=cur
+        )
+        if not ok:
+            return
+        raw = [t.strip() for t in text.split(",") if t.strip()]
+        self._set_tags(filepath, raw)
+
+    def _set_tags(self, filepath: str, tags: list):
+        if tags:
+            self._tags[filepath] = tags
+        else:
+            self._tags.pop(filepath, None)
+        self._save_tags()
+        tags_text = ", ".join(tags)
+        for r in range(self._table.rowCount()):
+            name_item = self._table.item(r, self.COL_NAME)
+            if name_item and str(name_item.data(Qt.ItemDataRole.UserRole + 1)) == filepath:
+                ti = self._table.item(r, self.COL_TAGS)
+                if ti:
+                    ti.setText(tags_text)
+                break
+        self._update_tree_item_tags(filepath, tags_text)
+        self._apply_filter()
+
+    def _refresh_fav_visual(self, filepath: str, is_fav: bool):
+        color = QColor(ACCENT_GOLD) if is_fav else QColor(TEXT_PRIMARY)
+        for r in range(self._table.rowCount()):
+            name_item = self._table.item(r, self.COL_NAME)
+            if name_item and str(name_item.data(Qt.ItemDataRole.UserRole + 1)) == filepath:
+                name_item.setForeground(color)
+                break
+
+        def _walk(item: QTreeWidgetItem):
+            if item.childCount() > 0:
+                for i in range(item.childCount()):
+                    _walk(item.child(i))
+            else:
+                fp = item.data(self.COL_NAME, Qt.ItemDataRole.UserRole + 1)
+                if str(fp) == filepath:
+                    item.setForeground(self.COL_NAME, color)
+
+        root = self._tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            _walk(root.child(i))
+
+    def _update_tree_item_tags(self, filepath: str, tags_text: str):
+        def _walk(item: QTreeWidgetItem):
+            if item.childCount() > 0:
+                for i in range(item.childCount()):
+                    _walk(item.child(i))
+            else:
+                fp = item.data(self.COL_NAME, Qt.ItemDataRole.UserRole + 1)
+                if str(fp) == filepath:
+                    item.setText(self.COL_TAGS, tags_text)
+
+        root = self._tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            _walk(root.child(i))
+
+    def _track_recent(self, filepath: str):
+        from mlrvp.config import SLICE_RECENTS_MAX
+        if filepath in self._recents:
+            self._recents.remove(filepath)
+        self._recents.insert(0, filepath)
+        if len(self._recents) > SLICE_RECENTS_MAX:
+            self._recents = self._recents[:SLICE_RECENTS_MAX]
+        self._save_recents()
+
+    def _save_favorites(self):
+        from mlrvp.config import save_slice_favorites
+        save_slice_favorites(self._favorites)
+
+    def _save_recents(self):
+        from mlrvp.config import save_slice_recents
+        save_slice_recents(self._recents)
+
+    def _save_tags(self):
+        from mlrvp.config import save_slice_tags
+        save_slice_tags(self._tags)
+
+    # ── Filter hooks ──────────────────────────────────────────────────
+
+    def _extra_row_visible(self, r: int) -> bool:
+        name_item = self._table.item(r, self.COL_NAME)
+        if name_item is None:
+            return True
+        fp = str(name_item.data(Qt.ItemDataRole.UserRole + 1) or "")
+        if not fp:
+            return True
+        if self._fav_filter_btn.isChecked() and fp not in self._favorites:
+            return False
+        if self._recent_filter_btn.isChecked() and fp not in self._recents:
+            return False
+        tag_q = self._tag_filter_edit.text().strip().lower()
+        if tag_q:
+            sample_tags = [t.lower() for t in self._tags.get(fp, [])]
+            if not any(tag_q in t for t in sample_tags):
+                return False
+        return True
+
+    def _clear_filters(self):
+        self._search_edit.clear()
+        self._key_filter.setCurrentIndex(0)
+        self._bpm_min.setValue(0)
+        self._bpm_max.setValue(0)
+        self._fav_filter_btn.setChecked(False)
+        self._recent_filter_btn.setChecked(False)
+        self._tag_filter_edit.clear()
+        self._apply_filter()
+
+    # ── Folder view ───────────────────────────────────────────────────
+
+    def _on_toggle_view(self, checked: bool):
+        self._view_mode = "folder" if checked else "all"
+        self._stack.setCurrentIndex(1 if checked else 0)
+        self._folder_view_btn.setText("Dir" if checked else "All")
+        self._apply_filter()
+
+    def _apply_filter_tree(self):
+        query = self._search_edit.text().strip().lower()
+        key_filter = self._key_filter.currentData() or ""
+        bpm_min = self._bpm_min.value()
+        bpm_max = self._bpm_max.value()
+        fav_only = self._fav_filter_btn.isChecked()
+        recent_only = self._recent_filter_btn.isChecked()
+        tag_q = self._tag_filter_edit.text().strip().lower()
+        filter_active = bool(query or key_filter or bpm_min > 0 or bpm_max > 0
+                             or fav_only or recent_only or tag_q)
+
+        def _filter_item(item: QTreeWidgetItem) -> bool:
+            if item.childCount() > 0:
+                any_visible = False
+                for i in range(item.childCount()):
+                    if _filter_item(item.child(i)):
+                        any_visible = True
+                item.setHidden(not any_visible)
+                if filter_active and any_visible:
+                    item.setExpanded(True)
+                return any_visible
+            fp = item.data(self.COL_NAME, Qt.ItemDataRole.UserRole + 1)
+            fp = str(fp) if fp else ""
+            visible = True
+            name = item.text(self.COL_NAME).lower()
+            if query and query not in name:
+                visible = False
+            if visible and key_filter and item.text(self.COL_KEY) != key_filter:
+                visible = False
+            if visible and (bpm_min > 0 or bpm_max > 0):
+                try:
+                    bpm_val = float(item.data(self.COL_BPM, Qt.ItemDataRole.UserRole))
+                    if not math.isnan(bpm_val):
+                        if bpm_min > 0 and bpm_val < bpm_min:
+                            visible = False
+                        if bpm_max > 0 and bpm_val > bpm_max:
+                            visible = False
+                except (TypeError, ValueError):
+                    pass
+            if visible and fav_only and fp not in self._favorites:
+                visible = False
+            if visible and recent_only and fp not in self._recents:
+                visible = False
+            if visible and tag_q and fp:
+                stags = [t.lower() for t in self._tags.get(fp, [])]
+                if not any(tag_q in t for t in stags):
+                    visible = False
+            item.setHidden(not visible)
+            return visible
+
+        root = self._tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            _filter_item(root.child(i))
+
+    def _build_tree(self):
+        from mlrvp.config import get_slices_dir
+        slices_dir = str(get_slices_dir())
+        self._tree.clear()
+        if not os.path.isdir(slices_dir):
+            return
+        root_item = QTreeWidgetItem(self._tree)
+        _make_folder_style(root_item)
+        root_item.setText(self.COL_NAME, "slices")
+        root_item.setData(0, Qt.ItemDataRole.UserRole, slices_dir)
+        root_item.setToolTip(self.COL_NAME, slices_dir)
+        self._build_tree_dir(root_item, slices_dir)
+        root_item.setExpanded(True)
+        h = self._tree.header()
+        h.setStretchLastSection(True)
+        for c in range(self._tree.columnCount()):
+            h.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+        self._tree.setColumnWidth(self.COL_PLAY, 52)
+        self._tree.setColumnWidth(self.COL_NAME, 200)
+        self._tree.setColumnWidth(self.COL_BPM, 55)
+        self._tree.setColumnWidth(self.COL_KEY, 55)
+        self._tree.setColumnWidth(self.COL_BARS, 45)
+        self._tree.setColumnWidth(self.COL_DUR, 70)
+        self._tree.setColumnWidth(self.COL_TAGS, 120)
+
+    def _build_tree_dir(self, parent: QTreeWidgetItem, dir_path: str):
+        try:
+            entries = sorted(os.scandir(dir_path),
+                             key=lambda e: (not e.is_dir(), e.name.lower()))
+        except PermissionError:
+            return
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                dir_item = QTreeWidgetItem(parent)
+                _make_folder_style(dir_item)
+                dir_item.setText(self.COL_NAME, entry.name)
+                dir_item.setData(0, Qt.ItemDataRole.UserRole, entry.path)
+                dir_item.setToolTip(self.COL_NAME, entry.path)
+                self._build_tree_dir(dir_item, entry.path)
+                if dir_item.childCount() > 0:
+                    dir_item.setExpanded(False)
+                else:
+                    parent.removeChild(dir_item)
+            elif entry.is_file():
+                if os.path.splitext(entry.name)[1].lower() not in AUDIO_EXTENSIONS:
+                    continue
+                fpath = entry.path
+                if fpath in self._hidden:
+                    continue
+                meta = self._meta.get(fpath, {}) or {}
+                self._add_tree_row(parent, fpath, entry.name, meta)
+
+    # ── Folder tree: selection + sort ────────────────────────────────
+
+    def _on_tree_selection_changed(self):
+        n = len(self._tree.selected_filepaths())
+        if n > 0:
+            self._batch_del_btn.setText(f"Delete ({n})" if n > 1 else "Delete")
+            self._batch_del_btn.setVisible(True)
+        else:
+            self._batch_del_btn.setVisible(False)
+
+    def _on_tree_header_clicked(self, col: int):
+        if col == self.COL_PLAY:
+            return
+        if self._tree_sort_col == col:
+            self._tree_sort_asc = not self._tree_sort_asc
+        else:
+            self._tree_sort_col = col
+            self._tree_sort_asc = True
+        order = (Qt.SortOrder.AscendingOrder if self._tree_sort_asc
+                 else Qt.SortOrder.DescendingOrder)
+        self._tree.header().setSortIndicator(col, order)
+        root = self._tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            self._sort_tree_item(root.child(i), col, self._tree_sort_asc)
+
+    def _sort_tree_item(self, item: QTreeWidgetItem, col: int, ascending: bool):
+        if item.childCount() == 0:
+            return
+        folders = [item.child(i) for i in range(item.childCount())
+                   if item.child(i).childCount() > 0]
+        leaves = [item.child(i) for i in range(item.childCount())
+                  if item.child(i).childCount() == 0]
+
+        def _key(child_item):
+            raw = child_item.data(col, Qt.ItemDataRole.UserRole)
+            if raw is not None:
+                try:
+                    v = float(raw)
+                    if not math.isnan(v):
+                        return (0, v, "")
+                    return (1, 0.0, "")
+                except (TypeError, ValueError):
+                    pass
+            return (0, 0.0, child_item.text(col).lower())
+
+        folders.sort(key=lambda x: x.text(1).lower())
+        leaves.sort(key=_key, reverse=not ascending)
+        taken = item.takeChildren()  # noqa
+        for f in folders:
+            item.addChild(f)
+        for lv in leaves:
+            item.addChild(lv)
+        for f in folders:
+            self._sort_tree_item(f, col, ascending)
+
+    # ── Play / preview ────────────────────────────────────────────────
+
+    def _on_tree_play_requested(self, fp: str):
+        if fp == self._previewing_fp:
+            self._do_stop_preview()
+        else:
+            self._previewing_fp = fp
+            self._stop_preview_btn.setEnabled(True)
+            self._track_recent(fp)
+            self.preview_requested.emit(fp, self._vol_slider.value() / 100.0)
+
+    def _on_cell_clicked(self, row: int, col: int):
+        if col == self.COL_PLAY:
+            name_item = self._table.item(row, self.COL_NAME)
+            if name_item:
+                fp = str(name_item.data(Qt.ItemDataRole.UserRole + 1) or "")
+                if fp and fp != self._previewing_fp:
+                    self._track_recent(fp)
+        super()._on_cell_clicked(row, col)
+
+    # ── Selected filepaths (view-aware) ───────────────────────────────
+
+    def _selected_filepaths(self) -> list[str]:
+        if self._view_mode == "folder":
+            return self._tree.selected_filepaths()
+        return super()._selected_filepaths()
+
+    # ── Scan persist ──────────────────────────────────────────────────
+
+    def _on_scan_result_persist(self, filepath: str, bpm: float, key: str):
+        import json as _json
+        import math as _m
+        sidecar = os.path.splitext(filepath)[0] + ".json"
+        existing = {}
+        if os.path.isfile(sidecar):
+            try:
+                with open(sidecar, "r", encoding="utf-8") as f:
+                    existing = _json.load(f) or {}
+            except (ValueError, OSError):
+                existing = {}
+        if not _m.isnan(bpm) and bpm > 0:
+            existing["bpm"] = float(bpm)
+            duration = self._meta.get(filepath, {}).get("_duration", 0.0)
+            bars = _snap_to_bars(duration, bpm)
+            if bars:
+                existing["bars"] = bars
+        if key:
+            existing["key"] = key
+        try:
+            with open(sidecar, "w", encoding="utf-8") as f:
+                _json.dump(existing, f, indent=2)
+        except OSError:
+            pass
+
+    # ── Files move (drag-drop) ────────────────────────────────────────
+
+    def _on_files_move_requested(self, paths: list, dest_dir: str):
+        """Move slice files (+ sidecars) to dest_dir via drag-drop in folder tree."""
+        import shutil
+        moved_any = False
+        for src in paths:
+            if not os.path.isfile(src):
+                continue
+            fname = os.path.basename(src)
+            dest = os.path.join(dest_dir, fname)
+            if os.path.abspath(src) == os.path.abspath(dest):
+                continue
+            try:
+                shutil.move(src, dest)
+                sidecar_src = os.path.splitext(src)[0] + ".json"
+                sidecar_dst = os.path.splitext(dest)[0] + ".json"
+                if os.path.isfile(sidecar_src):
+                    shutil.move(sidecar_src, sidecar_dst)
+                moved_any = True
+            except OSError:
+                pass
+        if moved_any:
+            self.refresh()
+
+    # ── Update tree item meta after scan ─────────────────────────────
+
+    def _update_tree_item_meta(self, filepath: str, meta: dict):
+        def _walk(item: QTreeWidgetItem):
+            if item.childCount() > 0:
+                for i in range(item.childCount()):
+                    _walk(item.child(i))
+            else:
+                fp = item.data(self.COL_NAME, Qt.ItemDataRole.UserRole + 1)
+                if fp == filepath:
+                    bpm_val = meta.get("bpm")
+                    item.setText(self.COL_BPM, f"{bpm_val:.0f}" if bpm_val else "")
+                    item.setData(self.COL_BPM, Qt.ItemDataRole.UserRole,
+                                 float(bpm_val) if bpm_val else float("nan"))
+                    item.setText(self.COL_KEY, meta.get("key") or "")
+
+        root = self._tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            _walk(root.child(i))
+
+    def _on_scan_result(self, filepath: str, bpm: float, key: str):
+        super()._on_scan_result(filepath, bpm, key)
+        self._update_tree_item_meta(filepath, self._meta.get(filepath, {}) or {})
 
 
 def _snap_to_bars(duration_s: float, bpm) -> int | None:
@@ -3755,16 +4570,17 @@ def _reveal_in_explorer(filepath: str):
 class _LibrarySamplesTab(_LibraryTableBase):
     """SAMPLES sub-tab — scans user-defined watched directories."""
 
-    # Column indices: ▶ | Name | BPM | Key | Duration | Channels | SR | Size | Path
+    # Column indices: ▶ | Name | BPM | Key | Duration | Channels | SR | Size | Path | Tags
     COL_PLAY = 0
     COL_DUR = 4
     COL_CH = 5
     COL_SR = 6
     COL_SIZE = 7
     COL_PATH = 8
+    COL_TAGS = 9
 
     def _columns(self) -> list[str]:
-        return ["▶", "Name", "BPM", "Key", "Duration", "Ch", "SR", "Size", "Path"]
+        return ["▶", "Name", "BPM", "Key", "Duration", "Ch", "SR", "Size", "Path", "Tags"]
 
     def __init__(self, parent=None):
         from mlrvp.config import get_sample_paths, get_sample_metadata_cache
@@ -3837,14 +4653,15 @@ class _LibrarySamplesTab(_LibraryTableBase):
                 break
 
         # Tree widget
-        self._tree = _LibraryFolderTree(self._columns())
+        self._tree = _LibraryFolderTree(self._columns(), drop_enabled=True)
         self._tree.delete_pressed.connect(self._on_delete_selected)
-        self._tree.play_requested.connect(lambda fp: self.preview_requested.emit(fp, self._vol_slider.value() / 100.0))
+        self._tree.play_requested.connect(self._on_tree_play_requested)
         self._tree.load_requested.connect(self._handle_double_click)
         self._tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._on_tree_context_menu)
         self._tree.header().sectionClicked.connect(self._on_tree_header_clicked)
+        self._tree.files_move_requested.connect(self._on_files_move_requested)
 
         # Stack: index 0 = flat table (All view), index 1 = tree (Folder view)
         self._stack = QStackedWidget()
@@ -3869,12 +4686,125 @@ class _LibrarySamplesTab(_LibraryTableBase):
         # row1 layout order: search(0), refresh(1), [insert here at 2], scan(2→3), del(3→4)
         self._toolbar_row1.insertWidget(2, self._folder_view_btn)
 
+        # ── Favorites + Tags ──────────────────────────────────────────
+        from mlrvp.config import get_sample_favorites, get_sample_tags, get_sample_recents
+        self._favorites: set = set(get_sample_favorites())
+        self._tags: dict = dict(get_sample_tags())
+        self._recents: list = list(get_sample_recents())
+
+        # ★ Favs filter toggle (appended to toolbar row 1)
+        self._fav_filter_btn = QPushButton("★ Favs")
+        self._fav_filter_btn.setCheckable(True)
+        self._fav_filter_btn.setFixedSize(52, 20)
+        self._fav_filter_btn.setToolTip("Show only favorited samples")
+        self._fav_filter_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
+            f"QPushButton:hover {{ color: {ACCENT_GOLD}; }}"
+            f"QPushButton:checked {{ color: {BG_BLACK}; background: {ACCENT_GOLD}; "
+            f"border: 1px solid {ACCENT_GOLD}; }}"
+        )
+        self._fav_filter_btn.clicked.connect(self._apply_filter)
+        self._toolbar_row1.addWidget(self._fav_filter_btn)
+
+        # Recent filter toggle
+        self._recent_filter_btn = QPushButton("Recent")
+        self._recent_filter_btn.setCheckable(True)
+        self._recent_filter_btn.setFixedSize(52, 20)
+        self._recent_filter_btn.setToolTip("Show only recently used samples")
+        self._recent_filter_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
+            f"QPushButton:hover {{ color: {ACCENT_GOLD}; }}"
+            f"QPushButton:checked {{ color: {BG_BLACK}; background: {ACCENT_GOLD}; "
+            f"border: 1px solid {ACCENT_GOLD}; }}"
+        )
+        self._recent_filter_btn.clicked.connect(self._apply_filter)
+        self._toolbar_row1.addWidget(self._recent_filter_btn)
+
+        # Tag search filter (inserted before the stretch in toolbar row 2)
+        _ins = self._toolbar_row2.count() - 1  # index of the trailing stretch
+        _tl = QLabel("Tag:")
+        _tl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 8px;")
+        self._toolbar_row2.insertWidget(_ins, _tl)
+        self._tag_filter_edit = QLineEdit()
+        self._tag_filter_edit.setPlaceholderText("tag…")
+        self._tag_filter_edit.setClearButtonEnabled(True)
+        self._tag_filter_edit.setFixedHeight(20)
+        self._tag_filter_edit.setMaximumWidth(110)
+        self._tag_filter_edit.setStyleSheet(
+            f"QLineEdit {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
+        )
+        self._tag_filter_edit.textChanged.connect(self._on_search_changed)
+        self._toolbar_row2.insertWidget(_ins + 1, self._tag_filter_edit)
+        # ─────────────────────────────────────────────────────────────
+
         # Tree sort state
         self._tree_sort_col: int = self.COL_NAME
         self._tree_sort_asc: bool = True
         # ─────────────────────────────────────────────────────────────
 
+        # Default to folder/Dir view with directories collapsed
+        self._view_mode = "folder"
+        self._folder_view_btn.setChecked(True)
+        self._folder_view_btn.setText("Dir")
+        self._stack.setCurrentIndex(1)
+
         self.refresh()
+
+    def _on_tree_play_requested(self, fp: str):
+        """Toggle play/stop when a tree row's play button is clicked."""
+        if fp == self._previewing_fp:
+            self._do_stop_preview()
+        else:
+            self._previewing_fp = fp
+            self._stop_preview_btn.setEnabled(True)
+            self._track_recent(fp)
+            self.preview_requested.emit(fp, self._vol_slider.value() / 100.0)
+
+    def _on_cell_clicked(self, row: int, col: int):
+        """Override: track recent when the flat-table play button is clicked."""
+        if col == self.COL_PLAY:
+            name_item = self._table.item(row, self.COL_NAME)
+            if name_item:
+                fp = str(name_item.data(Qt.ItemDataRole.UserRole + 1) or "")
+                if fp and fp != self._previewing_fp:
+                    self._track_recent(fp)
+        super()._on_cell_clicked(row, col)
+
+    # ── Favorites + Tags: filter hooks ───────────────────────────────
+
+    def _extra_row_visible(self, r: int) -> bool:
+        """Show/hide row based on active favorites filter and tag filter."""
+        name_item = self._table.item(r, self.COL_NAME)
+        if name_item is None:
+            return True
+        fp = name_item.data(Qt.ItemDataRole.UserRole + 1)
+        if not fp:
+            return True
+        fp = str(fp)
+        if self._fav_filter_btn.isChecked() and fp not in self._favorites:
+            return False
+        if self._recent_filter_btn.isChecked() and fp not in self._recents:
+            return False
+        tag_q = self._tag_filter_edit.text().strip().lower()
+        if tag_q:
+            sample_tags = [t.lower() for t in self._tags.get(fp, [])]
+            if not any(tag_q in t for t in sample_tags):
+                return False
+        return True
+
+    def _clear_filters(self):
+        """Override: also clear favorites filter and tag filter."""
+        self._search_edit.clear()
+        self._key_filter.setCurrentIndex(0)
+        self._bpm_min.setValue(0)
+        self._bpm_max.setValue(0)
+        self._fav_filter_btn.setChecked(False)
+        self._recent_filter_btn.setChecked(False)
+        self._tag_filter_edit.clear()
+        self._apply_filter()
 
     def _on_toggle_dirs(self):
         self._dirs_panel.setVisible(self._dirs_toggle.isChecked())
@@ -4027,16 +4957,15 @@ class _LibrarySamplesTab(_LibraryTableBase):
         path_item = QTableWidgetItem(folder)
         path_item.setToolTip(fpath)
         self._table.setItem(r, self.COL_PATH, path_item)
-
-    def _on_scan_result_persist(self, filepath: str, bpm: float, key: str):
-        import math as _m
-        cached = dict(self._cache.get(filepath, {}) or {})
-        if not _m.isnan(bpm) and bpm > 0:
-            cached["bpm"] = float(bpm)
-        if key:
-            cached["key"] = key
-        self._cache[filepath] = cached
-        self._save_cache()
+        # Tags
+        tags_list = self._tags.get(fpath, [])
+        tags_item = QTableWidgetItem(", ".join(tags_list))
+        tags_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        tags_item.setForeground(QColor(TEXT_SECONDARY))
+        self._table.setItem(r, self.COL_TAGS, tags_item)
+        # Favorite visual: gold name
+        if fpath in self._favorites:
+            name_item.setForeground(QColor(ACCENT_GOLD))
 
     def _on_scan_result_persist(self, filepath: str, bpm: float, key: str):
         import math as _m
@@ -4153,12 +5082,16 @@ class _LibrarySamplesTab(_LibraryTableBase):
     # ── Folder view: filter ───────────────────────────────────────────
 
     def _apply_filter_tree(self):
-        """Hide/show tree items to match active search, key, and BPM filters."""
+        """Hide/show tree items to match active search, key, BPM, favorites, and tag filters."""
         query = self._search_edit.text().strip().lower()
         key_filter = self._key_filter.currentData() or ""
         bpm_min = self._bpm_min.value()
         bpm_max = self._bpm_max.value()
-        filter_active = bool(query or key_filter or bpm_min > 0 or bpm_max > 0)
+        fav_only = self._fav_filter_btn.isChecked()
+        recent_only = self._recent_filter_btn.isChecked()
+        tag_q = self._tag_filter_edit.text().strip().lower()
+        filter_active = bool(query or key_filter or bpm_min > 0 or bpm_max > 0
+                             or fav_only or recent_only or tag_q)
 
         def _filter_item(item: QTreeWidgetItem) -> bool:
             if item.childCount() > 0:
@@ -4168,12 +5101,12 @@ class _LibrarySamplesTab(_LibraryTableBase):
                     if _filter_item(item.child(i)):
                         any_visible = True
                 item.setHidden(not any_visible)
-                # Only auto-expand to reveal filter matches; never collapse/expand
-                # when the user has cleared all filters.
                 if filter_active and any_visible:
                     item.setExpanded(True)
                 return any_visible
             # Leaf (sample) node
+            fp = item.data(self.COL_NAME, Qt.ItemDataRole.UserRole + 1)
+            fp = str(fp) if fp else ""
             visible = True
             name = item.text(self.COL_NAME).lower()
             if query and query not in name:
@@ -4191,6 +5124,14 @@ class _LibrarySamplesTab(_LibraryTableBase):
                             visible = False
                 except (TypeError, ValueError):
                     pass
+            if visible and fav_only and fp not in self._favorites:
+                visible = False
+            if visible and recent_only and fp not in self._recents:
+                visible = False
+            if visible and tag_q and fp:
+                sample_tags = [t.lower() for t in self._tags.get(fp, [])]
+                if not any(tag_q in t for t in sample_tags):
+                    visible = False
             item.setHidden(not visible)
             return visible
 
@@ -4214,7 +5155,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
             root_item.setData(0, Qt.ItemDataRole.UserRole, base_dir)
             root_item.setToolTip(self.COL_NAME, base_dir)
             self._build_tree_dir(root_item, base_dir, seen)
-            root_item.setExpanded(True)
+            root_item.setExpanded(False)
         # Match column widths to the flat table
         h = self._tree.header()
         h.setStretchLastSection(True)
@@ -4228,6 +5169,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
         self._tree.setColumnWidth(self.COL_CH, 35)
         self._tree.setColumnWidth(self.COL_SR, 65)
         self._tree.setColumnWidth(self.COL_SIZE, 65)
+        self._tree.setColumnWidth(self.COL_TAGS, 120)
 
     def _build_tree_dir(self, parent: QTreeWidgetItem, dir_path: str, seen: set):
         """Recursively add subdirectory and sample leaf nodes under parent."""
@@ -4243,9 +5185,9 @@ class _LibrarySamplesTab(_LibraryTableBase):
                 dir_item.setData(0, Qt.ItemDataRole.UserRole, entry.path)
                 dir_item.setToolTip(self.COL_NAME, entry.path)
                 self._build_tree_dir(dir_item, entry.path, seen)
-                # Auto-expand only if it has children
+                # Prune empty dirs; leave all others collapsed by default
                 if dir_item.childCount() > 0:
-                    dir_item.setExpanded(True)
+                    dir_item.setExpanded(False)
                 else:
                     parent.removeChild(dir_item)  # prune empty dirs
             elif entry.is_file():
@@ -4311,6 +5253,13 @@ class _LibrarySamplesTab(_LibraryTableBase):
         # COL_PATH — folder name only; full path in tooltip
         item.setText(self.COL_PATH, os.path.dirname(fpath))
         item.setToolTip(self.COL_PATH, fpath)
+        # COL_TAGS
+        tags_list = self._tags.get(fpath, [])
+        item.setText(self.COL_TAGS, ", ".join(tags_list))
+        item.setForeground(self.COL_TAGS, QColor(TEXT_SECONDARY))
+        # Favorite visual: gold name
+        if fpath in self._favorites:
+            item.setForeground(self.COL_NAME, QColor(ACCENT_GOLD))
 
     def _update_tree_item_meta(self, filepath: str, meta: dict):
         """Find the leaf tree item for filepath and refresh its BPM/Key columns."""
@@ -4344,6 +5293,28 @@ class _LibrarySamplesTab(_LibraryTableBase):
 
     def _build_context_menu(self, menu: QMenu, filepaths: list[str]) -> None:
         n = len(filepaths)
+        # ── Favorites ────────────────────────────────────────────────
+        if n == 1:
+            fp = filepaths[0]
+            is_fav = fp in self._favorites
+            fav_label = "★ Remove from Favorites" if is_fav else "☆ Add to Favorites"
+            act_fav = menu.addAction(fav_label)
+            act_fav.triggered.connect(lambda _c=False, p=fp: self._toggle_favorite([p]))
+        else:
+            act_fav = menu.addAction(f"☆ Add to Favorites ({n})")
+            act_fav.triggered.connect(lambda _c=False: self._toggle_favorite(filepaths))
+        # ── Tags ─────────────────────────────────────────────────────
+        if n == 1:
+            fp = filepaths[0]
+            cur_tags = self._tags.get(fp, [])
+            tag_label = f"Tags: {', '.join(cur_tags)}" if cur_tags else "Edit Tags\u2026"
+            act_tags = menu.addAction(tag_label)
+            act_tags.triggered.connect(lambda _c=False, p=fp: self._edit_tags_dialog(p))
+            if cur_tags:
+                act_clear_tags = menu.addAction("Clear Tags")
+                act_clear_tags.triggered.connect(lambda _c=False, p=fp: self._set_tags(p, []))
+        menu.addSeparator()
+        # ── Load / Reveal ─────────────────────────────────────────────
         if n == 1:
             act_load_slice = menu.addAction("Load to Slicer")
             act_load_slice.triggered.connect(lambda: self.load_to_slicer.emit(filepaths[0]))
@@ -4358,6 +5329,136 @@ class _LibrarySamplesTab(_LibraryTableBase):
         act_remove.triggered.connect(self._on_delete_selected)
         act_disk_del = menu.addAction(f"Delete File\u2026 ({n})" if n > 1 else "Delete File\u2026")
         act_disk_del.triggered.connect(lambda: self._on_disk_delete(filepaths))
+
+    # ── Favorites + Tags: helpers ─────────────────────────────────────
+
+    def _toggle_favorite(self, filepaths: list[str]):
+        """Add to favorites if any are not favorited, else remove all from favorites."""
+        any_not_fav = any(fp not in self._favorites for fp in filepaths)
+        for fp in filepaths:
+            if any_not_fav:
+                self._favorites.add(fp)
+            else:
+                self._favorites.discard(fp)
+        self._save_favorites()
+        for fp in filepaths:
+            self._refresh_fav_visual(fp, fp in self._favorites)
+        self._apply_filter()
+
+    def _edit_tags_dialog(self, filepath: str):
+        """Open a dialog to edit comma-separated tags for a sample."""
+        from PySide6.QtWidgets import QInputDialog
+        cur = ", ".join(self._tags.get(filepath, []))
+        fname = os.path.basename(filepath)
+        text, ok = QInputDialog.getText(
+            self, "Edit Tags", f"Tags for {fname}\n(comma-separated):", text=cur
+        )
+        if not ok:
+            return
+        raw = [t.strip() for t in text.split(",") if t.strip()]
+        self._set_tags(filepath, raw)
+
+    def _set_tags(self, filepath: str, tags: list):
+        """Set tags for a filepath and persist."""
+        if tags:
+            self._tags[filepath] = tags
+        else:
+            self._tags.pop(filepath, None)
+        self._save_tags()
+        # Refresh the table row and tree item
+        tags_text = ", ".join(tags)
+        for r in range(self._table.rowCount()):
+            name_item = self._table.item(r, self.COL_NAME)
+            if name_item and str(name_item.data(Qt.ItemDataRole.UserRole + 1)) == filepath:
+                tags_item = self._table.item(r, self.COL_TAGS)
+                if tags_item:
+                    tags_item.setText(tags_text)
+                break
+        self._update_tree_item_tags(filepath, tags_text)
+        self._apply_filter()
+
+    def _refresh_fav_visual(self, filepath: str, is_fav: bool):
+        """Update the name cell foreground in the flat table and tree for the given filepath."""
+        gold = QColor(ACCENT_GOLD)
+        default = QColor(TEXT_PRIMARY)
+        color = gold if is_fav else default
+        for r in range(self._table.rowCount()):
+            name_item = self._table.item(r, self.COL_NAME)
+            if name_item and str(name_item.data(Qt.ItemDataRole.UserRole + 1)) == filepath:
+                name_item.setForeground(color)
+                break
+
+        def _walk(item: QTreeWidgetItem):
+            if item.childCount() > 0:
+                for i in range(item.childCount()):
+                    _walk(item.child(i))
+            else:
+                fp = item.data(self.COL_NAME, Qt.ItemDataRole.UserRole + 1)
+                if str(fp) == filepath:
+                    item.setForeground(self.COL_NAME, color)
+
+        root = self._tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            _walk(root.child(i))
+
+    def _update_tree_item_tags(self, filepath: str, tags_text: str):
+        """Update the Tags column of the matching tree leaf."""
+        def _walk(item: QTreeWidgetItem):
+            if item.childCount() > 0:
+                for i in range(item.childCount()):
+                    _walk(item.child(i))
+            else:
+                fp = item.data(self.COL_NAME, Qt.ItemDataRole.UserRole + 1)
+                if str(fp) == filepath:
+                    item.setText(self.COL_TAGS, tags_text)
+
+        root = self._tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            _walk(root.child(i))
+
+    def _save_favorites(self):
+        from mlrvp.config import save_sample_favorites
+        save_sample_favorites(self._favorites)
+
+    def _save_tags(self):
+        from mlrvp.config import save_sample_tags
+        save_sample_tags(self._tags)
+
+    def _track_recent(self, filepath: str):
+        """Push filepath to the front of recents and persist."""
+        from mlrvp.config import SAMPLE_RECENTS_MAX
+        if filepath in self._recents:
+            self._recents.remove(filepath)
+        self._recents.insert(0, filepath)
+        if len(self._recents) > SAMPLE_RECENTS_MAX:
+            self._recents = self._recents[:SAMPLE_RECENTS_MAX]
+        self._save_recents()
+
+    def _save_recents(self):
+        from mlrvp.config import save_sample_recents
+        save_sample_recents(self._recents)
+
+    def _on_files_move_requested(self, paths: list, dest_dir: str):
+        """Move sample files to dest_dir via drag-drop in folder tree."""
+        import shutil
+        moved_any = False
+        for src in paths:
+            if not os.path.isfile(src):
+                continue
+            fname = os.path.basename(src)
+            dest = os.path.join(dest_dir, fname)
+            if os.path.abspath(src) == os.path.abspath(dest):
+                continue
+            try:
+                shutil.move(src, dest)
+                if src in self._cache:
+                    self._cache[dest] = self._cache.pop(src)
+                    self._save_cache()
+                moved_any = True
+            except OSError:
+                pass
+        if moved_any:
+            self.refresh()
 
     def _on_delete_selected(self):
         """Default Delete key action: remove from library (cache only, non-destructive)."""
@@ -4411,6 +5512,7 @@ class LibraryPanel(QFrame):
     load_to_slicer = Signal(str)
     load_to_channel = Signal(str, int)
     preview_requested = Signal(str, float)  # filepath, volume 0.0–1.0
+    preview_stop_requested = Signal()        # stop current preview
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -4442,6 +5544,7 @@ class LibraryPanel(QFrame):
             tab.load_to_slicer.connect(self.load_to_slicer.emit)
             tab.load_to_channel.connect(self.load_to_channel.emit)
             tab.preview_requested.connect(self.preview_requested.emit)
+            tab.preview_stop_requested.connect(self.preview_stop_requested.emit)
 
     def refresh(self):
         self._slices_tab.refresh()

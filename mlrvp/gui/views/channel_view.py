@@ -28,7 +28,7 @@ from mlrvp.gui.styles import (
     _ARROW_UP, _ARROW_DOWN,
 )
 from mlrvp.gui.widgets.waveform import WaveformWidget
-from mlrvp.gui.widgets.fader import HorizontalFader
+from mlrvp.gui.widgets.fader import HorizontalFader, RotaryKnob
 
 
 # ── Gain-fader dB helpers ────────────────────────────────────────────────
@@ -281,7 +281,7 @@ class ChannelStrip(QFrame):
 
         self._gain_fader = HorizontalFader(default_value=_UNITY_POS)
         self._gain_fader.set_value(_UNITY_POS)  # 0 dB unity
-        self._gain_fader.setFixedWidth(105)
+        self._gain_fader.setFixedWidth(80)
         self._gain_fader.set_formatter(_gain_db_label)
         self._gain_fader.value_changed.connect(
             lambda v: self.param_changed.emit(self._row, "gain", _fader_to_gain(v))
@@ -340,7 +340,7 @@ class ChannelStrip(QFrame):
         self._pitch_spin = QSpinBox()
         self._pitch_spin.setRange(-24, 24)
         self._pitch_spin.setValue(0)
-        self._pitch_spin.setFixedWidth(72)
+        self._pitch_spin.setFixedWidth(56)
         self._pitch_spin.setFixedHeight(20)
         self._pitch_spin.setSuffix(" st")
         self._pitch_spin.setToolTip("Transpose in semitones (–24 to +24)")
@@ -466,6 +466,74 @@ class ChannelStrip(QFrame):
 
         top_row.addWidget(_vdiv())
 
+        # --- FILTER section: per-channel HP + LP rotary knobs ---
+        def _hz_label_lp(v):
+            freq = 20000.0 * (200.0 / 20000.0) ** v
+            return f"{int(round(freq))} Hz" if freq < 1000 else f"{freq/1000:.1f} kHz"
+
+        def _hz_label_hp(v):
+            freq = 20.0 * (8000.0 / 20.0) ** v
+            return f"{int(round(freq))} Hz" if freq < 1000 else f"{freq/1000:.1f} kHz"
+
+        self._ch_hp_knob = RotaryKnob(color="#ff9944", default_value=0.0)
+        self._ch_hp_knob.setFixedSize(28, 28)
+        self._ch_hp_knob.set_value(0.0)
+        self._ch_hp_knob.setToolTip("High-pass filter: 0=open (20 Hz), 1=closed (8 kHz)")
+        self._ch_hp_knob.set_formatter(_hz_label_hp)
+        self._ch_hp_knob.value_changed.connect(
+            lambda v: self.param_changed.emit(self._row, "ch_hp", v)
+        )
+        _hp_w = QWidget()
+        _hp_vb = QVBoxLayout(_hp_w)
+        _hp_vb.setContentsMargins(0, 0, 0, 0)
+        _hp_vb.setSpacing(0)
+        _hp_vb.addWidget(self._ch_hp_knob, alignment=Qt.AlignmentFlag.AlignCenter)
+        _hp_sub = QLabel("HP")
+        _hp_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _hp_sub.setFixedHeight(8)
+        _hp_sub.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 7px; background: transparent;")
+        _hp_vb.addWidget(_hp_sub)
+
+        self._ch_lp_knob = RotaryKnob(color="#79b1ff", inverted=True, default_value=0.0, drag_inverted=True)
+        self._ch_lp_knob.setFixedSize(28, 28)
+        self._ch_lp_knob.set_value(0.0)
+        self._ch_lp_knob.setToolTip("Low-pass filter: 0=open (20 kHz), 1=closed (200 Hz)")
+        self._ch_lp_knob.set_formatter(_hz_label_lp)
+        self._ch_lp_knob.value_changed.connect(
+            lambda v: self.param_changed.emit(self._row, "ch_lp", v)
+        )
+        _lp_w = QWidget()
+        _lp_vb = QVBoxLayout(_lp_w)
+        _lp_vb.setContentsMargins(0, 0, 0, 0)
+        _lp_vb.setSpacing(0)
+        _lp_vb.addWidget(self._ch_lp_knob, alignment=Qt.AlignmentFlag.AlignCenter)
+        _lp_sub = QLabel("LP")
+        _lp_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _lp_sub.setFixedHeight(8)
+        _lp_sub.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 7px; background: transparent;")
+        _lp_vb.addWidget(_lp_sub)
+
+        top_row.addWidget(_section("FILTER", _hp_w, _lp_w))
+        top_row.addWidget(_vdiv())
+
+        # --- PAN section: per-channel stereo pan knob ---
+        def _pan_label(v):
+            pct = int(round(abs(v - 0.5) * 200))
+            if pct < 2:
+                return "C"
+            return f"{'R' if v > 0.5 else 'L'}{pct}"
+
+        self._pan_knob = RotaryKnob(color="#aaddaa", default_value=0.5)
+        self._pan_knob.setFixedSize(28, 28)
+        self._pan_knob.set_value(0.5)
+        self._pan_knob.setToolTip("Pan: left (L) to right (R), double-click to reset to centre")
+        self._pan_knob.set_formatter(_pan_label)
+        self._pan_knob.value_changed.connect(
+            lambda v: self.param_changed.emit(self._row, "pan", v)
+        )
+        top_row.addWidget(_section("PAN", self._pan_knob))
+        top_row.addWidget(_vdiv())
+
         self._mute_btn = QPushButton("MUTE")
         self._mute_btn.setFixedSize(44, 20)
         self._mute_btn.setCheckable(True)
@@ -478,6 +546,22 @@ class ChannelStrip(QFrame):
         )
         self._mute_btn.toggled.connect(
             lambda v: self.param_changed.emit(self._row, "mute", v)
+        )
+
+        self._solo_btn = QPushButton("SOLO")
+        self._solo_btn.setFixedSize(36, 20)
+        self._solo_btn.setCheckable(True)
+        self._solo_btn.setToolTip("Solo this channel — silences all other channels")
+        self._solo_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {SEPARATOR}; "
+            f"border: 1px solid {SEPARATOR}; font-size: 8px; font-weight: bold; "
+            f"padding: 0px 2px; }}"
+            f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
+            f"QPushButton:checked {{ background: #79b1ff; color: {BG_BLACK}; "
+            f"border: 1px solid #79b1ff; }}"
+        )
+        self._solo_btn.toggled.connect(
+            lambda v: self.param_changed.emit(self._row, "solo", v)
         )
 
         self._stop_btn = QPushButton("STOP")
@@ -493,7 +577,7 @@ class ChannelStrip(QFrame):
         self._stop_btn.clicked.connect(
             lambda: self.param_changed.emit(self._row, "stop", True)
         )
-        top_row.addWidget(_section("CONTROL", self._mute_btn, self._stop_btn))
+        top_row.addWidget(_section("CONTROL", self._mute_btn, self._solo_btn, self._stop_btn))
         top_row.addWidget(_vdiv())
 
         # ── LIVE looper section (visible only in LIVE mode) ──
@@ -982,6 +1066,14 @@ class ChannelStrip(QFrame):
         self._mute_btn.blockSignals(True)
         self._mute_btn.setChecked(state.mute)
         self._mute_btn.blockSignals(False)
+
+        self._solo_btn.blockSignals(True)
+        self._solo_btn.setChecked(state.solo)
+        self._solo_btn.blockSignals(False)
+
+        self._ch_lp_knob.set_value(state.ch_lp)
+        self._ch_hp_knob.set_value(state.ch_hp)
+        self._pan_knob.set_value(state.pan)
 
         self._waveform.set_selection(state.sel_start, state.sel_end)
         self._waveform.set_group_color(state.group)

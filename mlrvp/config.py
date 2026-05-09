@@ -110,11 +110,15 @@ class ChannelState:
     sel_start: float = 0.0
     sel_end: float = 1.0
     mute: bool = False
+    solo: bool = False
+    pan: float = 0.5         # stereo pan: 0.0=full left, 0.5=center, 1.0=full right
     attack: float = 0.005
     release: float = 0.01
     pitch: float = 1.0
     velocity: float = 1.0
-    filter_val: float = 0.0  # -1 to 1, 0 = bypass, <0 = LP, >0 = HP
+    filter_val: float = 0.0  # -1 to 1, 0 = bypass, <0 = LP, >0 = HP (legacy)
+    ch_lp: float = 0.0       # per-channel LP: 0=bypass (20 kHz), 1=fully closed (200 Hz)
+    ch_hp: float = 0.0       # per-channel HP: 0=bypass (20 Hz),  1=fully closed (8 kHz)
     pitch_scale: int = 0     # index into PITCH_SCALE_MAPS (0=MAJOR .. 4=CHROM)
     pitch_root: int = 0      # semitone offset for PITCH mode base note (-24 to +24)
     pitch_loop: bool = False  # True = loop in PITCH mode, False = one-shot
@@ -724,6 +728,12 @@ CR_SLOT_EMPTY = "empty"
 CR_SLOT_GROUP_STOP = "group_stop"   # value: group index (0-based)
 CR_SLOT_PATTERN = "pattern"         # value: pattern index (0-based)
 CR_SLOT_ALL_STOP = "all_stop"       # stops all groups
+CR_SLOT_GRID_MODE = "grid_mode"     # cycles through grid display modes
+
+# Grid display modes — append new entries here to extend the cycle; order matters
+GRID_MODE_GRID = "grid"   # normal playback/trigger mode
+GRID_MODE_MIX  = "mix"    # mixer-surface mode (volume/send via grid buttons)
+GRID_MODES     = [GRID_MODE_GRID, GRID_MODE_MIX]   # ordered cycle list
 
 # Special monome_row value: Launchpad hardware CC top row (separate from note grid)
 CR_MONOME_ROW_LAUNCHPAD_CC = -2
@@ -858,6 +868,9 @@ class ControlRowConfig:
 @dataclass
 class AppConfig:
     """Full application configuration."""
+    # Grid display mode
+    grid_mode: str = GRID_MODE_GRID   # current mode; see GRID_MODES for valid values
+
     # Audio
     sample_rate: int = SAMPLE_RATE
     buffer_size: int = BUFFER_SIZE
@@ -1283,5 +1296,166 @@ def save_sample_metadata_cache(cache: dict) -> None:
     p = get_defaults_dir() / SAMPLE_METADATA_CACHE_FILE
     try:
         p.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+# ── Sample favorites & tags ───────────────────────────────────────────────────
+
+SAMPLE_FAVORITES_FILE = "sample_favorites.json"
+SAMPLE_TAGS_FILE = "sample_tags.json"
+
+
+def get_sample_favorites() -> set:
+    """Return a set of favorited sample filepaths."""
+    p = get_defaults_dir() / SAMPLE_FAVORITES_FILE
+    if not p.exists():
+        return set()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return set(data) if isinstance(data, list) else set()
+    except (OSError, ValueError, json.JSONDecodeError):
+        return set()
+
+
+def save_sample_favorites(favorites) -> None:
+    """Persist the set of favorited sample filepaths."""
+    p = get_defaults_dir() / SAMPLE_FAVORITES_FILE
+    try:
+        p.write_text(json.dumps(sorted(favorites), indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def get_sample_tags() -> dict:
+    """Return a dict mapping filepath -> list[str] of tags."""
+    p = get_defaults_dir() / SAMPLE_TAGS_FILE
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def save_sample_tags(tags: dict) -> None:
+    """Persist the filepath -> tags mapping."""
+    p = get_defaults_dir() / SAMPLE_TAGS_FILE
+    try:
+        p.write_text(json.dumps(tags, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+# ── Sample recents ────────────────────────────────────────────────────────────
+
+SAMPLE_RECENTS_FILE = "sample_recents.json"
+SAMPLE_RECENTS_MAX = 50
+
+
+def get_sample_recents() -> list:
+    """Return recently-used sample filepaths, most recent first."""
+    p = get_defaults_dir() / SAMPLE_RECENTS_FILE
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return list(data) if isinstance(data, list) else []
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def save_sample_recents(recents: list) -> None:
+    """Persist the recents list (most recent first, capped at SAMPLE_RECENTS_MAX)."""
+    p = get_defaults_dir() / SAMPLE_RECENTS_FILE
+    try:
+        p.write_text(json.dumps(recents[:SAMPLE_RECENTS_MAX], indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+# ── Slice favorites, recents, tags, hidden ────────────────────────────────────
+
+SLICE_FAVORITES_FILE = "slice_favorites.json"
+SLICE_RECENTS_FILE = "slice_recents.json"
+SLICE_RECENTS_MAX = 50
+SLICE_TAGS_FILE = "slice_tags.json"
+SLICE_HIDDEN_FILE = "slice_hidden.json"
+
+
+def get_slice_favorites() -> set:
+    p = get_defaults_dir() / SLICE_FAVORITES_FILE
+    if not p.exists():
+        return set()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return set(data) if isinstance(data, list) else set()
+    except (OSError, ValueError, json.JSONDecodeError):
+        return set()
+
+
+def save_slice_favorites(favorites) -> None:
+    p = get_defaults_dir() / SLICE_FAVORITES_FILE
+    try:
+        p.write_text(json.dumps(sorted(favorites), indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def get_slice_recents() -> list:
+    p = get_defaults_dir() / SLICE_RECENTS_FILE
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return list(data) if isinstance(data, list) else []
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def save_slice_recents(recents: list) -> None:
+    p = get_defaults_dir() / SLICE_RECENTS_FILE
+    try:
+        p.write_text(json.dumps(recents[:SLICE_RECENTS_MAX], indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def get_slice_tags() -> dict:
+    p = get_defaults_dir() / SLICE_TAGS_FILE
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def save_slice_tags(tags: dict) -> None:
+    p = get_defaults_dir() / SLICE_TAGS_FILE
+    try:
+        p.write_text(json.dumps(tags, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def get_slice_hidden() -> set:
+    """Return set of slice filepaths removed from the library view (non-destructive)."""
+    p = get_defaults_dir() / SLICE_HIDDEN_FILE
+    if not p.exists():
+        return set()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return set(data) if isinstance(data, list) else set()
+    except (OSError, ValueError, json.JSONDecodeError):
+        return set()
+
+
+def save_slice_hidden(hidden) -> None:
+    p = get_defaults_dir() / SLICE_HIDDEN_FILE
+    try:
+        p.write_text(json.dumps(sorted(hidden), indent=2), encoding="utf-8")
     except OSError:
         pass

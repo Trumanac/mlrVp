@@ -46,7 +46,7 @@ from mlrvp.config import (
     SlicerState,
     PlaybackMode, QuantizeMode,
     MONOME_BACKENDS, MONOME_BACKEND_AUTO,
-    get_presets_dir, get_setlists_dir, NUM_PRESETS, NUM_SETLIST_SLOTS
+    get_presets_dir, get_setlists_dir, NUM_PRESETS, NUM_SETLIST_SLOTS, NUM_GROUPS
 )
 
 log = logging.getLogger("mlrvp")
@@ -539,7 +539,7 @@ class PresetManager:
                 ch.filename = ch_data.get("filename", ch.filename)
                 try:
                     ch.gain = max(0.0, min(2.0, float(ch_data.get("gain", ch.gain))))
-                    ch.group = max(0, min(3, int(ch_data.get("group", ch.group))))
+                    ch.group = max(0, min(NUM_GROUPS - 1, int(ch_data.get("group", ch.group))))
                 except (ValueError, TypeError):
                     pass
                 ch.reverse = ch_data.get("reverse", ch.reverse)
@@ -558,9 +558,12 @@ class PresetManager:
                 try:
                     ch.attack = max(0.0, min(5000.0, float(ch_data.get("attack", ch.attack))))
                     ch.release = max(0.0, min(5000.0, float(ch_data.get("release", ch.release))))
+                    ch.pan = max(0.0, min(1.0, float(ch_data.get("pan", ch.pan))))
                     ch.pitch = max(-24.0, min(24.0, float(ch_data.get("pitch", ch.pitch))))
                     ch.velocity = max(0.0, min(1.0, float(ch_data.get("velocity", ch.velocity))))
                     ch.filter_val = max(-1.0, min(1.0, float(ch_data.get("filter_val", ch.filter_val))))
+                    ch.ch_lp = max(0.0, min(1.0, float(ch_data.get("ch_lp", ch.ch_lp))))
+                    ch.ch_hp = max(0.0, min(1.0, float(ch_data.get("ch_hp", ch.ch_hp))))
                     ch.pitch_scale = max(0, min(4, int(ch_data.get("pitch_scale", ch.pitch_scale))))
                     ch.pitch_root = max(-24, min(24, int(ch_data.get("pitch_root", ch.pitch_root))))
                 except (ValueError, TypeError):
@@ -896,11 +899,14 @@ class PresetManager:
                     "sel_start": ch.sel_start,
                     "sel_end": ch.sel_end,
                     "mute": ch.mute,
+                    "pan": ch.pan,
                     "attack": ch.attack,
                     "release": ch.release,
                     "pitch": ch.pitch,
                     "velocity": ch.velocity,
                     "filter_val": ch.filter_val,
+                    "ch_lp": ch.ch_lp,
+                    "ch_hp": ch.ch_hp,
                     "pitch_scale": ch.pitch_scale,
                     "pitch_root": ch.pitch_root,
                     "pitch_loop": ch.pitch_loop,

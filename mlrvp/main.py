@@ -38,6 +38,13 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+# ── Reduce GIL switch interval for audio-safe threading ───────────────────────
+# The default 5 ms interval means any Python thread can hold the GIL for up
+# to 5 ms before yielding.  With a 512-sample audio buffer (~11.6 ms) that
+# eats nearly half the budget.  1 ms keeps the audio callback responsive
+# even during burst MIDI LED sends or other short-lived main-thread work.
+sys.setswitchinterval(0.001)
+
 from mlrvp.app import run_app
 
 

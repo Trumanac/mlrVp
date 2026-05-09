@@ -142,6 +142,7 @@ class MainWindow(QMainWindow):
 
     # Signals for app controller
     quit_requested = Signal()
+    close_requested = Signal()   # fired first — controller may show a save dialog
     preset_file_open_requested = Signal(str)
     preset_file_save_requested = Signal(str)
     stop_all_requested = Signal()
@@ -161,6 +162,7 @@ class MainWindow(QMainWindow):
         # Virtual grid pop-out window (created but hidden)
         self._grid_window = VirtualGridWindow(self)
         self._has_hardware_grid = False
+        self._allow_close = False   # set by AppController after save-dialog confirmed
 
         # --- Menu Bar ---
         self._build_menu_bar()
@@ -520,7 +522,16 @@ class MainWindow(QMainWindow):
         target_w = max(self.width(), 1620)
         self.resize(target_w, target_h)
 
+    def confirm_close(self):
+        """Called by AppController to actually close the window after dialog."""
+        self._allow_close = True
+        self.close()
+
     def closeEvent(self, event):
-        self._grid_window.close()
-        self.quit_requested.emit()
-        event.accept()
+        if self._allow_close:
+            self._grid_window.close()
+            self.quit_requested.emit()
+            event.accept()
+        else:
+            self.close_requested.emit()
+            event.ignore()

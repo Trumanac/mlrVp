@@ -780,10 +780,12 @@ class AudioEngine:
 
         # ── Ring buffer for decoupled audio output ──
         # The DSP worker fills this ahead of time; the sounddevice callback
-        # just copies the next block out.  4 blocks ≈ 46 ms of lookahead.
-        # Keeps trigger latency and visual-playback-head offset low while
-        # still absorbing short GC pauses and DSP spikes.
-        self._ring_blocks = 4
+        # just copies the next block out.  8 blocks ≈ 93 ms of lookahead at
+        # 512 frames / 44.1 kHz.  Doubled from 4 → 8 to absorb the GIL
+        # contention spike caused by Qt setStyleSheet + paintEvent when the
+        # user switches grid modes (mix ↔ grid) on the main thread.
+        # Trigger latency is unaffected (still single-block).
+        self._ring_blocks = 8
         # _out_channels is set to 2 now and recomputed in start() when
         # multi-channel output is enabled.
         self._out_channels: int = 2
@@ -1250,11 +1252,19 @@ class AudioEngine:
             ch = self.channels[i]
             if ch._playing or ch.state.playing:
                 audio = ch.process(frames)
-                # Apply per-channel filter
-                fv = ch.state.filter_val
-                if fv > 0.01 or fv < -0.01:
-                    self.channel_filters[i].set_filter(fv)
-                    audio = self.channel_filters[i].process(audio)
+                # Apply per-channel filter (independent LP/HP knobs)
+                cf = self.channel_filters[i]
+                cf.set_lp(ch.state.ch_lp)
+                cf.set_hp(ch.state.ch_hp)
+                if ch.state.ch_lp > 0.01 or ch.state.ch_hp > 0.01:
+                    audio = cf.process(audio)
+                # Apply per-channel pan (equal-power)
+                _pan = ch.state.pan
+                if abs(_pan - 0.5) > 0.005:
+                    _pan_rad = _pan * np.float32(1.5707963)  # pi/2
+                    audio = audio * np.array(
+                        [np.cos(_pan_rad), np.sin(_pan_rad)], dtype=np.float32
+                    )
                 if co_count < len(channel_outputs):
                     channel_outputs[co_count][0] = ch.state.group
                     channel_outputs[co_count][1] = audio
@@ -1312,31 +1322,32 @@ class AudioEngine:
         # NaN guard: a divergent FX effect can produce NaN which, without the
         # guard, permanently corrupts the peak meter (max(NaN, x) == NaN).
         # Mirrors the np.isfinite() guard in mixer.py group_peaks.
-        _pt = self._peak_tmp2[:frames]
-        np.abs(fx1_bus[:frames], out=_pt)
-        _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
-        if not np.isfinite(_p0): _p0 = 0.0
-        if not np.isfinite(_p1): _p1 = 0.0
-        self._fx1_peak[0] = max(self._fx1_peak[0] * 0.95, _p0)
-        self._fx1_peak[1] = max(self._fx1_peak[1] * 0.95, _p1)
-        np.abs(fx2_bus[:frames], out=_pt)
-        _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
-        if not np.isfinite(_p0): _p0 = 0.0
-        if not np.isfinite(_p1): _p1 = 0.0
-        self._fx2_peak[0] = max(self._fx2_peak[0] * 0.95, _p0)
-        self._fx2_peak[1] = max(self._fx2_peak[1] * 0.95, _p1)
-        np.abs(fx3_bus[:frames], out=_pt)
-        _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
-        if not np.isfinite(_p0): _p0 = 0.0
-        if not np.isfinite(_p1): _p1 = 0.0
-        self._fx3_peak[0] = max(self._fx3_peak[0] * 0.95, _p0)
-        self._fx3_peak[1] = max(self._fx3_peak[1] * 0.95, _p1)
-        np.abs(fx4_bus[:frames], out=_pt)
-        _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
-        if not np.isfinite(_p0): _p0 = 0.0
-        if not np.isfinite(_p1): _p1 = 0.0
-        self._fx4_peak[0] = max(self._fx4_peak[0] * 0.95, _p0)
-        self._fx4_peak[1] = max(self._fx4_peak[1] * 0.95, _p1)
+        if frames > 0:
+            _pt = self._peak_tmp2[:frames]
+            np.abs(fx1_bus[:frames], out=_pt)
+            _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
+            if not np.isfinite(_p0): _p0 = 0.0
+            if not np.isfinite(_p1): _p1 = 0.0
+            self._fx1_peak[0] = max(self._fx1_peak[0] * 0.95, _p0)
+            self._fx1_peak[1] = max(self._fx1_peak[1] * 0.95, _p1)
+            np.abs(fx2_bus[:frames], out=_pt)
+            _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
+            if not np.isfinite(_p0): _p0 = 0.0
+            if not np.isfinite(_p1): _p1 = 0.0
+            self._fx2_peak[0] = max(self._fx2_peak[0] * 0.95, _p0)
+            self._fx2_peak[1] = max(self._fx2_peak[1] * 0.95, _p1)
+            np.abs(fx3_bus[:frames], out=_pt)
+            _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
+            if not np.isfinite(_p0): _p0 = 0.0
+            if not np.isfinite(_p1): _p1 = 0.0
+            self._fx3_peak[0] = max(self._fx3_peak[0] * 0.95, _p0)
+            self._fx3_peak[1] = max(self._fx3_peak[1] * 0.95, _p1)
+            np.abs(fx4_bus[:frames], out=_pt)
+            _p0 = float(_pt[:, 0].max()); _p1 = float(_pt[:, 1].max())
+            if not np.isfinite(_p0): _p0 = 0.0
+            if not np.isfinite(_p1): _p1 = 0.0
+            self._fx4_peak[0] = max(self._fx4_peak[0] * 0.95, _p0)
+            self._fx4_peak[1] = max(self._fx4_peak[1] * 0.95, _p1)
 
         # Capture per-bus waveform for oscilloscopes (before summing)
         # Only compute waveform data when we'll actually send it
@@ -1407,10 +1418,11 @@ class AudioEngine:
             self.recorder.process(dsp_output, rec_trim)
 
         # Peak metering — use stereo abs buffer to avoid column view allocs
-        _pt = self._peak_tmp2[:len(dsp_output)]
-        np.abs(dsp_output, out=_pt)
-        self.output_peak[0] = max(self.output_peak[0] * 0.95, float(_pt[:, 0].max()))
-        self.output_peak[1] = max(self.output_peak[1] * 0.95, float(_pt[:, 1].max()))
+        if len(dsp_output) > 0:
+            _pt = self._peak_tmp2[:len(dsp_output)]
+            np.abs(dsp_output, out=_pt)
+            self.output_peak[0] = max(self.output_peak[0] * 0.95, float(_pt[:, 0].max()))
+            self.output_peak[1] = max(self.output_peak[1] * 0.95, float(_pt[:, 1].max()))
 
         out_frames = len(dsp_output)
         if self._out_channels > 2:
@@ -1680,7 +1692,8 @@ class AudioEngine:
             except Exception:
                 # A single bad effect must not kill the entire bus chain.
                 # Skip this effect and continue with the current audio.
-                pass
+                log.warning("FX '%s' on bus '%s' raised an exception — skipping",
+                            fx_type, bus_key, exc_info=True)
         return bus_audio
 
     # --- Thread-safe control methods ---

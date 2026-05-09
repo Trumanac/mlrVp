@@ -209,7 +209,7 @@ class TransportView(QWidget):
     tap_tempo_requested = Signal(float)  # tapped BPM value
     group_stop_requested = Signal(int)  # group index
     stop_all_requested = Signal()
-    link_toggled = Signal(bool)  # Ableton Link enable/disable
+    grid_mode_cycle_requested = Signal()   # user clicked the grid mode button
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -333,30 +333,6 @@ class TransportView(QWidget):
         tap_vl.addWidget(self._tap_btn)
         layout.addWidget(tap_frame)
 
-        # --- Ableton Link ---
-        link_frame = QFrame()
-        link_vl = QVBoxLayout(link_frame)
-        link_vl.setContentsMargins(0, 0, 0, 0)
-        link_vl.setSpacing(1)
-        _link_label = QLabel("LINK")
-        _link_label.setFixedHeight(10)
-        _link_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        _link_label.setStyleSheet(
-            f"font-size: 7px; color: {TEXT_SECONDARY}; font-weight: bold; background: transparent;"
-        )
-        link_vl.addWidget(_link_label)
-        self._link_btn = QPushButton("—")
-        self._link_btn.setFixedSize(44, 36)
-        self._link_btn.setCheckable(True)
-        self._link_btn.setToolTip(
-            "Ableton Link — sync tempo with Ableton Live and other Link-enabled apps\n"
-            "on the same network.  Just click — no setup required."
-        )
-        self._link_btn.setStyleSheet(self._link_style(False, 0))
-        self._link_btn.toggled.connect(self._on_link_toggled)
-        link_vl.addWidget(self._link_btn)
-        layout.addWidget(link_frame)
-
         # --- Quantize ---
         quant_frame = QFrame()
         quant_layout = QVBoxLayout(quant_frame)
@@ -376,6 +352,34 @@ class TransportView(QWidget):
         quant_layout.addWidget(self._quant_combo)
 
         layout.addWidget(quant_frame)
+
+        # --- Grid Mode section ---
+        grid_mode_frame = QFrame()
+        grid_mode_vl = QVBoxLayout(grid_mode_frame)
+        grid_mode_vl.setContentsMargins(0, 0, 0, 0)
+        grid_mode_vl.setSpacing(1)
+        grid_mode_label = QLabel("GRID MODE")
+        grid_mode_label.setStyleSheet(
+            f"font-size: 8px; color: {TEXT_SECONDARY}; font-weight: bold;"
+        )
+        grid_mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        grid_mode_vl.addWidget(grid_mode_label)
+        self._grid_mode_btn = QPushButton("GRID")
+        self._grid_mode_btn.setFixedSize(50, 36)
+        self._grid_mode_btn.setToolTip(
+            "Click to cycle grid mode (GRID → MIX → …)\n"
+            "GRID: normal playback / trigger mode\n"
+            "MIX: grid-as-mixer-surface mode"
+        )
+        self._grid_mode_btn.setStyleSheet(
+            f"QPushButton {{ font-size: 9px; font-weight: bold; color: {TEXT_SECONDARY}; "
+            f"background: {BG_BLACK}; border: 1px solid {SEPARATOR}; padding: 0; }}"
+            f"QPushButton:hover {{ border-color: #00aa55; color: #00dd77; }}"
+            f"QPushButton:pressed {{ background: #00aa55; color: {BG_BLACK}; }}"
+        )
+        self._grid_mode_btn.clicked.connect(self.grid_mode_cycle_requested.emit)
+        grid_mode_vl.addWidget(self._grid_mode_btn)
+        layout.addWidget(grid_mode_frame)
 
         # Separator
         sep = QFrame()
@@ -744,57 +748,6 @@ class TransportView(QWidget):
         self._quant_combo.setCurrentIndex(mode)
         self._quant_combo.blockSignals(False)
 
-    # ------------------------------------------------------------------ #
-    #  Ableton Link                                                       #
-    # ------------------------------------------------------------------ #
-
-    def _link_style(self, enabled: bool, num_peers: int) -> str:
-        """Return the QPushButton stylesheet for the Link button state."""
-        if not enabled:
-            return (
-                f"QPushButton {{ font-size: 11px; font-weight: bold; color: {TEXT_SECONDARY}; "
-                f"background: {BG_BLACK}; border: 1px solid {SEPARATOR}; padding: 0; }}"
-                f"QPushButton:hover {{ border-color: #4A9EFF; color: #4A9EFF; }}"
-                f"QPushButton:checked {{ background: {BG_BLACK}; }}"
-            )
-        if num_peers > 0:
-            # Active with peers — bright blue
-            return (
-                f"QPushButton {{ font-size: 11px; font-weight: bold; color: #0A0A0A; "
-                f"background: #4A9EFF; border: 1px solid #4A9EFF; padding: 0; }}"
-                f"QPushButton:checked {{ background: #4A9EFF; }}"
-            )
-        # Enabled but no peers yet — dim blue outline
-        return (
-            f"QPushButton {{ font-size: 11px; font-weight: bold; color: #4A9EFF; "
-            f"background: {BG_BLACK}; border: 1px solid #4A9EFF; padding: 0; }}"
-            f"QPushButton:checked {{ background: {BG_BLACK}; }}"
-        )
-
-    def _on_link_toggled(self, checked: bool):
-        self._link_btn.setStyleSheet(self._link_style(checked, 0))
-        self.link_toggled.emit(checked)
-
-    def set_link_state(self, enabled: bool, num_peers: int, available: bool = True):
-        """Update the Link button appearance without triggering signals."""
-        self._link_btn.blockSignals(True)
-        self._link_btn.setChecked(enabled)
-        if not available:
-            self._link_btn.setEnabled(False)
-            self._link_btn.setToolTip(
-                "Ableton Link requires the aalink package.\n"
-                "Install it with: pip install aalink"
-            )
-        else:
-            self._link_btn.setEnabled(True)
-        if enabled:
-            peers_str = f"{num_peers}" if num_peers > 0 else "·"
-            self._link_btn.setText(peers_str)
-        else:
-            self._link_btn.setText("—")
-        self._link_btn.setStyleSheet(self._link_style(enabled, num_peers))
-        self._link_btn.blockSignals(False)
-
     def set_pattern_state(self, idx: int, state: str):
         if 0 <= idx < len(self._pattern_btns):
             self._pattern_btns[idx].set_state(state)
@@ -881,3 +834,23 @@ class TransportView(QWidget):
         """Show/hide group stop buttons based on active group count."""
         for i, btn in enumerate(self._grp_stop_btns):
             btn.setVisible(i < n)
+
+    def set_grid_mode(self, mode: str):
+        """Update the Grid Mode button label and highlight style."""
+        label = mode.upper()
+        if mode == "grid":
+            self._grid_mode_btn.setText("GRID")
+            self._grid_mode_btn.setStyleSheet(
+                f"QPushButton {{ font-size: 9px; font-weight: bold; color: {TEXT_SECONDARY}; "
+                f"background: {BG_BLACK}; border: 1px solid {SEPARATOR}; padding: 0; }}"
+                f"QPushButton:hover {{ border-color: #00aa55; color: #00dd77; }}"
+                f"QPushButton:pressed {{ background: #00aa55; color: {BG_BLACK}; }}"
+            )
+        else:
+            self._grid_mode_btn.setText(label)
+            self._grid_mode_btn.setStyleSheet(
+                f"QPushButton {{ font-size: 9px; font-weight: bold; color: {BG_BLACK}; "
+                f"background: #00aa55; border: 1px solid #00dd77; padding: 0; }}"
+                f"QPushButton:hover {{ background: #00cc66; }}"
+                f"QPushButton:pressed {{ background: #008833; }}"
+            )

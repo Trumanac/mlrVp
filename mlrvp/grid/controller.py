@@ -611,18 +611,15 @@ def probe_serialosc(timeout: float = 0.6) -> SerialoscProbeResult:
     # (serialoscd uses 0.0.0.0).  Testing with 0.0.0.0 fails reliably.
     _probe_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        _probe_sock.bind(("0.0.0.0", SERIALOSC_PORT))
-        # Bind succeeded → port is free → daemon is NOT running.
-        _probe_sock.close()
-        return result   # daemon_running stays False
-    except OSError:
-        # EADDRINUSE (or similar) — daemon IS holding the port.
-        result.daemon_running = True
-    finally:
         try:
-            _probe_sock.close()
-        except Exception:
-            pass
+            _probe_sock.bind(("0.0.0.0", SERIALOSC_PORT))
+            # Bind succeeded → port is free → daemon is NOT running.
+            return result   # daemon_running stays False
+        except OSError:
+            # EADDRINUSE (or similar) — daemon IS holding the port.
+            result.daemon_running = True
+    finally:
+        _probe_sock.close()
 
     # ── Step 2: query for connected devices ───────────────────────────────
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1969,6 +1966,42 @@ class GridController:
             if self._midi_grid is not None and self._midi_grid.connected:
                 self._midi_grid.set_row(y + offset, values, color)
 
+    def set_row_colored(self, y: int, values: list[int], colors: list[int]):
+        """Set a row where each cell may have a different color.
+
+        Monome: one led_level_row message per row (monome is monochrome, color ignored).
+        MIDI grid: per-cell messages so each column shows its own group color.
+        Virtual grid: relies on _col_colors set separately on the widget.
+        """
+        if not (0 <= y < MAX_ROWS):
+            return
+        # Update internal LED state and invalidate row-level dedup cache
+        # (cache key includes a single color, not per-cell, so we must bypass it)
+        self._row_sent.pop(y, None)
+        for x, val in enumerate(values):
+            if x < MAX_COLUMNS:
+                self._led_state[y][x] = val
+        with self._state_lock:
+            connected = self._connected
+            offset = self._monome_row_offset
+            cols = self.info.columns
+        # Monome: one row message — 1 serial write regardless of column count
+        if connected and self._monome is not None:
+            try:
+                physical_y = y + offset
+                row_data = list(values[:cols])
+                if len(row_data) < cols:
+                    row_data.extend([0] * (cols - len(row_data)))
+                self._monome.grid.led_level_row(0, physical_y, row_data)
+            except Exception:
+                pass
+        # MIDI grid: per-cell with individual colors — use set_row_colored which
+        # checks the per-cell cache so only genuinely changed cells generate MIDI
+        # traffic.  This cuts the message burst from N×cols sends down to only
+        # the cells that actually differ from the last-sent state.
+        if self._midi_grid is not None and self._midi_grid.connected:
+            self._midi_grid.set_row_colored(y + offset, list(values[:cols]), list(colors[:cols]))
+
     def set_all(self, brightness: int):
         """Set all LEDs to the same brightness."""
         self._row_sent.clear()
@@ -2011,6 +2044,23 @@ class GridController:
                     self._monome.grid.led_level_row(0, physical_y, row_leds)
                 except Exception:
                     pass
+        # MIDI grid (Launchpad etc.) — push non-zero data rows and the control row.
+        # clear_all() wipes all cells (and its cache) first so stale mix-mode LEDs
+        # (written via set_led, bypassing the row cache) are overwritten.
+        # We skip all-zero rows after the clear — clear_all() already sent note-offs
+        # for them, so re-sending 64 extra zero messages would double the MIDI traffic.
+        if self._midi_grid is not None and self._midi_grid.connected:
+            self._midi_grid.clear_all()
+            for y, row_leds in enumerate(led_snapshot):
+                if any(row_leds):   # skip rows that are already blank
+                    self._midi_grid.set_row(y + offset, row_leds, 0)
+            if ctrl_enabled:
+                for x, brightness in enumerate(ctrl_leds):
+                    from mlrvp.config import CR_MONOME_ROW_LAUNCHPAD_CC
+                    if self._control_row_config == CR_MONOME_ROW_LAUNCHPAD_CC:
+                        self._midi_grid.set_control_led(x, brightness, 0)
+                    else:
+                        self._midi_grid.set_led(x, ctrl_idx, brightness, 0)
 
     def update_playback_leds(self, row: int, play_column: int, total_columns: int,
                              sub_loop_start: int = -1, sub_loop_end: int = -1,

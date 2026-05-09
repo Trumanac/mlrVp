@@ -45,6 +45,11 @@ class Mixer:
         self._group_bus_views = [gb[:_MAX_BUF] for gb in self._group_buses]
         # Pre-allocated result list (avoids tuple creation per block)
         self._result = [None, None, None, None, None, None]
+        # Volume smoothing: DSP-side current gain per group (ramps toward group.volume)
+        # Prevents clicks when volume jumps suddenly (e.g. grid button press in mix mode)
+        self._smooth_volumes = [1.0] * NUM_GROUPS
+        # Pre-allocated 1-D ramp buffer — reused each callback, avoids allocation
+        self._vol_ramp = np.zeros(_MAX_BUF, dtype=np.float32)
 
     def process_groups(self, channel_outputs: list[tuple[int, np.ndarray]],
                        num_frames: int) -> list:
@@ -106,9 +111,23 @@ class Mixer:
                 self._group_audio[i][:num_frames] = 0
                 continue
 
-            # Apply group volume in-place into pre-allocated buffer
+            # Apply group volume — ramp from previous value to target over this
+            # buffer so sudden jumps (e.g. mix-mode button press) don't click.
             scaled = self._group_audio[i][:num_frames]
-            np.multiply(bus, group.volume, out=scaled)
+            current_vol = self._smooth_volumes[i]
+            target_vol = group.volume
+            if abs(target_vol - current_vol) < 1e-4:
+                # Stable — fast scalar multiply
+                self._smooth_volumes[i] = target_vol
+                np.multiply(bus, target_vol, out=scaled)
+            else:
+                # Ramp linearly from current to target over this buffer
+                ramp = self._vol_ramp[:num_frames]
+                step = (target_vol - current_vol) / max(num_frames - 1, 1)
+                np.multiply(np.arange(num_frames, dtype=np.float32), step, out=ramp)
+                ramp += current_vol
+                np.multiply(bus, ramp[:, np.newaxis], out=scaled)
+                self._smooth_volumes[i] = target_vol
 
             # Track peak level (with decay) — use pre-allocated tmp for max
             abs_tmp = self._abs_tmp[:num_frames]

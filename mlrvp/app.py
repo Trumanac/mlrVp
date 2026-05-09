@@ -7,6 +7,7 @@ transport clock, MIDI, OSC, preset manager, and GUI.
 import sys
 import logging
 import time
+import queue
 import threading
 from typing import Optional
 
@@ -38,7 +39,7 @@ from mlrvp.preset.manager import PresetManager
 from mlrvp.gui.main_window import MainWindow
 from mlrvp.gui.midi_map_overlay import MidiMapManager
 from mlrvp.gui.widgets.fader import ControlDisplaySettings
-from mlrvp.gui.views.mixer_view import _fader_to_gain
+from mlrvp.gui.views.mixer_view import _fader_to_gain, _gain_to_fader
 
 log = logging.getLogger("mlrvp")
 
@@ -111,13 +112,15 @@ class _ClockMarshaller(QObject):
     _pattern = Signal(int, int, str)
     _pattern_state = Signal(int, str)
     _seq_tick = Signal(float)  # beat_position — 1/64th note SEQ step tick
+    _pattern_automation = Signal(str, float)  # param_path, value
 
-    def __init__(self, beat_fn, pattern_fn, pattern_state_fn, seq_tick_fn):
+    def __init__(self, beat_fn, pattern_fn, pattern_state_fn, seq_tick_fn, automation_fn):
         super().__init__()
         self._beat.connect(beat_fn, Qt.ConnectionType.QueuedConnection)
         self._pattern.connect(pattern_fn, Qt.ConnectionType.QueuedConnection)
         self._pattern_state.connect(pattern_state_fn, Qt.ConnectionType.QueuedConnection)
         self._seq_tick.connect(seq_tick_fn, Qt.ConnectionType.QueuedConnection)
+        self._pattern_automation.connect(automation_fn, Qt.ConnectionType.QueuedConnection)
 
     def beat(self, beat_int, beat_position):
         self._beat.emit(beat_int, beat_position)
@@ -130,6 +133,9 @@ class _ClockMarshaller(QObject):
 
     def pattern_state(self, idx, state):
         self._pattern_state.emit(idx, state)
+
+    def pattern_automation(self, param_path: str, value: float):
+        self._pattern_automation.emit(param_path, value)
 
 
 class AppController:
@@ -185,6 +191,7 @@ class AppController:
             self._execute_pattern_trigger,
             self._execute_pattern_state,
             self._execute_seq_tick,
+            self._execute_pattern_automation,
         )
 
         # Background sample loader — disk I/O off the main thread
@@ -247,6 +254,21 @@ class AppController:
         # GUI poll timer for recorder progress + input meter (started in init_gui)
         self._recorder_poll_timer: Optional[QTimer] = None
 
+        # Unsaved-changes tracking — set whenever the user modifies the loaded
+        # preset; cleared on save or when a new preset is recalled.
+        self._preset_dirty: bool = False
+
+        # Persistent background worker for startup-settings writes.
+        # Thread creation on Python/Windows involves a kernel allocation that
+        # can take 0.5–5 ms while holding the GIL.  Creating a fresh thread on
+        # every mode switch was an additional GIL spike during the critical
+        # audio path.  A single long-lived worker drains a SimpleQueue instead.
+        self._settings_save_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._settings_save_thread = threading.Thread(
+            target=self._settings_save_worker, daemon=True, name="mlrvp-settings"
+        )
+        self._settings_save_thread.start()
+
     # ------------------------------------------------------------------ #
     #  Initialization                                                     #
     # ------------------------------------------------------------------ #
@@ -286,6 +308,7 @@ class AppController:
         for pr in self.patterns:
             pr.set_trigger_callback(self._on_pattern_trigger)
             pr.set_state_change_callback(self._on_pattern_auto_state)
+            pr.set_automation_callback(self._on_pattern_automation)
         log.info("Transport initialized")
 
     def init_grid(self):
@@ -406,6 +429,15 @@ class AppController:
     def init_gui(self, app: QApplication):
         """Create the main window and wire GUI signals."""
         self.window = MainWindow()
+        # Explicitly set the window icon so Windows shows it in the taskbar
+        # title bar and alt-tab switcher (QApplication icon alone is not
+        # always picked up for individual windows on Windows).
+        _resources = Path(__file__).parent / "resources"
+        _win_icon = (_resources / "icon.ico") if sys.platform == "win32" else (_resources / "icon.png")
+        if not _win_icon.exists():
+            _win_icon = _resources / "icon.png"
+        if _win_icon.exists():
+            self.window.setWindowIcon(QIcon(str(_win_icon)))
         self.window.tools_view.slice_panel.set_preview_service(self.slicer_preview)
         self._midi_map = MidiMapManager(self.window)
         self._connect_gui_signals()
@@ -427,6 +459,17 @@ class AppController:
         # Sync initial grid row colors from config group assignments
         for i, ch in enumerate(self.config.channels[:self.config.row_count]):
             self.window.virtual_grid.set_row_color(i, ch.group)
+        # Sync transport button and virtual grid to the grid mode loaded from
+        # startup settings.  _load_startup_settings sets config.grid_mode
+        # directly (no GUI call), so this is the first time the button and
+        # virtual grid learn about the restored mode.
+        from .config import GRID_MODE_MIX
+        self.window.transport.set_grid_mode(self.config.grid_mode)
+        if self.config.grid_mode == GRID_MODE_MIX:
+            active = self.config.active_groups
+            cols = self.config.grid_columns
+            col_colors = list(range(active)) + [0] * (cols - active)
+            self.window.virtual_grid.set_col_colors(col_colors)
         # Populate setlist/preset combos
         self._refresh_setlist_ui()
         self.window.show()
@@ -477,6 +520,16 @@ class AppController:
             timer.stop()
             timer.deleteLater()
         self._pattern_hold_timers.clear()
+        # Stop any active LIVE long-press timers
+        for timer in list(self._live_long_press_timers.values()):
+            try:
+                timer.stop()
+                timer.deleteLater()
+            except Exception:
+                pass
+        self._live_long_press_timers.clear()
+        # Signal the settings save worker to shut down cleanly
+        self._settings_save_queue.put(None)
         if self.clock:
             self.clock.stop()
         if self.engine:
@@ -486,6 +539,47 @@ class AppController:
         self.slicer_preview.close()
         self.grid.disconnect()
         log.info("All subsystems stopped")
+
+    def _mark_preset_dirty(self):
+        """Mark that the current preset has unsaved changes."""
+        self._preset_dirty = True
+
+    def _clear_preset_dirty(self):
+        """Clear the unsaved-changes flag (after save or preset load)."""
+        self._preset_dirty = False
+
+    def _on_close_requested(self):
+        """Intercept window close — offer to save unsaved changes first."""
+        if not self._preset_dirty:
+            if self.window:
+                self.window.confirm_close()
+            return
+
+        sp = self.presets.setlist_presets
+        idx = self.presets.active_index
+        name = sp[idx] if 0 <= idx < len(sp) else ""
+        display = f'"{name}"' if name else "the current preset"
+
+        from PySide6.QtWidgets import QMessageBox
+        msg = QMessageBox(self.window)
+        msg.setWindowTitle("Unsaved Changes")
+        msg.setText(f"Save changes to {display} before closing?")
+        msg.setStandardButtons(
+            QMessageBox.StandardButton.Save |
+            QMessageBox.StandardButton.Discard |
+            QMessageBox.StandardButton.Cancel
+        )
+        msg.setDefaultButton(QMessageBox.StandardButton.Save)
+        result = msg.exec()
+
+        if result == QMessageBox.StandardButton.Save:
+            self._gui_save_preset(name)
+            if self.window:
+                self.window.confirm_close()
+        elif result == QMessageBox.StandardButton.Discard:
+            if self.window:
+                self.window.confirm_close()
+        # Cancel: do nothing — window stays open
 
     # ------------------------------------------------------------------ #
     #  Group-exclusive playback                                           #
@@ -622,6 +716,22 @@ class AppController:
         """Pattern recorder replays an event — bounce to main thread."""
         self._clock_marshaller.pattern_trigger(row, column, event_type)
 
+    def _on_pattern_automation(self, param_path: str, value: float):
+        """Pattern recorder replays an automation event — bounce to main thread."""
+        self._clock_marshaller.pattern_automation(param_path, value)
+
+    def _notify_automation(self, param_path: str, value: float):
+        """Record automation to all active pattern recorders.
+
+        Called on the main thread whenever a continuous parameter changes.
+        """
+        if not self.clock:
+            return
+        beat = self.clock.beat_position
+        for pr in self.patterns:
+            if pr.recording:
+                pr.record_automation(beat, param_path, value)
+
     def _execute_pattern_trigger(self, row: int, column: int, event_type: str):
         """Handle pattern replay event on the Qt main thread."""
         log.debug("Pattern trigger: row=%d col=%d type=%s", row, column, event_type)
@@ -640,6 +750,47 @@ class AppController:
             else:
                 self.grid.update_playback_leds(row, column, self.config.grid_columns, color=grp)
 
+    def _execute_pattern_automation(self, param_path: str, value: float):
+        """Apply a recorded automation event on the Qt main thread."""
+        parts = param_path.split(".")
+        try:
+            if parts[0] == "ch" and len(parts) == 3:
+                row = int(parts[1])
+                param = parts[2]
+                if param in ("mute", "solo"):
+                    self._gui_channel_param(row, param, value > 0.5)
+                else:
+                    self._gui_channel_param(row, param, value)
+            elif parts[0] == "grp" and len(parts) == 3:
+                grp = int(parts[1])
+                param = parts[2]
+                if param == "volume":
+                    self._gui_group_volume(grp, value)
+                elif param == "send":
+                    self._gui_group_send(grp, value)
+                elif param == "mute":
+                    self._gui_group_mute(grp, value > 0.5)
+                elif param == "fx_route":
+                    self._gui_group_fx_route(grp, int(round(value)))
+            elif len(parts) == 3 and parts[0] in {
+                "delay", "tape_delay", "filter_a", "filter_b", "mod",
+                "reel_to_reel", "cassette_tape", "vhs", "vinyl",
+                "compressor", "glue_compressor", "hall_reverb", "plate_reverb",
+                "bit_crusher", "tube_overdrive", "ether_drift", "noise_gate",
+                "tremolo", "auto_wah", "fet_limiter", "rotary", "exciter",
+                "transient_shaper", "harmonizer", "stereo_widener",
+                "freq_shifter", "ring_mod", "simple_eq", "ping_pong_delay",
+                "shimmer_reverb", "lofi_radio", "auto_pan", "fuzz",
+                "granular_freeze", "gate_reverb", "stutter",
+            }:
+                handler = getattr(self, f"_gui_{parts[0]}_param", None)
+                if handler is not None:
+                    handler(parts[2], value, int(parts[1]))
+            elif param_path == "transport.tempo":
+                self._gui_tempo_changed(value)
+        except (IndexError, ValueError, TypeError) as exc:
+            log.warning("Pattern automation dispatch error for %s: %s", param_path, exc)
+
     # ------------------------------------------------------------------ #
     #  Grid callbacks                                                     #
     # ------------------------------------------------------------------ #
@@ -650,6 +801,13 @@ class AppController:
         When quantize is enabled, the trigger is scheduled to fire at
         the next quantize boundary so presses stay in sync with BPM.
         """
+        # --- Mix mode: grid is a fader surface, not a trigger surface ---
+        from .config import GRID_MODE_MIX
+        if self.config.grid_mode == GRID_MODE_MIX:
+            if state == 1:
+                self._mix_mode_on_press(x, y)
+            return
+
         row = y
         column = x
         columns = self.config.grid_columns
@@ -1107,7 +1265,7 @@ class AppController:
                 self.grid.clear_row_leds(row, columns)
                 return
 
-            if ch.playing:
+            if ch.playing and ch.sample is not None:
                 btn1 = getattr(ch, '_slice_btn1', None)
                 # Second button pressed while first held — create latched sub-loop
                 if btn1 is not None and column != btn1:
@@ -1322,7 +1480,7 @@ class AppController:
 
     def _on_control_button(self, x: int, state: int):
         """Handle control row button press/release dispatched by slot assignment."""
-        from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_ALL_STOP
+        from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_ALL_STOP, CR_SLOT_GRID_MODE
         assignments = self.config.control_row.assignments
         if x < 0 or x >= len(assignments):
             return
@@ -1338,6 +1496,15 @@ class AppController:
             if state == 1:
                 for g in range(NUM_GROUPS):
                     self._gui_group_stop(g)
+
+        elif slot_type == CR_SLOT_GRID_MODE:
+            if state == 1:
+                # Dispatch to the Qt main thread — _gui_grid_mode_set() calls
+                # setStyleSheet(), update() and QTimer which must run on the
+                # main thread.  Calling them directly from the MIDI callback
+                # thread (where this handler runs) causes unpredictable GIL
+                # stalls that drain the audio ring buffer.
+                QTimer.singleShot(0, self._gui_grid_mode_cycle)
 
         elif slot_type == CR_SLOT_PATTERN:
             idx = slot_val
@@ -1483,6 +1650,16 @@ class AppController:
         # so calling it here (after on_grid_ready set info.rows) gives the
         # correct physical row index and offset.
         cr = self.config.control_row
+        # If cr.monome_row is in Launchpad CC mode (-2) from a previous
+        # Launchpad session, a real monome has no separate CC top row —
+        # reset to physical top row (0) so the offset and row count are correct.
+        from mlrvp.config import CR_MONOME_ROW_LAUNCHPAD_CC
+        if cr.monome_row == CR_MONOME_ROW_LAUNCHPAD_CC:
+            cr.monome_row = 0
+            if self.window:
+                self.window.setup_view.grid_panel.set_control_row_config(
+                    cr.enabled, cr.monome_row, cr.assignments
+                )
         self.grid.configure_control_row(cr.enabled, cr.monome_row)
         with self.grid._state_lock:
             row_offset = self.grid._monome_row_offset
@@ -1548,6 +1725,12 @@ class AppController:
             # time to finish their startup sequences before we force-resend
             # OFF for any dark cells that the firmware turned on at boot.
             QTimer.singleShot(1500, self._post_connect_led_sync)
+            # Repaint LEDs to match the current grid mode after connect.
+            from .config import GRID_MODE_MIX
+            if self.config.grid_mode == GRID_MODE_MIX:
+                QTimer.singleShot(100, self._mix_mode_update_all)
+            else:
+                QTimer.singleShot(100, self.grid.clear)
 
     def _post_connect_led_sync(self):
         """Force OFF for firmware ghost LEDs after grid connect has settled."""
@@ -1608,7 +1791,7 @@ class AppController:
         """
         if not self.engine or not (0 <= row < MAX_ROWS):
             return
-
+        self._mark_preset_dirty()
         ch = self.engine.channels[row]
         ch._load_gen += 1  # invalidate any prior in-flight loads
 
@@ -1625,6 +1808,7 @@ class AppController:
 
     def clear_channel_sample(self, row: int):
         """Remove the sample from a channel, restoring it to empty state."""
+        self._mark_preset_dirty()
         if self.engine and 0 <= row < len(self.engine.channels):
             ch = self.engine.channels[row]
             self.engine.stop_channel(row)
@@ -1670,7 +1854,8 @@ class AppController:
         w.transport.tap_tempo_requested.connect(self._gui_tap_tempo)
         w.transport.group_stop_requested.connect(self._gui_group_stop)
         w.transport.stop_all_requested.connect(self._gui_stop_all)
-        w.transport.link_toggled.connect(self._gui_link_toggled)
+        w.transport.grid_mode_cycle_requested.connect(self._gui_grid_mode_cycle)
+        w.setup_view.link_toggled.connect(self._gui_link_toggled)
 
         # --- Channel view ---
         w.channel_view.sample_load_requested.connect(self.load_sample_to_channel)
@@ -1753,6 +1938,7 @@ class AppController:
         )
         lp.load_to_slicer.connect(self._on_library_load_to_slicer)
         lp.preview_requested.connect(self._on_library_preview)
+        lp.preview_stop_requested.connect(self._on_library_preview_stop)
         # New recorder workflow signals (added in RecorderPanel)
         rp = w.tools_view.recorder_panel
         if hasattr(rp, "capture_preroll"):
@@ -1795,6 +1981,7 @@ class AppController:
         w.setup_view.control_row_setting_changed.connect(self._gui_control_row_setting_changed)
         w.setup_view.midi_control_row_learn_requested.connect(self._gui_control_row_learn_requested)
         self.midi.learn_completed.connect(self._on_midi_learn_complete)
+        self.midi.mapping_displaced.connect(self._on_midi_mapping_displaced)
 
         # --- Virtual grid ---
         w.virtual_grid.button_pressed.connect(
@@ -1803,6 +1990,7 @@ class AppController:
         w.grid_window.grid_size_changed.connect(self._on_virtual_grid_size_changed)
 
         # --- Main window ---
+        w.close_requested.connect(self._on_close_requested)
         w.quit_requested.connect(self.stop)
         w.preset_file_open_requested.connect(self._gui_open_preset_file)
         w.preset_file_save_requested.connect(self._gui_save_preset_file)
@@ -1845,16 +2033,17 @@ class AppController:
                             strip._speed_spin.setValue(speed)
                             strip._speed_spin.blockSignals(False)
         self.config.tempo = bpm
+        self._notify_automation("transport.tempo", float(bpm))
 
     def _gui_link_toggled(self, enabled: bool):
-        """Handle Ableton Link toggle from the transport bar."""
+        """Handle Ableton Link toggle from the Setup > Audio panel."""
         self.config.link_enabled = enabled
         if self.clock:
             ok = self.clock.set_link_enabled(enabled)
             if enabled and not ok:
                 # aalink not installed — revert the button
                 if self.window:
-                    self.window.transport.set_link_state(
+                    self.window.setup_view.set_link_state(
                         False, 0, available=False
                     )
                 self.config.link_enabled = False
@@ -2090,6 +2279,7 @@ class AppController:
                 strip._waveform.set_waveform(None, "")
                 strip._waveform.set_playing(False)
                 strip._waveform.set_active_column(-1)
+                strip._waveform.set_seq_steps(frozenset())
                 strip._sample_name.setText("(no sample)")
 
         # Update GUI controls from reset config
@@ -2098,6 +2288,7 @@ class AppController:
         # De-select active preset (fresh slate, not tied to any preset)
         self.presets.active_index = -1
         self._refresh_setlist_ui()
+        self._clear_preset_dirty()
         # Clear tilt mappings — fresh preset has no tilt assignments
         self._apply_tilt_mappings([])
         if self.window:
@@ -2159,6 +2350,7 @@ class AppController:
                 self.presets.active_index = new_idx
 
         self._refresh_setlist_ui()
+        self._clear_preset_dirty()
         if self.window:
             self.window.set_status(f"Saved: {name}")
             self.window.transport.flash_save_button()
@@ -2239,6 +2431,7 @@ class AppController:
         self._refresh_midi_mapping_table()
 
         self._refresh_setlist_ui()
+        self._clear_preset_dirty()
         if self.window:
             name = self.presets.setlist_presets[idx] if idx < len(self.presets.setlist_presets) else f"Preset {idx+1}"
             self.window.set_status(f"Recalled: {name}")
@@ -2330,6 +2523,7 @@ class AppController:
             self._apply_tilt_mappings(data.get("tilt_mappings", []))
             self._refresh_midi_mapping_table()
             self._refresh_setlist_ui()
+            self._clear_preset_dirty()
             if self.window:
                 self.window.set_status(f"Preset {idx + 1} recalled")
 
@@ -2481,6 +2675,8 @@ class AppController:
                 if backend in MONOME_BACKENDS:
                     self.config.monome_backend = backend
                     log.info("Startup settings loaded: monome_backend=%s", backend)
+                # Grid mode is intentionally not restored — the app always
+                # starts in GRID_MODE_GRID regardless of the last session.
                 # Active groups
                 saved_ag = data.get("active_groups")
                 if saved_ag is not None:
@@ -2532,6 +2728,25 @@ class AppController:
         except Exception as e:
             log.warning("Could not load startup settings: %s", e)
 
+    def _settings_save_worker(self):
+        """Drain the settings-save queue on a persistent background thread.
+
+        Coalesces rapid bursts (e.g. repeated mode switches) so only the most
+        recent save request is written to disk.  A None sentinel shuts the
+        worker down cleanly on app exit.
+        """
+        q = self._settings_save_queue
+        while True:
+            item = q.get()
+            if item is None:  # sentinel — exit
+                break
+            # Drain any pending duplicates so we only write once per burst
+            while not q.empty():
+                extra = q.get_nowait()
+                if extra is None:
+                    return
+            self._save_startup_settings()
+
     def _save_startup_settings(self):
         """Persist lightweight startup settings to data/defaults/startup_settings.json."""
         import json
@@ -2539,6 +2754,7 @@ class AppController:
         try:
             data = {
                 "monome_backend": self.config.monome_backend,
+                "grid_mode": self.config.grid_mode,
                 "active_groups": self.config.active_groups,
                 "link_enabled": getattr(self.config, "link_enabled", False),
                 "control_row": {
@@ -2557,6 +2773,10 @@ class AppController:
     def _gui_channel_param(self, row: int, param: str, value):
         if not (0 <= row < MAX_ROWS):
             return
+        # Transient params that don't change saved state
+        _TRANSIENT = {"stop", "playing", "rate_half", "rate_double"}
+        if param not in _TRANSIENT:
+            self._mark_preset_dirty()
         ch = self.config.channels[row]
         if param == "mode":
             old_mode = ch.mode
@@ -2621,6 +2841,21 @@ class AppController:
                         ech._active_pitch_semitone = None
                         ech._pitch_mode_col = -1
                         ech._pitch_mode_mult = 1.0
+            # Clear SLICE state when leaving SLICE mode to prevent LED ghosts
+            # and stale audio boundaries bleeding into the new mode.
+            if old_mode == PlaybackMode.SLICE and value != PlaybackMode.SLICE:
+                if self.engine:
+                    ech = self.engine.channels[row]
+                    ech._slice_btn1 = None
+                    ech._slice_btn2 = None
+                    ech._slice_loop_start = None
+                    ech._slice_loop_end = None
+                    ech._slice_reverse = False
+                    ech._slice_latched = False
+                    ech._slice_held = set()
+                    ech._slice_col_start = -1
+                    ech._slice_col_end = -1
+                self.grid.clear_row_leds(row, self.config.grid_columns)
             # Cancel any pending LIVE state when leaving LIVE mode.
             if old_mode == PlaybackMode.LIVE and value != PlaybackMode.LIVE:
                 timer = self._live_long_press_timers.pop(row, None)
@@ -2674,6 +2909,7 @@ class AppController:
             ch.gain = value
             if self.engine:
                 self.engine.channels[row].state.gain = value
+            self._notify_automation(f"ch.{row}.gain", float(value))
         elif param == "speed":
             ch.speed = value
             if ch.mode != PlaybackMode.SEQ:
@@ -2683,6 +2919,7 @@ class AppController:
                 ech = self.engine.channels[row]
                 if not getattr(ech, '_pending_sample_path', None):
                     ech.state.speed = value
+            self._notify_automation(f"ch.{row}.speed", float(value))
         elif param == "transpose":
             ch.transpose = value
             if self.engine:
@@ -2713,8 +2950,16 @@ class AppController:
                 self.engine.channels[row]._seq_column = -1
         elif param == "mute":
             ch.mute = value
-            if self.engine:
-                self.engine.channels[row].state.mute = value
+            self._apply_solo_mutes()
+            self._notify_automation(f"ch.{row}.mute", 1.0 if value else 0.0)
+        elif param == "solo":
+            ch.solo = bool(value)
+            self._apply_solo_mutes()
+            if self.window:
+                strip = self.window.channel_view.get_strip(row)
+                strip._solo_btn.blockSignals(True)
+                strip._solo_btn.setChecked(ch.solo)
+                strip._solo_btn.blockSignals(False)
         elif param == "reverse":
             ch.reverse = bool(value)
             if self.engine:
@@ -2735,46 +2980,73 @@ class AppController:
             if self.engine:
                 self.engine.channels[row].state.sel_start = ch.sel_start
                 self.engine.channels[row].state.sel_end = ch.sel_end
-                # Recalculate speed to fit new selection length to grid
-                # SEQ mode uses a fixed speed (default 1.0), so save the
-                # BPM-derived speed as normal_speed but don't apply it.
-                self.engine.set_channel_speed(row, self.config.tempo)
-                speed = self.engine.channels[row].state.speed
-                if ch.mode == PlaybackMode.SEQ:
-                    ch.normal_speed = speed
-                    speed = 1.0
-                    self.engine.channels[row].state.speed = speed
-                ch.speed = speed
-                if self.window:
-                    strip = self.window.channel_view.get_strip(row)
-                    strip._true_speed = speed
-                    strip._speed_spin.blockSignals(True)
-                    strip._speed_spin.setValue(speed)
-                    strip._speed_spin.blockSignals(False)
+        elif param == "ch_lp":
+            ch.ch_lp = float(value)
+            if self.engine:
+                self.engine.channels[row].state.ch_lp = ch.ch_lp
+            self._notify_automation(f"ch.{row}.ch_lp", float(value))
+        elif param == "ch_hp":
+            ch.ch_hp = float(value)
+            if self.engine:
+                self.engine.channels[row].state.ch_hp = ch.ch_hp
+            self._notify_automation(f"ch.{row}.ch_hp", float(value))
+        elif param == "pan":
+            ch.pan = max(0.0, min(1.0, float(value)))
+            if self.engine:
+                self.engine.channels[row].state.pan = ch.pan
+            self._notify_automation(f"ch.{row}.pan", ch.pan)
+
+    def _apply_solo_mutes(self):
+        """Recompute engine mute state for all channels based on solo flags.
+
+        If any channel is soloed, all non-soloed channels are effectively muted.
+        The GUI MUTE button always reflects the user's intent (ch.mute), not
+        the effective engine state.
+        """
+        if not self.engine:
+            return
+        active = self.config.row_count
+        any_solo = any(self.config.channels[i].solo for i in range(active))
+        for i in range(active):
+            ch = self.config.channels[i]
+            effective = ch.mute or (any_solo and not ch.solo)
+            self.engine.channels[i].state.mute = effective
 
     # --- Mixer handlers ---
 
     def _gui_group_volume(self, group: int, vol: float):
         if not (0 <= group < NUM_GROUPS):
             return
+        self._mark_preset_dirty()
         self.config.groups[group].volume = vol
         if self.engine:
             self.engine.set_group_volume(group, vol)
+        self._notify_automation(f"grp.{group}.volume", float(vol))
+        # Keep mix-mode LED column in sync whenever volume changes.
+        # Deferred via QTimer so LED I/O doesn't run on the same call stack
+        # as the audio volume change (avoids GIL contention with DSP thread).
+        from .config import GRID_MODE_MIX
+        if self.config.grid_mode == GRID_MODE_MIX:
+            QTimer.singleShot(0, lambda g=group: self._mix_mode_update_col(g))
 
     def _gui_group_send(self, group: int, send: float):
         if not (0 <= group < NUM_GROUPS):
             return
+        self._mark_preset_dirty()
         send = max(0.0, min(1.0, send))
         self.config.groups[group].send = send
         if self.engine:
             self.engine.set_group_send(group, send)
+        self._notify_automation(f"grp.{group}.send", float(send))
 
     def _gui_group_mute(self, group: int, mute: bool):
         if not (0 <= group < NUM_GROUPS):
             return
+        self._mark_preset_dirty()
         self.config.groups[group].mute = mute
         if self.engine:
             self.engine.set_group_mute(group, mute)
+        self._notify_automation(f"grp.{group}.mute", 1.0 if mute else 0.0)
 
     def _gui_group_stop(self, group: int):
         """Stop all channels in the specified group."""
@@ -2832,6 +3104,181 @@ class AppController:
             else:
                 self.grid.clear_row_leds(i, self.config.grid_columns)
 
+    def _gui_grid_mode_cycle(self):
+        """Cycle to the next grid display mode."""
+        from .config import GRID_MODES
+        current = self.config.grid_mode
+        try:
+            idx = GRID_MODES.index(current)
+        except ValueError:
+            idx = 0
+        self._gui_grid_mode_set(GRID_MODES[(idx + 1) % len(GRID_MODES)])
+
+    def _gui_grid_mode_set(self, mode: str):
+        """Set the grid display mode and update transport bar button."""
+        from .config import GRID_MODES, GRID_MODE_MIX
+        if mode not in GRID_MODES:
+            log.warning("Unknown grid mode: %s", mode)
+            return
+        prev_mode = self.config.grid_mode
+        self.config.grid_mode = mode
+        if self.window:
+            self.window.transport.set_grid_mode(mode)
+        if mode == GRID_MODE_MIX:
+            # Update virtual grid col colors immediately (no I/O, just a list)
+            if self.window:
+                active = self.config.active_groups
+                cols = self.config.grid_columns
+                col_colors = list(range(active)) + [0] * (cols - active)
+                self.window.virtual_grid.set_col_colors(col_colors)
+            # Defer the bulk MIDI/serial LED writes to the next event loop cycle
+            # so the DSP thread is not starved by 64+ send_message calls on the
+            # main thread at the moment of the button press.
+            QTimer.singleShot(0, self._mix_mode_update_all)
+        elif prev_mode == GRID_MODE_MIX:
+            # Clear virtual grid col colors immediately (no I/O)
+            if self.window:
+                self.window.virtual_grid.set_col_colors(None)
+            # Reset per-row LED column cache so the next _update_ui cycle
+            # redraws playback LEDs immediately instead of leaving dark cells
+            # because the dedup cache still thinks those positions are current.
+            self._row_last_led_col = [-1] * MAX_ROWS
+            # Defer the grid.clear() bulk send for the same reason
+            QTimer.singleShot(0, self.grid.clear)
+        # Enqueue a settings save on the persistent background worker —
+        # avoids per-call thread creation (kernel allocation ~0.5-5ms) which
+        # was holding the GIL at the worst possible moment.
+        self._settings_save_queue.put(True)
+        log.info("Grid mode: %s", mode)
+
+    # ------------------------------------------------------------------ #
+    #  Mix mode helpers                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _mix_mode_update_col(self, group: int):
+        """Repaint one column in mix-mode to match the current group volume.
+
+        Layout (row 0 = top of grid = loudest):
+          - Rows below or equal to the fader row  → LED_BRIGHT
+          - Row immediately above the fader row   → LED_DIM  (dim 'head' marker)
+          - All rows above the head               → LED_OFF
+        When the fader is at maximum (fader_row == 0) there is no head row.
+        When the fader is fully off (fader_row > last row) the whole column is off.
+        """
+        rows = self.config.row_count
+        cols = self.config.grid_columns
+        if group >= cols or group >= self.config.active_groups:
+            return  # column doesn't exist or group is inactive
+
+        gain = self.config.groups[group].volume
+        fader_pos = _gain_to_fader(gain)          # 0.0 (silent) … 1.0 (full)
+
+        # Map fader position to the topmost lit row.
+        # fader_pos == 1.0  → row 0  (top, fully lit column)
+        # fader_pos == 0.0  → no lit rows
+        # We quantise to rows: lit_rows = round(fader_pos * rows)
+        lit_rows = int(round(fader_pos * rows))   # 0 … rows
+
+        for row in range(rows):
+            # row 0 = top; physical_row_from_bottom = (rows - 1 - row)
+            rows_from_bottom = rows - row          # 1 … rows
+            brightness = LED_BRIGHT if rows_from_bottom <= lit_rows else LED_OFF
+            self.grid.set_led(group, row, brightness, color=group)
+
+    def _mix_mode_update_all(self):
+        """Repaint all group columns in mix mode.
+
+        For MIDI grids (Launchpad MK2/MK3/X/Pro) the entire repaint is
+        collapsed to **two** SysEx messages: one clear and one bulk-set.
+        This eliminates the 64+ individual note-on burst that was competing
+        with the DSP worker for the GIL long enough to drain the audio ring
+        buffer and cause audible dropouts.
+
+        For monome (serial led_level_row) we call set_row_colored() once per
+        row as before — 8 messages total, which is already fast.
+        """
+        from .config import GRID_MODE_MIX
+        if self.config.grid_mode != GRID_MODE_MIX:
+            return  # deferred call fired after mode changed — bail out
+        active = self.config.active_groups
+        cols = self.config.grid_columns
+        rows = self.config.row_count
+
+        # Pre-compute lit_rows per active group
+        lit_rows_per_grp = []
+        for grp in range(min(active, cols)):
+            gain = self.config.groups[grp].volume
+            lit_rows_per_grp.append(int(round(_gain_to_fader(gain) * rows)))
+
+        # --- Fast path: MIDI grid with SysEx bulk support ---------------
+        midi_grid = getattr(self.grid, '_midi_grid', None)
+        if midi_grid is not None and midi_grid.connected and hasattr(midi_grid, 'set_leds_bulk'):
+            cells = []
+            for row in range(rows):
+                rows_from_bottom = rows - row
+                for col, lit_rows in enumerate(lit_rows_per_grp):
+                    if rows_from_bottom <= lit_rows:
+                        cells.append((col, row, LED_BRIGHT, col))
+            # set_leds_bulk() is now self-clearing — it explicitly sets
+            # every grid cell (lit + unlit) in a single SysEx, so we don't
+            # need a separate clear_all() call.  Total: 1 queue.put on the
+            # main thread — minimal GIL work.
+            midi_grid.set_leds_bulk(cells)
+            # Keep virtual grid column colours in sync.  set_col_colors()
+            # is a cheap no-op (early return) when the colour list is
+            # unchanged from the last call.
+            if self.window:
+                col_colors = list(range(active)) + [0] * (cols - active)
+                self.window.virtual_grid.set_col_colors(col_colors)
+            return
+
+        # --- Monome / classic MIDI fallback: one message per row --------
+        for row in range(rows):
+            rows_from_bottom = rows - row   # rows at top row, 1 at bottom row
+            values = [LED_OFF] * cols
+            colors = list(range(cols))      # column index == group index
+            for col, lit_rows in enumerate(lit_rows_per_grp):
+                if rows_from_bottom <= lit_rows:
+                    values[col] = LED_BRIGHT
+            # One led_level_row on monome; per-cell colored on MIDI grid
+            self.grid.set_row_colored(row, values, colors)
+
+        # Keep virtual grid column colours in sync
+        if self.window:
+            col_colors = list(range(active)) + [0] * (cols - active)
+            self.window.virtual_grid.set_col_colors(col_colors)
+
+    def _mix_mode_on_press(self, x: int, y: int):
+        """Handle a grid button press while in mix mode.
+
+        Column x maps to group x.  Row y (0 = top) sets the fader so that
+        the clicked button becomes the topmost lit cell.
+        """
+        group = x
+        if group >= NUM_GROUPS or group >= self.config.grid_columns:
+            return
+        rows = self.config.row_count
+        if y >= rows:
+            return
+
+        # Convert row press to fader position.
+        # Row 0 pressed → fader at top → lit_rows = rows → fader_pos = 1.0
+        # Row (rows-1) pressed → lit_rows = 1 → fader_pos = 1/rows
+        # Pressing bottom row does NOT silence; set to minimum audible step.
+        lit_rows = rows - y                        # pressing row 0 → lit_rows=rows
+        fader_pos = lit_rows / rows
+        fader_pos = max(0.0, min(1.0, fader_pos))
+
+        new_gain = _fader_to_gain(fader_pos)
+        # Drive through the standard volume handler so automation, config,
+        # engine, and mixer GUI all update in one shot.
+        self._gui_group_volume(group, new_gain)
+        # Also sync the mixer fader widget immediately
+        if self.window:
+            gc = self.window.mixer_view.get_group_channel(group)
+            if gc:
+                gc.set_volume(new_gain)
+
     def _gui_restart(self):
         """Restart the application by re-launching the process."""
         import subprocess
@@ -2845,6 +3292,7 @@ class AppController:
         """Set FX routing for a group: 0=OFF/M, 1=FX1, 2=FX2."""
         if not (0 <= group < NUM_GROUPS):
             return
+        self._mark_preset_dirty()
         self.config.groups[group].fx_route = route
         if self.engine:
             self.engine.mixer.groups[group].fx_route = route
@@ -2932,6 +3380,7 @@ class AppController:
             setattr(inst.state, param, value)
             if param in ("filter_freq_lp", "filter_freq_hp"):
                 inst._update_filters()
+        self._notify_automation(f"delay.{bus}.{param}", float(value))
 
     def _gui_tape_delay_param(self, param: str, value, bus: int = 1):
         """Handle tape delay parameter change."""
@@ -2939,6 +3388,7 @@ class AppController:
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"tape_delay.{bus}.{param}", float(value))
 
     def _gui_filter_a_param(self, param: str, value, bus: int = 1):
         """Handle filter A (shapeable LP/HP) parameter change."""
@@ -2946,6 +3396,7 @@ class AppController:
         setattr(cfg, param, value)
         if inst:
             inst.update_from_state(cfg)
+        self._notify_automation(f"filter_a.{bus}.{param}", float(value))
 
     def _gui_filter_b_param(self, param: str, value, bus: int = 1):
         """Handle filter B (Moog ladder) parameter change."""
@@ -2953,6 +3404,7 @@ class AppController:
         setattr(cfg, param, value)
         if inst:
             inst.update_from_state(cfg)
+        self._notify_automation(f"filter_b.{bus}.{param}", float(value))
 
     def _gui_effect_route(self, effect_name: str, route: int):
         """Legacy handler — routing is now implicit from rack placement.
@@ -2979,186 +3431,217 @@ class AppController:
         if self.engine:
             fx_bus = getattr(self.engine, self._BUS_MOD_MAP[bus])
             fx_bus.update_mod(cfg)
+        self._notify_automation(f"mod.{bus}.{param}", float(value))
 
     def _gui_reel_to_reel_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("reel_to_reel", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"reel_to_reel.{bus}.{param}", float(value))
 
     def _gui_cassette_tape_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("cassette_tape", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"cassette_tape.{bus}.{param}", float(value))
 
     def _gui_vhs_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("vhs", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"vhs.{bus}.{param}", float(value))
 
     def _gui_vinyl_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("vinyl", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"vinyl.{bus}.{param}", float(value))
 
     def _gui_compressor_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("compressor", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"compressor.{bus}.{param}", float(value))
 
     def _gui_glue_compressor_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("glue_compressor", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"glue_compressor.{bus}.{param}", float(value))
 
     def _gui_hall_reverb_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("hall_reverb", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"hall_reverb.{bus}.{param}", float(value))
 
     def _gui_bit_crusher_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("bit_crusher", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"bit_crusher.{bus}.{param}", float(value))
 
     def _gui_tube_overdrive_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("tube_overdrive", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"tube_overdrive.{bus}.{param}", float(value))
 
     def _gui_ether_drift_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("ether_drift", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"ether_drift.{bus}.{param}", float(value))
 
     def _gui_noise_gate_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("noise_gate", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"noise_gate.{bus}.{param}", float(value))
 
     def _gui_tremolo_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("tremolo", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"tremolo.{bus}.{param}", float(value))
 
     def _gui_auto_wah_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("auto_wah", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"auto_wah.{bus}.{param}", float(value))
 
     def _gui_fet_limiter_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("fet_limiter", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"fet_limiter.{bus}.{param}", float(value))
 
     def _gui_rotary_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("rotary", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"rotary.{bus}.{param}", float(value))
 
     def _gui_exciter_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("exciter", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"exciter.{bus}.{param}", float(value))
 
     def _gui_transient_shaper_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("transient_shaper", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"transient_shaper.{bus}.{param}", float(value))
 
     def _gui_harmonizer_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("harmonizer", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"harmonizer.{bus}.{param}", float(value))
 
     def _gui_stereo_widener_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("stereo_widener", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"stereo_widener.{bus}.{param}", float(value))
 
     def _gui_freq_shifter_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("freq_shifter", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"freq_shifter.{bus}.{param}", float(value))
 
     def _gui_ring_mod_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("ring_mod", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"ring_mod.{bus}.{param}", float(value))
 
     def _gui_simple_eq_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("simple_eq", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"simple_eq.{bus}.{param}", float(value))
 
     def _gui_ping_pong_delay_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("ping_pong_delay", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"ping_pong_delay.{bus}.{param}", float(value))
 
     def _gui_shimmer_reverb_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("shimmer_reverb", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"shimmer_reverb.{bus}.{param}", float(value))
 
     def _gui_lofi_radio_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("lofi_radio", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"lofi_radio.{bus}.{param}", float(value))
 
     def _gui_auto_pan_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("auto_pan", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"auto_pan.{bus}.{param}", float(value))
 
     def _gui_fuzz_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("fuzz", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"fuzz.{bus}.{param}", float(value))
 
     def _gui_granular_freeze_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("granular_freeze", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"granular_freeze.{bus}.{param}", float(value))
 
     def _gui_gate_reverb_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("gate_reverb", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"gate_reverb.{bus}.{param}", float(value))
 
     def _gui_stutter_param(self, param: str, value, bus: int = 1):
         cfg, inst = self._resolve_bus("stutter", bus)
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"stutter.{bus}.{param}", float(value))
 
     # ── Foreign Exchange (stowaway) plugin host handlers ─────────────
 
@@ -3370,6 +3853,7 @@ class AppController:
         setattr(cfg, param, value)
         if inst:
             setattr(inst.state, param, value)
+        self._notify_automation(f"plate_reverb.{bus}.{param}", float(value))
 
     def _gui_record_toggle(self, armed: bool):
         """ARM button toggled in the Record tool tab.
@@ -3629,6 +4113,10 @@ class AppController:
             self.slicer_preview.play(data, sr, loop=False)
         except Exception as e:
             log.error("Library preview failed: %s", e)
+
+    def _on_library_preview_stop(self):
+        """Stop library preview playback (stop button or re-click on playing row)."""
+        self.slicer_preview.stop()
 
     def _on_library_load_to_slicer(self, filepath: str):
         """Switch to the Tools > Slice tab and load the file."""
@@ -3967,6 +4455,12 @@ class AppController:
                         cr.enabled, cr.monome_row, cr.assignments
                     )
                 log.info("Grid connected: %s — set grid to %dx%d", name, cols, rows)
+            # Repaint LEDs to match the current grid mode after connect.
+            from .config import GRID_MODE_MIX
+            if self.config.grid_mode == GRID_MODE_MIX:
+                QTimer.singleShot(100, self._mix_mode_update_all)
+            else:
+                QTimer.singleShot(100, self.grid.clear)
         else:
             if self.window:
                 self.window.setup_view.grid_panel.set_connection_status(False)
@@ -4091,6 +4585,9 @@ class AppController:
                 self.window.channel_view.set_active_groups(n)
                 self.window.setup_view._grid_panel.set_active_groups(n)
             self._save_startup_settings()
+            from .config import GRID_MODE_MIX
+            if self.config.grid_mode == GRID_MODE_MIX:
+                self._mix_mode_update_all()
 
     def _sync_grid_columns_to_waveforms(self):
         """Push per-channel steps to each waveform widget."""
@@ -4220,7 +4717,7 @@ class AppController:
             getattr(self.config, "multichannel_output", False)
         )
 
-        # Ableton Link — restore saved state and update transport button
+        # Ableton Link — restore saved state and update Setup > Audio button
         if self.clock:
             link_was_enabled = getattr(self.config, "link_enabled", False)
             if link_was_enabled:
@@ -4228,7 +4725,7 @@ class AppController:
                 if not ok:
                     self.config.link_enabled = False
                     link_was_enabled = False
-            self.window.transport.set_link_state(
+            self.window.setup_view.set_link_state(
                 link_was_enabled,
                 self.clock.link_num_peers,
                 available=self.clock.link_available,
@@ -4248,6 +4745,14 @@ class AppController:
                 strip._gain_fader, f"ch.{i}.gain", f"Ch{i+1} Gain")
             self._midi_map.register_control(
                 strip._mute_btn, f"ch.{i}.mute", f"Ch{i+1} Mute")
+            self._midi_map.register_control(
+                strip._solo_btn, f"ch.{i}.solo", f"Ch{i+1} Solo")
+            self._midi_map.register_control(
+                strip._ch_lp_knob, f"ch.{i}.ch_lp", f"Ch{i+1} LP Filter")
+            self._midi_map.register_control(
+                strip._ch_hp_knob, f"ch.{i}.ch_hp", f"Ch{i+1} HP Filter")
+            self._midi_map.register_control(
+                strip._pan_knob, f"ch.{i}.pan", f"Ch{i+1} Pan")
             self._midi_map.register_control(
                 strip._stop_btn, f"ch.{i}.stop", f"Ch{i+1} Stop")
 
@@ -4716,6 +5221,7 @@ class AppController:
         """MIDI learn completed — register the mapping callback."""
         self._midi_map.on_learn_complete(param_path, channel, cc)
         self._register_midi_param_callback(param_path)
+        self._mark_preset_dirty()
         # Add row to setup view mapping table
         if self.window:
             label = param_path
@@ -4723,6 +5229,9 @@ class AppController:
                 if ctrl.param_path == param_path:
                     label = ctrl.label
                     break
+            # Remove any existing row for this param first (re-learn case —
+            # avoids a second row appearing for the same parameter).
+            self.window.setup_view.midi_panel.remove_mapping_row(param_path)
             self.window.setup_view.midi_panel.add_mapping({
                 "param_path": param_path,
                 "cc": cc,
@@ -4737,6 +5246,11 @@ class AppController:
             if param_path.startswith(("transport.group_stop.", "transport.pattern.")):
                 self._repopulate_control_row_assignments()
 
+    def _on_midi_mapping_displaced(self, param_path: str):
+        """A new learn stole the CC that param_path owned — remove its table row."""
+        if self.window:
+            self.window.setup_view.midi_panel.remove_mapping_row(param_path)
+
     def _on_midi_map_learn_done(self, param_path: str, channel: int, cc: int):
         """Final notification after learn overlay updates."""
         pass
@@ -4744,16 +5258,19 @@ class AppController:
     def _gui_midi_range_changed(self, param_path: str, min_val: float, max_val: float):
         """User edited min/max range in the mapping table."""
         self.midi.update_mapping_range(param_path, min_val, max_val)
+        self._mark_preset_dirty()
 
     def _gui_midi_mapping_removed(self, param_path: str):
         """User deleted a mapping row from the table."""
         self.midi.remove_mapping(param_path)
+        self._mark_preset_dirty()
         if param_path.startswith(("transport.group_stop.", "transport.pattern.")):
             self._repopulate_control_row_assignments()
 
     def _gui_midi_toggle_changed(self, param_path: str, toggle: bool):
         """User toggled the toggle checkbox in the mapping table."""
         self.midi.update_mapping_toggle(param_path, toggle)
+        self._mark_preset_dirty()
 
     def _gui_tilt_mapping_changed(self, axis: int, target_param: str):
         """User changed tilt axis target assignment."""
@@ -4901,6 +5418,7 @@ class AppController:
         paths = (
             [f"transport.group_stop.{i}" for i in range(cr.num_group_stops)]
             + [f"transport.pattern.{i}" for i in range(cr.num_patterns)]
+            + ["transport.grid_mode_cycle"]
         )
         for path in paths:
             m = mappings.get(path)
@@ -4945,6 +5463,18 @@ class AppController:
             elif param == "mute":
                 self.midi.set_param_callback(param_path,
                     lambda v, r=row: self._gui_channel_param(r, "mute", v > 0.5))
+            elif param == "solo":
+                self.midi.set_param_callback(param_path,
+                    lambda v, r=row: self._gui_channel_param(r, "solo", v > 0.5))
+            elif param == "ch_lp":
+                self.midi.set_param_callback(param_path,
+                    lambda v, r=row: self._gui_channel_param(r, "ch_lp", v))
+            elif param == "ch_hp":
+                self.midi.set_param_callback(param_path,
+                    lambda v, r=row: self._gui_channel_param(r, "ch_hp", v))
+            elif param == "pan":
+                self.midi.set_param_callback(param_path,
+                    lambda v, r=row: self._gui_channel_param(r, "pan", v))
             elif param == "rate_half":
                 self.midi.set_param_callback(param_path,
                     lambda v, r=row: QTimer.singleShot(
@@ -5002,6 +5532,11 @@ class AppController:
             self.midi.set_param_callback(param_path,
                 lambda v: QTimer.singleShot(
                     0, self._gui_stop_all
+                ) if v > 0.5 else None)
+        elif param_path == "transport.grid_mode_cycle":
+            self.midi.set_param_callback(param_path,
+                lambda v: QTimer.singleShot(
+                    0, self._gui_grid_mode_cycle
                 ) if v > 0.5 else None)
         elif parts[0] == "transport" and len(parts) == 3:
             if parts[1] == "group_stop":
@@ -5378,13 +5913,14 @@ class AppController:
             self._on_rack_contents_changed(
                 self.window.effects_view.get_rack_sync_state())
 
+        _any_solo = any(ch.solo for ch in self.config.channels)
         for i, ch in enumerate(self.config.channels):
             ech = self.engine.channels[i]
             ech.state.speed = ch.speed
             ech.state.mode = ch.mode
             ech.state.gain = ch.gain
             ech.state.group = ch.group
-            ech.state.mute = ch.mute
+            ech.state.mute = _any_solo and not ch.solo or ch.mute
             ech.state.reverse = ch.reverse
             ech.state.shot_hold = ch.shot_hold
             ech.state.steps = ch.steps
@@ -5395,6 +5931,9 @@ class AppController:
             ech.state.pitch = ch.pitch
             ech.state.velocity = ch.velocity
             ech.state.filter_val = ch.filter_val
+            ech.state.ch_lp = ch.ch_lp
+            ech.state.ch_hp = ch.ch_hp
+            ech.state.pan = ch.pan
             ech.state.pitch_scale = ch.pitch_scale
             ech.state.pitch_root = ch.pitch_root
             ech.state.pitch_loop = ch.pitch_loop
@@ -5484,20 +6023,24 @@ class AppController:
             self._on_rack_contents_changed(
                 self.window.effects_view.get_rack_sync_state())
 
+        _any_solo = any(ch.solo for ch in self.config.channels)
         for i, ch in enumerate(self.config.channels):
             ech = self.engine.channels[i]
             if i in playing_rows:
                 ech.state.gain = ch.gain
-                ech.state.mute = ch.mute
+                ech.state.mute = _any_solo and not ch.solo or ch.mute
                 ech.state.attack = ch.attack
                 ech.state.release = ch.release
                 ech.state.pitch_loop = ch.pitch_loop
+                ech.state.ch_lp = ch.ch_lp
+                ech.state.ch_hp = ch.ch_hp
+                ech.state.pan = ch.pan
             else:
                 ech.state.speed = ch.speed
                 ech.state.mode = ch.mode
                 ech.state.gain = ch.gain
                 ech.state.group = ch.group
-                ech.state.mute = ch.mute
+                ech.state.mute = _any_solo and not ch.solo or ch.mute
                 ech.state.reverse = ch.reverse
                 ech.state.shot_hold = ch.shot_hold
                 ech.state.steps = ch.steps
@@ -5508,6 +6051,9 @@ class AppController:
                 ech.state.pitch = ch.pitch
                 ech.state.velocity = ch.velocity
                 ech.state.filter_val = ch.filter_val
+                ech.state.ch_lp = ch.ch_lp
+                ech.state.ch_hp = ch.ch_hp
+                ech.state.pan = ch.pan
                 ech.state.pitch_scale = ch.pitch_scale
                 ech.state.pitch_root = ch.pitch_root
                 ech.state.pitch_loop = ch.pitch_loop
@@ -5940,6 +6486,7 @@ class AppController:
             w.transport.set_active_groups(self.config.active_groups)
             w.channel_view.set_active_groups(self.config.active_groups)
             w.setup_view._grid_panel.set_active_groups(self.config.active_groups)
+            w.transport.set_grid_mode(self.config.grid_mode)
             self._sync_grid_setup_panel()
 
             # Mixer groups
@@ -6022,9 +6569,9 @@ class AppController:
         self._check_monome_connect()
         self._check_monome_disconnect()
 
-        # Ableton Link — update peer count on the transport button
+        # Ableton Link — update peer count in Setup > Audio panel
         if self.clock:
-            self.window.transport.set_link_state(
+            self.window.setup_view.set_link_state(
                 self.config.link_enabled,
                 self.clock.link_num_peers,
                 available=self.clock.link_available,
@@ -6041,6 +6588,8 @@ class AppController:
 
         # Channel playback positions + active column highlighting
         columns = self.config.grid_columns
+        from .config import GRID_MODE_MIX
+        in_mix_mode = self.config.grid_mode == GRID_MODE_MIX
         for i in range(self.config.row_count):
             ch = self.engine.channels[i]
             strip = self.window.channel_view.get_strip(i)
@@ -6051,7 +6600,8 @@ class AppController:
                 if live_state in (LIVE_STATE_EMPTY, LIVE_STATE_COUNTING_IN,
                                   LIVE_STATE_RECORDING, LIVE_STATE_OVERDUBBING,
                                   LIVE_STATE_ARMED_RERECORD):
-                    self._update_live_leds(i, live_state, columns)
+                    if not in_mix_mode:
+                        self._update_live_leds(i, live_state, columns)
                     strip.set_playing(False)
                     self._row_was_playing[i] = True  # prevent stray clears
                     continue
@@ -6066,7 +6616,9 @@ class AppController:
                     strip.set_playing(False)
                 # Waveform active column follows the sequencer step
                 strip._waveform.set_active_column(ch._seq_column if ch._seq_column >= 0 else -1)
-                self._update_seq_leds(i)
+                strip._waveform.set_seq_steps(frozenset(ch._seq_steps))
+                if not in_mix_mode:
+                    self._update_seq_leds(i)
                 grp = ch.state.group
                 if 0 <= grp < NUM_GROUPS and ch._seq_playing_step:
                     group_active[grp] = True
@@ -6085,7 +6637,8 @@ class AppController:
                 else:
                     strip.set_playing(False)
                 strip._waveform.set_active_column(active_col)
-                self._update_pitch_mode_leds(i, active_col=active_col)
+                if not in_mix_mode:
+                    self._update_pitch_mode_leds(i, active_col=active_col)
                 self._row_was_playing[i] = True  # keep DIM LEDs persistent
                 continue
 
@@ -6111,10 +6664,11 @@ class AppController:
                     self._row_last_led_col[i] = col
                     sl_col_a = getattr(ch, '_slice_col_start', -1)
                     sl_col_b = getattr(ch, '_slice_col_end', -1)
-                    if sl_col_a >= 0 and sl_col_b >= 0:
-                        self.grid.update_playback_leds(i, col, columns, sl_col_a, sl_col_b, color=grp)
-                    else:
-                        self.grid.update_playback_leds(i, col, columns, color=grp)
+                    if not in_mix_mode:
+                        if sl_col_a >= 0 and sl_col_b >= 0:
+                            self.grid.update_playback_leds(i, col, columns, sl_col_a, sl_col_b, color=grp)
+                        else:
+                            self.grid.update_playback_leds(i, col, columns, color=grp)
             else:
                 strip.set_playing(False)
                 strip._waveform.set_active_column(-1)
@@ -6122,7 +6676,8 @@ class AppController:
                 if self._row_was_playing[i]:
                     self._row_was_playing[i] = False
                     self._row_last_led_col[i] = -1
-                    self.grid.clear_row_leds(i, columns)
+                    if not in_mix_mode:
+                        self.grid.clear_row_leds(i, columns)
 
         # Update control row LEDs (group stops + pattern buttons)
         if self.grid.connected:
@@ -6169,7 +6724,7 @@ class AppController:
 
     def _update_control_leds(self, group_active: list[bool]):
         """Update control row LEDs based on slot assignments."""
-        from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_ALL_STOP
+        from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_ALL_STOP, CR_SLOT_GRID_MODE, GRID_MODE_GRID, GRID_MODES
         assignments = self.config.control_row.assignments
         any_group_active = any(group_active[:NUM_GROUPS])
 
@@ -6185,6 +6740,12 @@ class AppController:
             elif slot_type == CR_SLOT_ALL_STOP:
                 brightness = LED_BRIGHT if any_group_active else LED_OFF
                 self.grid.set_control_led(slot_x, brightness, color=0)
+
+            elif slot_type == CR_SLOT_GRID_MODE:
+                # Lit (green) when in any non-default mode; dim when in default GRID mode
+                mode_idx = GRID_MODES.index(self.config.grid_mode) if self.config.grid_mode in GRID_MODES else 0
+                brightness = LED_BRIGHT if mode_idx > 0 else LED_DIM
+                self.grid.set_control_led(slot_x, brightness, color=1)
 
             elif slot_type == CR_SLOT_PATTERN:
                 idx = slot_val
@@ -6245,9 +6806,21 @@ def run_app(argv=None) -> int:
     if scale != 1.0:
         os.environ["QT_SCALE_FACTOR"] = str(scale)
 
+    # On Windows, set an explicit App User Model ID *before* QApplication is
+    # created.  Without this Windows groups the process under python.exe's
+    # taskbar button and shows Python's icon instead of ours.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "mlrvp.mlrVp.app"
+            )
+        except Exception:
+            pass
+
     app = QApplication(argv or sys.argv)
     app.setApplicationName("mlrVp")
-    app.setApplicationVersion("0.6.9.16")
+    app.setApplicationVersion("0.6.9.20")
 
     # Delay tooltips so they only appear after hovering intentionally.
     from PySide6.QtWidgets import QProxyStyle, QStyle
@@ -6274,8 +6847,12 @@ def run_app(argv=None) -> int:
     _tt_styler = _ToolTipStyler(app)
     app.installEventFilter(_tt_styler)
 
-    # Set application icon
-    _icon_path = Path(__file__).parent / "resources" / "icon.png"
+    # Set application icon — prefer .ico on Windows for proper multi-size
+    # taskbar rendering; fall back to .png on other platforms.
+    _resources = Path(__file__).parent / "resources"
+    _icon_path = (_resources / "icon.ico") if sys.platform == "win32" else (_resources / "icon.png")
+    if not _icon_path.exists():
+        _icon_path = _resources / "icon.png"  # ultimate fallback
     if _icon_path.exists():
         app.setWindowIcon(QIcon(str(_icon_path)))
 

@@ -344,7 +344,7 @@ class RotaryKnob(_ValueDisplayMixin, QWidget):
     value_changed = Signal(float)
 
     def __init__(self, color: str = FADER_SLIDER, inverted: bool = False, parent=None,
-                 default_value: float = 0.5):
+                 default_value: float = 0.5, drag_inverted: bool = False):
         super().__init__(parent)
         self._value: float = default_value
         self._default_value: float = default_value
@@ -353,6 +353,7 @@ class RotaryKnob(_ValueDisplayMixin, QWidget):
         self._drag_start_val: float = 0
         self._color = QColor(color)
         self._inverted = inverted
+        self._drag_inverted = drag_inverted
         self._midi_highlight: int = 0  # 0=off, 1=highlight, 2=learning
         self.setFixedSize(32, 32)
         self._init_value_display()
@@ -401,8 +402,9 @@ class RotaryKnob(_ValueDisplayMixin, QWidget):
             painter.drawArc(int(cx - r), int(cy - r), int(r * 2), int(r * 2),
                             start_angle * 16, value_span * 16)
 
-        # Indicator line
-        angle_rad = math.radians(start_angle + span_angle * self._value)
+        # Indicator line — mirrors position when inverted so 0.0 sits at the right
+        _ind_val = (1.0 - self._value) if self._inverted else self._value
+        angle_rad = math.radians(start_angle + span_angle * _ind_val)
         ix = cx + (r - 2) * math.cos(angle_rad)
         iy = cy - (r - 2) * math.sin(angle_rad)
         painter.setPen(QPen(QColor(255, 255, 255, 200), 2))
@@ -436,6 +438,8 @@ class RotaryKnob(_ValueDisplayMixin, QWidget):
     def mouseMoveEvent(self, event: QMouseEvent):
         if self._dragging:
             dy = self._drag_start_y - event.position().y()
+            if self._drag_inverted:
+                dy = -dy
             val = self._drag_start_val + dy / 100.0
             val = max(0.0, min(1.0, val))
             if val != self._value:

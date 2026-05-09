@@ -23,6 +23,7 @@ class MidiMapping:
     max_val: float = 1.0
     param_path: str = ""
     toggle: bool = False  # True = toggle on note-on, False = momentary (held)
+    msg_type: int = 0xB0  # 0xB0 = CC, 0x90 = Note — kept so Note/CC with same number don't collide
 
 
 class MidiHandler(QObject):
@@ -33,6 +34,7 @@ class MidiHandler(QObject):
     """
 
     learn_completed = Signal(str, int, int)  # param_path, channel, cc
+    mapping_displaced = Signal(str)          # param_path whose CC was stolen by a new learn
     _cc_dispatch = Signal(str, float)  # param_path, value — internal signal for thread-safe CC dispatch
 
     def __init__(self, parent=None):
@@ -125,19 +127,45 @@ class MidiHandler(QObject):
                 pass
             self._midi_out = None
 
-    def add_mapping(self, param_path: str, mapping: MidiMapping):
-        """Add a MIDI CC mapping for a parameter."""
+    def add_mapping(self, param_path: str, mapping: MidiMapping) -> Optional[str]:
+        """Add a MIDI CC mapping for a parameter.
+
+        Returns the param_path of any previously-mapped parameter that was
+        displaced because it owned the same (channel, cc) key.  The caller
+        should remove the displaced param from the GUI table.
+        """
         mapping.param_path = param_path
+        displaced: Optional[str] = None
         with self._lock:
+            new_key = (mapping.msg_type, mapping.channel, mapping.cc)
+
+            # If this param already had a mapping on a DIFFERENT CC/Note, remove the
+            # stale reverse-lookup entry so that old key no longer routes here.
+            existing = self._mappings.get(param_path)
+            if existing is not None:
+                old_key = (existing.msg_type, existing.channel, existing.cc)
+                if old_key != new_key and self._cc_to_param.get(old_key) == param_path:
+                    del self._cc_to_param[old_key]
+
+            # If another param already owns this CC, orphan it cleanly so the
+            # state stays consistent (both dicts agree on ownership).
+            old_owner = self._cc_to_param.get(new_key)
+            if old_owner is not None and old_owner != param_path:
+                displaced = old_owner
+                del self._mappings[old_owner]
+                self._toggle_state.pop(old_owner, None)
+                self._param_callbacks.pop(old_owner, None)
+
             self._mappings[param_path] = mapping
-            self._cc_to_param[(mapping.channel, mapping.cc)] = param_path
+            self._cc_to_param[new_key] = param_path
+        return displaced
 
     def remove_mapping(self, param_path: str):
         """Remove a MIDI mapping."""
         with self._lock:
             if param_path in self._mappings:
                 m = self._mappings[param_path]
-                key = (m.channel, m.cc)
+                key = (m.msg_type, m.channel, m.cc)
                 if key in self._cc_to_param:
                     del self._cc_to_param[key]
                 del self._mappings[param_path]
@@ -212,19 +240,21 @@ class MidiHandler(QObject):
             # Accept CC, Note On (with velocity > 0)
             if msg_type == 0xB0:
                 # CC message
-                self._finish_learn(channel, data1)
+                self._finish_learn(channel, data1, 0xB0)
                 return
             elif msg_type == 0x90 and data2 > 0:
-                # Note On — use the note number as the "cc" identifier
-                # Store with channel offset so we can distinguish from CC
-                self._finish_learn(channel, data1)
+                # Note On — stored under 0x90 key so it never collides with CCs
+                self._finish_learn(channel, data1, 0x90)
                 return
             # Ignore Note Off and other messages during learn
             return
 
         # ------ Normal operation ------
+        # Normalise Note Off to 0x90 so Note Off can release Note-learned mappings
+        # but never collides with CC-learned ones (which live under 0xB0 keys).
+        lookup_type = 0x90 if msg_type == 0x80 else msg_type
         with self._lock:
-            key = (channel, data1)
+            key = (lookup_type, channel, data1)
             if key not in self._cc_to_param:
                 return
             param_path = self._cc_to_param[key]
@@ -278,7 +308,7 @@ class MidiHandler(QObject):
         if cb is not None:
             cb(value)
 
-    def _finish_learn(self, channel: int, cc: int):
+    def _finish_learn(self, channel: int, cc: int, msg_type: int = 0xB0):
         """Complete a MIDI learn — creates mapping and emits signal on Qt thread."""
         # Atomically capture-and-clear the learn slot so a second near-
         # simultaneous message cannot also fire _finish_learn.
@@ -294,10 +324,13 @@ class MidiHandler(QObject):
             channel=channel,
             cc=cc,
             param_path=param_path,
+            msg_type=msg_type,
         )
-        self.add_mapping(param_path, mapping)
-        # Emit signal — Qt marshals this to the main thread
+        displaced = self.add_mapping(param_path, mapping)
+        # Emit signals — Qt marshals both to the main thread
         self.learn_completed.emit(param_path, channel, cc)
+        if displaced:
+            self.mapping_displaced.emit(displaced)
 
     def send_cc(self, channel: int, cc: int, value: int):
         """Send a MIDI CC message."""
@@ -321,6 +354,7 @@ class MidiHandler(QObject):
                     "min_val": m.min_val,
                     "max_val": m.max_val,
                     "toggle": m.toggle,
+                    "msg_type": m.msg_type,
                     "toggle_state": self._toggle_state.get(path, False),
                 })
             return result
@@ -336,7 +370,7 @@ class MidiHandler(QObject):
             mapping = MidiMapping(**filtered)
             mapping.param_path = m_data.get('param_path', mapping.param_path)
             new_mappings[mapping.param_path] = mapping
-            new_cc_to_param[(mapping.channel, mapping.cc)] = mapping.param_path
+            new_cc_to_param[(mapping.msg_type, mapping.channel, mapping.cc)] = mapping.param_path
             if mapping.toggle and m_data.get('toggle_state', False):
                 new_toggle_state[mapping.param_path] = True
         with self._lock:

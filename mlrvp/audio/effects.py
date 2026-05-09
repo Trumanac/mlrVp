@@ -341,6 +341,8 @@ class ChannelFilter:
         self.lp = BiquadFilter(sample_rate)
         self.hp = BiquadFilter(sample_rate)
         self._filter_val = 0.0
+        self._lp_val: float = 0.0   # from ch_lp knob (0=bypass, 1=closed)
+        self._hp_val: float = 0.0   # from ch_hp knob (0=bypass, 1=closed)
 
     def set_filter(self, value: float):
         """Set filter value. 0 = bypass, negative = LP, positive = HP.
@@ -360,12 +362,41 @@ class ChannelFilter:
             freq = 20 * (8000 / 20) ** self._filter_val
             self.hp.set_highpass(freq)
 
+    def set_lp(self, val: float):
+        """Set LP cutoff from knob: 0=bypass (20 kHz), 1=fully closed (200 Hz)."""
+        val = max(0.0, min(1.0, val))
+        if abs(val - self._lp_val) < 0.001:
+            return
+        self._lp_val = val
+        freq = 20000.0 * (200.0 / 20000.0) ** val  # 20000 → 200 Hz
+        self.lp.set_lowpass(freq)
+
+    def set_hp(self, val: float):
+        """Set HP cutoff from knob: 0=bypass (20 Hz), 1=fully closed (8 kHz)."""
+        val = max(0.0, min(1.0, val))
+        if abs(val - self._hp_val) < 0.001:
+            return
+        self._hp_val = val
+        freq = 20.0 * (8000.0 / 20.0) ** val  # 20 → 8000 Hz
+        self.hp.set_highpass(freq)
+
     def reset(self):
         self.lp.reset()
         self.hp.reset()
         self._filter_val = 0.0
+        self._lp_val = 0.0
+        self._hp_val = 0.0
 
     def process(self, data: np.ndarray) -> np.ndarray:
+        # New independent LP/HP knob path takes priority
+        if self._lp_val > 0.01 or self._hp_val > 0.01:
+            out = data
+            if self._lp_val > 0.01:
+                out = self.lp.process(out)
+            if self._hp_val > 0.01:
+                out = self.hp.process(out)
+            return out
+        # Legacy single-sweep path (filter_val)
         if abs(self._filter_val) < 0.01:
             return data
         if self._filter_val < 0:
@@ -2911,6 +2942,9 @@ class AutoWahProcessor:
         # Pre-allocated per-sample cutoff buffer (was np.empty per block)
         self._cutoffs = np.empty(buffer_size, dtype=np.float64)
         self._cutoffs_size = buffer_size
+        # Pre-allocated float32 output buffer (eliminates np.ascontiguousarray alloc)
+        self._out_f32 = np.empty((buffer_size, 2), dtype=np.float32)
+        self._out_f32_size = buffer_size
 
     def _calc_biquad(self, cutoff_hz: float, ftype: int, q: float):
         """Recalculate biquad coefficients for LP/BP/HP."""
@@ -2960,7 +2994,8 @@ class AutoWahProcessor:
         q = 0.5 + s.peak * 14.5
 
         # 1. Compute envelope for entire block (per-sample, lightweight)
-        env = self._env.copy()
+        env0 = float(self._env[0])
+        env1 = float(self._env[1])
         if n > self._cutoffs_size:
             self._cutoffs = np.empty(n, dtype=np.float64)
             self._cutoffs_size = n
@@ -2981,20 +3016,21 @@ class AutoWahProcessor:
         for i in range(n):
             rect0 = rect_all[i, 0]
             rect1 = rect_all[i, 1]
-            if rect0 > env[0]:
-                env[0] = att_coeff * env[0] + (1.0 - att_coeff) * rect0
+            if rect0 > env0:
+                env0 = att_coeff * env0 + (1.0 - att_coeff) * rect0
             else:
-                env[0] = rel_coeff * env[0] + (1.0 - rel_coeff) * rect0
-            if rect1 > env[1]:
-                env[1] = att_coeff * env[1] + (1.0 - att_coeff) * rect1
+                env0 = rel_coeff * env0 + (1.0 - rel_coeff) * rect0
+            if rect1 > env1:
+                env1 = att_coeff * env1 + (1.0 - att_coeff) * rect1
             else:
-                env[1] = rel_coeff * env[1] + (1.0 - rel_coeff) * rect1
-            avg_env = min((env[0] + env[1]) * 0.5, 1.0)
+                env1 = rel_coeff * env1 + (1.0 - rel_coeff) * rect1
+            avg_env = min((env0 + env1) * 0.5, 1.0)
             if mode_up:
                 cutoffs[i] = min_f + avg_env * f_range
             else:
                 cutoffs[i] = max_f - avg_env * f_range
-        self._env[:] = env
+        self._env[0] = env0
+        self._env[1] = env1
 
         # 2. Process biquad in sub-blocks (lfilter in C per chunk)
         CHUNK = 32
@@ -3015,10 +3051,14 @@ class AutoWahProcessor:
             pos = end
         self._zi[np.abs(self._zi) < 1e-12] = 0.0
 
-        out = np.ascontiguousarray(out, dtype=np.float32)
+        if n > self._out_f32_size:
+            self._out_f32 = np.empty((n, 2), dtype=np.float32)
+            self._out_f32_size = n
+        out_f32 = self._out_f32[:n]
+        np.copyto(out_f32, out, casting='unsafe')
         if mix < 0.999:
-            return data * (1.0 - mix) + out * mix
-        return out
+            return data * (1.0 - mix) + out_f32 * mix
+        return out_f32
 
     def reset(self):
         self._env[:] = 0.0
@@ -3089,7 +3129,8 @@ class FETLimiterProcessor:
         if peak < 1e-4:  # ≈ −80 dBFS post-gain
             self._env[:] = 0.0
             self.gr_db = 0.0
-            return np.zeros_like(data)
+            driven[:] = 0.0
+            return driven
 
         # Timing coefficients
         att_s = self._ATTACK_S[min(s.attack_idx, 6)]
@@ -3213,6 +3254,8 @@ class RotaryProcessor:
         # Pre-allocated crossover input buffer
         from mlrvp.config import BUFFER_SIZE as _BS
         self._f64_buf = np.zeros((_BS, 2), dtype=np.float64)
+        # Pre-allocated output buffer (eliminates np.empty_like per block)
+        self._out_f64_buf = np.empty((_BS, 2), dtype=np.float64)
 
     def _calc_crossover(self):
         """Return (lp_b, lp_a, hp_b, hp_a) for crossover biquad filters."""
@@ -3307,7 +3350,9 @@ class RotaryProcessor:
         dd100 = self._DOPPLER_DEPTH * 100.0
 
         # --- Horn: Doppler read + AM (both channels vectorised) ---
-        out = np.empty_like(data_f64)
+        if n > self._out_f64_buf.shape[0]:
+            self._out_f64_buf = np.empty((n, 2), dtype=np.float64)
+        out = self._out_f64_buf[:n]
         positions_f64 = positions.astype(np.float64)
         for ch in range(2):
             ph_off = 0.0 if ch == 0 else math.pi
@@ -3385,6 +3430,10 @@ class ExciterProcessor:
         self._ap_a = np.zeros(2)
         self._ap_zi = None
         self._last_lo_tune = -1.0
+        # Pre-allocated output buffer (eliminates work.copy() per block)
+        from mlrvp.config import BUFFER_SIZE as _BS
+        self._out_buf = np.empty((_BS, 2), dtype=np.float32)
+        self._out_buf_size = _BS
         self._recalc_hi(self.state.tune)
         self._recalc_lo(self.state.lo_tune)
 
@@ -3448,7 +3497,12 @@ class ExciterProcessor:
         if self._ap_zi is None or self._ap_zi.shape[0] != n_ch:
             self._ap_zi = np.zeros((n_ch, 1))
 
-        out = work.copy()
+        n_samp = work.shape[0]
+        if n_samp > self._out_buf_size or self._out_buf.shape[1] < n_ch:
+            self._out_buf = np.empty((n_samp, n_ch), dtype=np.float32)
+            self._out_buf_size = n_samp
+        out = self._out_buf[:n_samp, :n_ch]
+        out[:] = work
         hi_mix = float(st.mix)
         lo_mix = float(st.lo_mix)
 
@@ -3642,8 +3696,8 @@ class TransientShaperProcessor:
         np.copyto(self._result_f32[:n], out, casting='unsafe')
         result = self._result_f32[:n]
         if is_mono:
-            return result[:, 0].copy()
-        return result.copy()
+            return result[:, 0]
+        return result
 
     def reset(self):
         self._fast_env[:] = 0.0
@@ -3706,6 +3760,7 @@ class HarmonizerProcessor:
         self._grain_tmp = np.empty((_BS, max_channels), dtype=np.float32)
         self._idx_base = np.arange(_BS, dtype=np.int64)
         self._idx_buf = np.empty(_BS, dtype=np.int64)
+        self._result_buf = np.empty((_BS, max_channels), dtype=np.float32)
 
     def _ensure_proc_bufs(self, n: int):
         if n > self._proc_size:
@@ -3717,6 +3772,7 @@ class HarmonizerProcessor:
             self._grain_tmp = np.empty((n, mc), dtype=np.float32)
             self._idx_base = np.arange(n, dtype=np.int64)
             self._idx_buf = np.empty(n, dtype=np.int64)
+            self._result_buf = np.empty((n, mc), dtype=np.float32)
 
     def _ensure_interp_bufs(self, n):
         if n > self._interp_size:
@@ -3898,7 +3954,9 @@ class HarmonizerProcessor:
         self._fb[:n, :ch] = wet
 
         mix = max(0.0, min(1.0, float(st.mix)))
-        result = ((1.0 - mix) * work + mix * wet).astype(np.float32)
+        result = self._result_buf[:n, :ch]
+        np.multiply(np.float32(1.0 - mix), work, out=result)
+        result += wet * np.float32(mix)
         if is_mono:
             return result[:, 0]
         return result
@@ -5440,6 +5498,9 @@ class GatedReverbProcessor:
         self._gate_wet = np.empty((buffer_size, 2), dtype=np.float32)
         self._gate_buf_size = buffer_size
         self._levels_buf = np.empty(buffer_size, dtype=np.float32)
+        # Pre-allocated reverb accumulation buffer (eliminates np.zeros per block)
+        self._reverb_out = np.zeros((buffer_size, 2), dtype=np.float32)
+        self._reverb_out_size = buffer_size
 
     def _ensure_gate_bufs(self, n):
         if n > self._gate_buf_size:
@@ -5447,6 +5508,9 @@ class GatedReverbProcessor:
             self._env_buf = np.empty(n, dtype=np.float32)
             self._gate_wet = np.empty((n, 2), dtype=np.float32)
             self._levels_buf = np.empty(n, dtype=np.float32)
+        if n > self._reverb_out_size:
+            self._reverb_out = np.zeros((n, 2), dtype=np.float32)
+            self._reverb_out_size = n
 
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
@@ -5484,7 +5548,9 @@ class GatedReverbProcessor:
             c.set_damp(damp)
 
         # Parallel combs → series allpasses
-        reverb_out = np.zeros((n, 2), dtype=np.float32)
+        self._ensure_gate_bufs(n)
+        reverb_out = self._reverb_out[:n]
+        reverb_out[:] = 0
         for c in self._combs:
             reverb_out += c.process(pre)
         reverb_out *= np.float32(1.0 / len(self._combs))

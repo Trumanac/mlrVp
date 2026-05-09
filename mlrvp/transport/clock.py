@@ -64,14 +64,23 @@ class _LinkBridge:
         self._loop.run_forever()
 
     async def _link_main(self, initial_tempo: float):
-        from aalink import Link
-        self._link = Link(initial_tempo)
-        self._link.enabled = True
-        log.info("Ableton Link enabled (initial tempo %.1f BPM)", initial_tempo)
+        try:
+            from aalink import Link
+            self._link = Link(initial_tempo)
+            self._link.enabled = True
+            log.info("Ableton Link enabled (initial tempo %.1f BPM)", initial_tempo)
+        except Exception as e:
+            log.error("Ableton Link initialization failed: %s", e)
+            return
         while True:
-            with self._lock:
-                self._tempo = self._link.tempo
-                self._num_peers = self._link.num_peers
+            try:
+                with self._lock:
+                    self._tempo = self._link.tempo
+                    self._num_peers = self._link.num_peers
+            except Exception as e:
+                log.warning("Ableton Link polling error: %s", e)
+                await asyncio.sleep(1.0)
+                continue
             await asyncio.sleep(0.05)  # 50 ms polling — ample for tempo display
 
     @property

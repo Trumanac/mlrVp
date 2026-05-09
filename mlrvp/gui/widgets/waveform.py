@@ -34,6 +34,7 @@ class WaveformWidget(QWidget):
         self._filename: str = ""
         self._grid_columns: int = 8  # number of grid columns for dividers
         self._active_column: int = -1  # currently playing column index
+        self._seq_steps: frozenset[int] = frozenset()  # SEQ-mode enabled steps
         self._wave_cache: QPixmap | None = None  # cached waveform bars pixmap
         self._cached_y_tops: np.ndarray | None = None  # cached bar heights
 
@@ -92,6 +93,13 @@ class WaveformWidget(QWidget):
         if self._active_column == col:
             return
         self._active_column = col
+        self.update()
+
+    def set_seq_steps(self, steps: frozenset[int]):
+        """Set enabled SEQ step indices for tint overlay. Pass frozenset() to clear."""
+        if steps == self._seq_steps:
+            return
+        self._seq_steps = steps
         self.update()
 
     def _rebuild_wave_cache(self, w: int, h: int):
@@ -170,6 +178,17 @@ class WaveformWidget(QWidget):
             painter.drawLines(lines_bright)
             painter.setClipping(False)
 
+        # SEQ mode: tint enabled (toggled-on) steps before dividers are drawn
+        if self._seq_steps and self._grid_columns > 0 and sel_w > 0:
+            col_w = sel_w / self._grid_columns
+            step_color = QColor(GROUP_COLORS[self._group_color_idx])
+            step_color.setAlpha(30)
+            for sc in self._seq_steps:
+                if 0 <= sc < self._grid_columns and sc != self._active_column:
+                    sx = sel_x1 + int(sc * col_w)
+                    sw = int(col_w) + 1
+                    painter.fillRect(sx, 0, sw, h, step_color)
+
         # Column divider lines within the selection area
         if self._grid_columns > 1 and sel_w > 0:
             div_pen = QPen(QColor(SEPARATOR), 1, Qt.PenStyle.DotLine)
@@ -186,12 +205,13 @@ class WaveformWidget(QWidget):
         sel_w = sel_x2 - sel_x1
 
         # Highlight active column within the selection region (changes often)
+        # Use brighter alpha when a SEQ step is also enabled to stay prominent
         if self._active_column >= 0 and self._grid_columns > 0 and sel_w > 0:
             col_w = sel_w / self._grid_columns
             active_x = sel_x1 + int(self._active_column * col_w)
             active_w = int(col_w) + 1
             group_color = QColor(GROUP_COLORS[self._group_color_idx])
-            group_color.setAlpha(40)
+            group_color.setAlpha(65 if self._active_column in self._seq_steps else 40)
             painter.fillRect(active_x, 0, active_w, h, group_color)
 
         # Playback position cursor

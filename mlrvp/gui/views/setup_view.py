@@ -22,6 +22,7 @@ from mlrvp.config import (
     CR_SLOT_GROUP_STOP,
     CR_SLOT_PATTERN,
     CR_SLOT_ALL_STOP,
+    CR_SLOT_GRID_MODE,
     CR_PRESETS,
 )
 from mlrvp.gui.styles import ACCENT_BLUE, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY
@@ -31,6 +32,7 @@ class AudioSetupPanel(QFrame):
     """Audio device configuration."""
 
     setting_changed = Signal(str, object)
+    link_toggled = Signal(bool)  # Ableton Link enable/disable
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -125,6 +127,27 @@ class AudioSetupPanel(QFrame):
         self._rescan_btn.setToolTip("Rescan and refresh the list of available audio devices")
         layout.addWidget(self._rescan_btn)
 
+        # Ableton Link
+        link_row = QWidget()
+        link_hl = QHBoxLayout(link_row)
+        link_hl.setContentsMargins(0, 4, 0, 0)
+        link_hl.setSpacing(8)
+        _link_lbl = QLabel("Ableton Link:")
+        _link_lbl.setStyleSheet(f"color: {TEXT_PRIMARY};")
+        link_hl.addWidget(_link_lbl)
+        self._link_btn = QPushButton("—")
+        self._link_btn.setCheckable(True)
+        self._link_btn.setFixedSize(60, 26)
+        self._link_btn.setToolTip(
+            "Ableton Link — sync tempo with Ableton Live and other Link-enabled apps\n"
+            "on the same network.  Just click — no setup required."
+        )
+        self._link_btn.setStyleSheet(self._link_btn_style(False, 0))
+        self._link_btn.toggled.connect(self._on_link_toggled)
+        link_hl.addWidget(self._link_btn)
+        link_hl.addStretch()
+        layout.addWidget(link_row)
+
         layout.addStretch()
 
         # Internal device data — populated by set_devices()
@@ -133,6 +156,49 @@ class AudioSetupPanel(QFrame):
         self._host_apis: list[str] = []      # unique ordered API names
 
     # ── public API ──────────────────────────────────────────────────── #
+
+    def _link_btn_style(self, enabled: bool, num_peers: int) -> str:
+        if not enabled:
+            return (
+                f"QPushButton {{ font-size: 11px; font-weight: bold; color: {TEXT_SECONDARY}; "
+                f"background: {BG_BLACK}; border: 1px solid {SEPARATOR}; padding: 0; }}"
+                f"QPushButton:hover {{ border-color: #4A9EFF; color: #4A9EFF; }}"
+                f"QPushButton:checked {{ background: {BG_BLACK}; }}"
+            )
+        if num_peers > 0:
+            return (
+                f"QPushButton {{ font-size: 11px; font-weight: bold; color: #0A0A0A; "
+                f"background: #4A9EFF; border: 1px solid #4A9EFF; padding: 0; }}"
+                f"QPushButton:checked {{ background: #4A9EFF; }}"
+            )
+        return (
+            f"QPushButton {{ font-size: 11px; font-weight: bold; color: #4A9EFF; "
+            f"background: {BG_BLACK}; border: 1px solid #4A9EFF; padding: 0; }}"
+            f"QPushButton:checked {{ background: {BG_BLACK}; }}"
+        )
+
+    def _on_link_toggled(self, checked: bool):
+        self._link_btn.setStyleSheet(self._link_btn_style(checked, 0))
+        self.link_toggled.emit(checked)
+
+    def set_link_state(self, enabled: bool, num_peers: int, available: bool = True):
+        """Update the Link button appearance without triggering signals."""
+        self._link_btn.blockSignals(True)
+        self._link_btn.setChecked(enabled)
+        if not available:
+            self._link_btn.setEnabled(False)
+            self._link_btn.setToolTip(
+                "Ableton Link requires the aalink package.\n"
+                "Install it with: pip install aalink"
+            )
+        else:
+            self._link_btn.setEnabled(True)
+        if enabled:
+            self._link_btn.setText(str(num_peers) if num_peers > 0 else "·")
+        else:
+            self._link_btn.setText("—")
+        self._link_btn.setStyleSheet(self._link_btn_style(enabled, num_peers))
+        self._link_btn.blockSignals(False)
 
     def set_devices(self, output_devs: list[dict], input_devs: list[dict],
                     host_apis: list[str] | None = None):
@@ -735,6 +801,10 @@ class GridSetupPanel(QFrame):
             "background: #aa1111; color: #fff; border: 1px solid #ff3333; "
             "font-size: 8px; font-weight: bold;"
         ),
+        CR_SLOT_GRID_MODE: (
+            "background: #006633; color: #fff; border: 1px solid #00aa55; "
+            "font-size: 8px; font-weight: bold;"
+        ),
         CR_SLOT_EMPTY: (
             "background: #222; color: #555; border: 1px solid #333; "
             "font-size: 8px;"
@@ -750,6 +820,8 @@ class GridSetupPanel(QFrame):
             return f"P{v+1}"
         if t == CR_SLOT_ALL_STOP:
             return "ALL\nSTP"
+        if t == CR_SLOT_GRID_MODE:
+            return "MODE"
         return "—"
 
     def _refresh_cr_button_visuals(self):
@@ -766,6 +838,8 @@ class GridSetupPanel(QFrame):
                 tip = f"Button {i+1}: Pattern {v+1}"
             elif t == CR_SLOT_ALL_STOP:
                 tip = f"Button {i+1}: All Stop (stops all groups)"
+            elif t == CR_SLOT_GRID_MODE:
+                tip = f"Button {i+1}: Grid Mode Cycle"
             else:
                 tip = f"Button {i+1}: Unassigned"
             btn.setToolTip(tip + "\nClick to reassign")
@@ -826,6 +900,13 @@ class GridSetupPanel(QFrame):
             lambda: self._assign_cr_slot(btn_idx, {"type": CR_SLOT_ALL_STOP, "value": 0})
         )
         menu.addAction(all_stop_act)
+
+        # Grid Mode Cycle
+        grid_mode_act = QAction("Grid Mode Cycle", self)
+        grid_mode_act.triggered.connect(
+            lambda: self._assign_cr_slot(btn_idx, {"type": CR_SLOT_GRID_MODE, "value": 0})
+        )
+        menu.addAction(grid_mode_act)
 
         # Empty
         empty_act = QAction("Unassigned (empty)", self)
@@ -1277,6 +1358,7 @@ class MidiSetupPanel(QFrame):
         entries = (
             [(f"Group Stop {i + 1}", f"transport.group_stop.{i}") for i in range(num_groups)]
             + [(f"Pattern {i + 1}", f"transport.pattern.{i}") for i in range(num_patterns)]
+            + [("Grid Mode Cycle", "transport.grid_mode_cycle")]
         )
 
         for label_text, param_path in entries:
@@ -1428,6 +1510,19 @@ class MidiSetupPanel(QFrame):
     def add_mapping(self, m: dict):
         """Append a single mapping row."""
         self._add_mapping_row(m)
+
+    def remove_mapping_row(self, param_path: str):
+        """Remove the table row for param_path without emitting mapping_removed.
+
+        Used when the handler has already cleaned up its internal state (e.g.
+        when a new learn displaces an existing mapping, or when a re-learn
+        replaces a row for the same param).
+        """
+        for r in range(self._map_table.rowCount()):
+            item = self._map_table.item(r, 0)
+            if item and item.data(Qt.ItemDataRole.UserRole) == param_path:
+                self._map_table.removeRow(r)
+                break
 
     def _add_mapping_row(self, m: dict):
         row = self._map_table.rowCount()
@@ -1690,6 +1785,7 @@ class SetupView(QWidget):
     """Tabbed setup panel: Audio, Grid, MIDI, OSC."""
 
     audio_setting_changed = Signal(str, object)
+    link_toggled = Signal(bool)  # Ableton Link enable/disable
     grid_setting_changed = Signal(str, object)
     midi_setting_changed = Signal(str, object)
     midi_learn_toggled = Signal(bool)
@@ -1723,6 +1819,7 @@ class SetupView(QWidget):
 
         self._audio_panel = AudioSetupPanel()
         self._audio_panel.setting_changed.connect(self.audio_setting_changed.emit)
+        self._audio_panel.link_toggled.connect(self.link_toggled.emit)
         tabs.addTab(self._audio_panel, "Audio")
 
         self._grid_panel = GridSetupPanel()
@@ -1788,3 +1885,7 @@ class SetupView(QWidget):
     def update_tilt_live(self, x: float, y: float):
         """Forward live tilt values to the MIDI panel display."""
         self._midi_panel.update_tilt_live(x, y)
+
+    def set_link_state(self, enabled: bool, num_peers: int, available: bool = True):
+        """Forward link state update to the Audio panel button."""
+        self._audio_panel.set_link_state(enabled, num_peers, available)

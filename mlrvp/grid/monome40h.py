@@ -698,6 +698,10 @@ class _Monome40hGrid:
                             state = 0 if cmd == _CMD_BUTTON_UP else 1
                             x = (pos >> 4) & 0x0f
                             y = pos & 0x0f
+                            if not (0 <= x < self.width and 0 <= y < self.height):
+                                log.debug("40h: ignoring out-of-bounds button x=%d y=%d",
+                                          x, y)
+                                continue
                             if rx_debug:
                                 log.info("40h KEY: cmd=0x%02x x=%d y=%d state=%d",
                                          cmd, x, y, state)
@@ -732,6 +736,9 @@ class _Monome40hGrid:
                                 self._tilt_ema_y = (alpha * adc_val
                                                     + (1.0 - alpha) * self._tilt_ema_y)
                                 self._last_tilt_y = self._tilt_ema_y  # float, no rounding
+                            else:
+                                # Unknown AUX port — skip callback
+                                continue
                             # ── Rate limiter (60 Hz max) ──
                             # Callback fires once per 33 ms using the latest
                             # smoothed values — prevents flooding Qt's event

@@ -5,6 +5,7 @@ and generic MIDI grid controllers that send note-on/off for buttons.
 """
 
 import logging
+import queue
 import threading
 from typing import Optional, Callable
 from enum import Enum
@@ -139,6 +140,11 @@ class MidiGridAdapter:
         self._midi_forward: Optional[Callable] = None
         # Per-cell LED state cache: (y, x) → (velocity, color) to skip unchanged sends
         self._led_cache: dict[tuple[int, int], tuple[int, int]] = {}
+        # Background MIDI output thread — drains _send_queue so main-thread LED
+        # writes never block the audio callback waiting for the Python GIL.
+        self._send_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._send_thread: Optional[threading.Thread] = None
+        self._send_thread_stop = threading.Event()
 
     @property
     def connected(self) -> bool:
@@ -151,6 +157,69 @@ class MidiGridAdapter:
     def set_control_callback(self, callback: Callable):
         """Set callback for control buttons (top row): callback(btn_index, state)."""
         self._control_callback = callback
+
+    # ------------------------------------------------------------------ #
+    #  Background send thread                                            #
+    # ------------------------------------------------------------------ #
+
+    def _start_send_thread(self):
+        """Start the background MIDI output thread."""
+        if self._send_thread is not None and self._send_thread.is_alive():
+            return
+        self._send_thread_stop.clear()
+        self._send_thread = threading.Thread(
+            target=self._send_worker, daemon=True, name="mlrvp-midi-led"
+        )
+        self._send_thread.start()
+
+    def _stop_send_thread(self):
+        """Signal the send thread to exit and wait for it."""
+        self._send_thread_stop.set()
+        self._send_queue.put(None)  # sentinel to unblock the worker
+        if self._send_thread is not None:
+            self._send_thread.join(timeout=1.0)
+            self._send_thread = None
+
+    def _send_worker(self):
+        """Drain the send queue on a dedicated thread.
+
+        Uses a None sentinel (put by _stop_send_thread) to exit — NOT a
+        threading.Event.  The event-based check had a race: if stop was set
+        before the worker looped back, it would exit without processing
+        queued clear-LED messages (causing LEDs to stay lit on disconnect).
+        Sentinel-only termination guarantees all queued messages are
+        delivered before the thread exits.
+        """
+        q = self._send_queue
+        while True:
+            try:
+                msg = q.get()
+                if msg is None:  # sentinel — exit cleanly
+                    break
+                midi_out = self._midi_out
+                if midi_out is not None:
+                    midi_out.send_message(msg)
+            except Exception:
+                pass
+
+    def _send(self, msg: list):
+        """Enqueue a MIDI message for background delivery."""
+        self._send_queue.put(msg)
+
+    def _send_now(self, msg: list):
+        """Send a MIDI message directly on the current thread.
+
+        Bypasses the background queue.  Use only when the queue cannot or
+        should not be used (e.g. on disconnect, when the worker is being
+        shut down — queued messages would never be delivered).
+        """
+        midi_out = self._midi_out
+        if midi_out is None:
+            return
+        try:
+            midi_out.send_message(msg)
+        except Exception:
+            pass
 
     def configure_control_row(self, enabled: bool):
         """Enable or disable the CC control row.
@@ -248,6 +317,7 @@ class MidiGridAdapter:
                     self._midi_out = None
 
             self._connected = True
+            self._start_send_thread()
             return True
 
         except Exception as e:
@@ -258,6 +328,17 @@ class MidiGridAdapter:
     def disconnect(self):
         """Close MIDI ports."""
         self._closed = True
+        # Clear LEDs synchronously BEFORE killing the send thread.  Routing
+        # the clear via the queue is unreliable on shutdown — the worker
+        # may exit before flushing.  _clear_all_now bypasses the queue and
+        # writes the SysEx directly on this thread, guaranteeing the
+        # hardware actually receives the clear before the port closes.
+        if self._midi_out is not None:
+            try:
+                self._clear_all_now()
+            except Exception:
+                pass
+        self._stop_send_thread()
         if self._midi_in is not None:
             try:
                 self._midi_in.close_port()
@@ -266,10 +347,6 @@ class MidiGridAdapter:
                 pass
             self._midi_in = None
         if self._midi_out is not None:
-            try:
-                self._clear_all_leds()
-            except Exception:
-                pass
             try:
                 self._midi_out.close_port()
                 self._midi_out.delete()
@@ -346,14 +423,10 @@ class MidiGridAdapter:
             return
         cmap = self._group_color_maps[color % len(self._group_color_maps)]
         velocity = cmap.get(brightness, 0)
-
-        try:
-            if velocity > 0:
-                self._midi_out.send_message([0x90, note, velocity])
-            else:
-                self._midi_out.send_message([0x80, note, 0])
-        except Exception:
-            pass
+        if velocity > 0:
+            self._send([0x90, note, velocity])
+        else:
+            self._send([0x80, note, 0])
 
     def set_control_led(self, btn_idx: int, brightness: int, color: int = 0):
         """Set LED on a control button (top row / CC buttons)."""
@@ -364,10 +437,7 @@ class MidiGridAdapter:
             return
         cmap = self._group_color_maps[color % len(self._group_color_maps)]
         velocity = cmap.get(brightness, 0)
-        try:
-            self._midi_out.send_message([0xB0, cc, velocity])
-        except Exception:
-            pass
+        self._send([0xB0, cc, velocity])
 
     def set_row(self, y: int, values: list[int], color: int = 0):
         """Set an entire row of LEDs, skipping cells that haven't changed."""
@@ -377,7 +447,6 @@ class MidiGridAdapter:
         cmap = self._group_color_maps[color % len(self._group_color_maps)]
         cols = self.columns
         xy_to_note = self._xy_to_note
-        midi_out = self._midi_out
         for x, val in enumerate(values):
             if x >= cols:
                 break
@@ -390,74 +459,222 @@ class MidiGridAdapter:
             if note is None:
                 continue
             velocity = cmap.get(val, 0)
-            try:
-                if velocity > 0:
-                    midi_out.send_message([0x90, note, velocity])
-                else:
-                    midi_out.send_message([0x80, note, 0])
-            except Exception:
-                pass
+            if velocity > 0:
+                self._send([0x90, note, velocity])
+            else:
+                self._send([0x80, note, 0])
+
+    def set_row_colored(self, y: int, values: list[int], colors: list[int]):
+        """Set a row where each cell may have a different color."""
+        if self._midi_out is None or not self._connected:
+            return
+        cache = self._led_cache
+        cols = self.columns
+        xy_to_note = self._xy_to_note
+        group_color_maps = self._group_color_maps
+        for x, (val, color) in enumerate(zip(values, colors)):
+            if x >= cols:
+                break
+            key = (y, x)
+            entry = (val, color)
+            if cache.get(key) == entry:
+                continue
+            cache[key] = entry
+            note = xy_to_note.get((x, y))
+            if note is None:
+                continue
+            cmap = group_color_maps[color % len(group_color_maps)]
+            velocity = cmap.get(val, 0)
+            if velocity > 0:
+                self._send([0x90, note, velocity])
+            else:
+                self._send([0x80, note, 0])
+
+    def _build_clear_sysex(self) -> Optional[list]:
+        """Build a single SysEx that turns every grid cell off.
+
+        Returns None if the model doesn't support batch LED SysEx — caller
+        must fall back to per-cell note-offs.
+        """
+        if self.model in (LaunchpadModel.MINI_MK3, LaunchpadModel.X,
+                          LaunchpadModel.PRO_MK3, LaunchpadModel.PRO):
+            # 3-byte format: <Type=0> <LED> <Color=0>
+            specs: list[int] = []
+            for note in self._xy_to_note.values():
+                specs.extend([0, note, 0])
+            if not specs:
+                return None
+            if self.model is LaunchpadModel.MINI_MK3:
+                header = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D, 0x03]
+            elif self.model is LaunchpadModel.X:
+                header = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0C, 0x03]
+            elif self.model is LaunchpadModel.PRO_MK3:
+                header = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0E, 0x03]
+            else:
+                header = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x10, 0x03]
+            return header + specs + [0xF7]
+        elif self.model in (LaunchpadModel.MK2, LaunchpadModel.MINI_MK2):
+            # 2-byte format: <LED> <Color=0>
+            specs = []
+            for note in self._xy_to_note.values():
+                specs.extend([note, 0])
+            if not specs:
+                return None
+            return [0xF0, 0x00, 0x20, 0x29, 0x02, 0x18, 0x0A] + specs + [0xF7]
+        return None
 
     def clear_all(self):
-        """Turn off all LEDs."""
+        """Turn off all LEDs.
+
+        For Launchpad models that support batch LED SysEx we send ONE
+        SysEx setting every grid cell to colour 0, then a small CC burst
+        for the control row LEDs.  This is the reliable "everything off"
+        path — does not depend on layout-mode side effects.
+
+        Classic / generic models fall back to individual note-offs for
+        currently-lit cells in the cache.
+        """
+        if self._midi_out is None:
+            return
+
+        sysex = self._build_clear_sysex()
+        if sysex is not None:
+            self._send(sysex)
+            for cc in self._control_cc_out.values():
+                self._send([0xB0, cc, 0])
+        else:
+            # Classic / generic — individual note-offs for lit cells only
+            cache = self._led_cache
+            xy_to_note = self._xy_to_note
+            for (y, x), (val, _color) in list(cache.items()):
+                if val > 0:
+                    note = xy_to_note.get((x, y))
+                    if note is not None:
+                        self._send([0x80, note, 0])
+            for cc in list(self._control_cc_out.values()):
+                self._send([0xB0, cc, 0])
+
         self._led_cache.clear()
-        self._clear_all_leds()
+
+    def _clear_all_now(self):
+        """Synchronously clear every LED — for use during disconnect.
+
+        Bypasses the background send queue (which is being torn down).
+        Sends the SysEx clear directly on the calling thread so the
+        hardware actually receives it before the port closes.
+        """
+        if self._midi_out is None:
+            return
+        sysex = self._build_clear_sysex()
+        if sysex is not None:
+            self._send_now(sysex)
+            for cc in self._control_cc_out.values():
+                self._send_now([0xB0, cc, 0])
+        else:
+            # Classic / generic — note-off every grid note + every CC
+            for note in self._xy_to_note.values():
+                self._send_now([0x80, note, 0])
+            for cc in self._control_cc_out.values():
+                self._send_now([0xB0, cc, 0])
+        self._led_cache.clear()
+
+    def set_leds_bulk(self, cells: list):
+        """Set every grid LED in a single SysEx burst.
+
+        ``cells`` is a list of ``(x, y, brightness, color_group)`` tuples
+        describing the cells that should be *lit*.  All other grid cells
+        are explicitly set to 0 in the same SysEx, so a separate clear
+        call is **not** required.  This collapses a typical mix-mode
+        repaint to a single SysEx (~200 bytes, 1 send_message call).
+
+        For Classic / generic models we fall back to per-cell ``set_led()``.
+        """
+        if self._midi_out is None or not self._connected:
+            return
+
+        xy_to_note = self._xy_to_note
+        group_color_maps = self._group_color_maps
+        cache = self._led_cache
+
+        # Build a (note → velocity, color_group) map of every requested lit cell
+        lit_map: dict[int, tuple[int, int]] = {}
+        for x, y, brightness, color_group in cells:
+            note = xy_to_note.get((x, y))
+            if note is None:
+                continue
+            cmap = group_color_maps[color_group % len(group_color_maps)]
+            velocity = cmap.get(brightness, 0)
+            lit_map[note] = (velocity, color_group)
+            cache[(y, x)] = (brightness, color_group)
+
+        # Mark every other grid cell as cleared in cache
+        for (cx, cy), note in xy_to_note.items():
+            if note not in lit_map:
+                cache[(cy, cx)] = (0, 0)
+
+        if self.model in (LaunchpadModel.MINI_MK3, LaunchpadModel.X,
+                          LaunchpadModel.PRO_MK3, LaunchpadModel.PRO):
+            # 3-byte format
+            specs: list[int] = []
+            for note in xy_to_note.values():
+                vel = lit_map.get(note, (0, 0))[0]
+                specs.extend([0, note, vel])
+            if not specs:
+                return
+            if self.model is LaunchpadModel.MINI_MK3:
+                header = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D, 0x03]
+            elif self.model is LaunchpadModel.X:
+                header = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0C, 0x03]
+            elif self.model is LaunchpadModel.PRO_MK3:
+                header = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0E, 0x03]
+            else:
+                header = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x10, 0x03]
+            self._send(header + specs + [0xF7])
+        elif self.model in (LaunchpadModel.MK2, LaunchpadModel.MINI_MK2):
+            # 2-byte format: <LED> <Color>
+            specs = []
+            for note in xy_to_note.values():
+                vel = lit_map.get(note, (0, 0))[0]
+                specs.extend([note, vel])
+            if not specs:
+                return
+            self._send([0xF0, 0x00, 0x20, 0x29, 0x02, 0x18, 0x0A] + specs + [0xF7])
+        else:
+            # Classic / generic — individual set_led calls (lit + explicit off)
+            for (cx, cy), note in xy_to_note.items():
+                if note in lit_map:
+                    vel = lit_map[note][0]
+                    if vel > 0:
+                        self._send([0x90, note, vel])
+                    else:
+                        self._send([0x80, note, 0])
+                else:
+                    self._send([0x80, note, 0])
 
     def _clear_all_leds(self):
         """Send note-off for all grid positions and clear control buttons."""
         if self._midi_out is None:
             return
         for note in list(self._xy_to_note.values()):
-            try:
-                self._midi_out.send_message([0x80, note, 0])
-            except Exception:
-                pass
+            self._send([0x80, note, 0])
         for cc in list(self._control_cc_out.values()):
-            try:
-                self._midi_out.send_message([0xB0, cc, 0])
-            except Exception:
-                pass
+            self._send([0xB0, cc, 0])
 
     def _enter_programmer_mode(self):
-        """Enter programmer/session mode for newer Launchpads.
-
-        This ensures the grid sends standard note messages
-        rather than the default 'live' mode behavior.
-        """
+        """Enter programmer/session mode for newer Launchpads."""
         if self._midi_out is None:
             return
-
         try:
             if self.model in (LaunchpadModel.MINI_MK3,):
-                # Mini MK3: SysEx to enter programmer mode
-                # F0 00 20 29 02 0D 0E 01 F7
-                self._midi_out.send_message(
-                    [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D, 0x0E, 0x01, 0xF7]
-                )
+                self._send([0xF0, 0x00, 0x20, 0x29, 0x02, 0x0D, 0x0E, 0x01, 0xF7])
             elif self.model in (LaunchpadModel.X,):
-                # Launchpad X: SysEx to enter programmer mode
-                # F0 00 20 29 02 0C 0E 01 F7
-                self._midi_out.send_message(
-                    [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0C, 0x0E, 0x01, 0xF7]
-                )
+                self._send([0xF0, 0x00, 0x20, 0x29, 0x02, 0x0C, 0x0E, 0x01, 0xF7])
             elif self.model in (LaunchpadModel.MK2,):
-                # MK2: SysEx for session layout
-                # F0 00 20 29 02 18 22 00 F7
-                self._midi_out.send_message(
-                    [0xF0, 0x00, 0x20, 0x29, 0x02, 0x18, 0x22, 0x00, 0xF7]
-                )
+                self._send([0xF0, 0x00, 0x20, 0x29, 0x02, 0x18, 0x22, 0x00, 0xF7])
             elif self.model in (LaunchpadModel.PRO_MK3,):
-                # Pro MK3: enter programmer mode
-                # F0 00 20 29 02 0E 0E 01 F7
-                self._midi_out.send_message(
-                    [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0E, 0x0E, 0x01, 0xF7]
-                )
+                self._send([0xF0, 0x00, 0x20, 0x29, 0x02, 0x0E, 0x0E, 0x01, 0xF7])
             elif self.model in (LaunchpadModel.PRO,):
-                # Pro: enter programmer mode
-                # F0 00 20 29 02 10 2C 03 F7
-                self._midi_out.send_message(
-                    [0xF0, 0x00, 0x20, 0x29, 0x02, 0x10, 0x2C, 0x03, 0xF7]
-                )
+                self._send([0xF0, 0x00, 0x20, 0x29, 0x02, 0x10, 0x2C, 0x03, 0xF7])
         except Exception as e:
             log.warning("Failed to enter programmer mode: %s", e)
 
