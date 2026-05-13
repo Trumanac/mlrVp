@@ -2262,12 +2262,8 @@ class _SliceLibraryRow(QWidget):
             parent._on_row_clicked(self, ctrl=False, shift=False)
 
         menu = QMenu(self)
-        menu.setStyleSheet(
-            f"QMenu {{ background: rgba(30, 30, 30, 210); color: {TEXT_PRIMARY}; "
-            f"border: 1px solid {SEPARATOR}; font-size: 9px; }}"
-            f"QMenu::item {{ padding: 4px 16px; }}"
-            f"QMenu::item:selected {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
-        )
+        from mlrvp.gui.widgets.overflow_menu import MENU_QSS
+        menu.setStyleSheet(MENU_QSS)
         for ch in range(16):
             action = menu.addAction(f"Load to channel {ch + 1}")
             action.setData(ch)
@@ -5506,8 +5502,298 @@ def _human_size(n: int) -> str:
     return f"{n:.1f}TB"
 
 
+# ---------------------------------------------------------------------------
+# Songs library tab
+# ---------------------------------------------------------------------------
+
+class _LibrarySongsTab(_LibraryTableBase):
+    """SONGS sub-tab — scans user-defined song directories (default: data/songs/)."""
+
+    COL_PLAY = 0
+    COL_DUR = 1
+    COL_DATE = 2
+    COL_SR = 3
+    COL_SIZE = 4
+    COL_PATH = 5
+
+    # Override: BPM/Key columns don't exist for songs
+    COL_BPM = -1
+    COL_KEY = -1
+    COL_NAME = 6   # will use path column's name portion internally but display Name at 0
+
+    # Re-declare correctly for this subclass
+    COL_NAME = 0
+
+    def _columns(self) -> list[str]:
+        return ["Name", "Duration", "Date", "SR", "Size", "Path"]
+
+    # Column remapping (no BPM/Key/play-button column)
+    COL_PLAY = -1
+    COL_NAME = 0
+    COL_DUR = 1
+    COL_DATE = 2
+    COL_SR = 3
+    COL_SIZE = 4
+    COL_PATH = 5
+
+    def __init__(self, parent=None):
+        from mlrvp.config import get_song_paths, get_song_metadata_cache
+        super().__init__(parent)
+        self._watched_dirs: list[str] = list(get_song_paths())
+        self._cache: dict = dict(get_song_metadata_cache())
+
+        # Watched dirs section (collapsible)
+        self._dirs_toggle = QPushButton("WATCHED DIRS \u25BE")
+        self._dirs_toggle.setCheckable(True)
+        self._dirs_toggle.setChecked(False)
+        self._dirs_toggle.setFixedHeight(20)
+        self._dirs_toggle.setStyleSheet(
+            f"QPushButton {{ background: {BG_PANEL}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; font-weight: bold; border: 1px solid {SEPARATOR}; "
+            f"padding: 1px 6px; text-align: left; }}"
+            f"QPushButton:checked {{ background: {SEPARATOR}; }}"
+        )
+        self._dirs_toggle.clicked.connect(self._on_toggle_dirs)
+        self.layout().addWidget(self._dirs_toggle)
+
+        self._dirs_panel = QWidget()
+        dvl = QVBoxLayout(self._dirs_panel)
+        dvl.setContentsMargins(2, 2, 2, 2)
+        dvl.setSpacing(2)
+        self._dirs_list = QListWidget()
+        self._dirs_list.setFixedHeight(80)
+        self._dirs_list.setStyleSheet(
+            f"QListWidget {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
+            f"font-size: 9px; border: 1px solid {SEPARATOR}; }}"
+        )
+        for d in self._watched_dirs:
+            self._dirs_list.addItem(d)
+        dvl.addWidget(self._dirs_list)
+        dirs_btn_row = QHBoxLayout()
+        dirs_btn_row.setSpacing(4)
+        add_btn = QPushButton("+ Add Dir")
+        add_btn.setFixedHeight(20)
+        add_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_GOLD}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
+            f"QPushButton:hover {{ background: {SEPARATOR}; }}"
+        )
+        add_btn.clicked.connect(self._on_add_dir)
+        dirs_btn_row.addWidget(add_btn)
+        rem_btn = QPushButton("Remove")
+        rem_btn.setFixedHeight(20)
+        rem_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
+            f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
+            f"QPushButton:hover {{ color: #ff6666; }}"
+        )
+        rem_btn.clicked.connect(self._on_remove_dir)
+        dirs_btn_row.addWidget(rem_btn)
+        dirs_btn_row.addStretch()
+        dvl.addLayout(dirs_btn_row)
+        self._dirs_panel.setVisible(False)
+        self.layout().addWidget(self._dirs_panel)
+
+        # Hide BPM/Key filter row — not relevant for songs
+        self._scan_btn.setVisible(False)
+
+        self.refresh()
+
+    def _on_toggle_dirs(self, checked: bool):
+        self._dirs_panel.setVisible(checked)
+        self._dirs_toggle.setText(
+            "WATCHED DIRS \u25B4" if checked else "WATCHED DIRS \u25BE"
+        )
+
+    def _on_add_dir(self):
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self, "Add Songs Directory")
+        if d and d not in self._watched_dirs:
+            self._watched_dirs.append(d)
+            self._dirs_list.addItem(d)
+            self._save_dirs()
+            self.refresh()
+
+    def _on_remove_dir(self):
+        items = self._dirs_list.selectedItems()
+        if not items:
+            return
+        for item in items:
+            d = item.text()
+            if d in self._watched_dirs:
+                self._watched_dirs.remove(d)
+            row = self._dirs_list.row(item)
+            self._dirs_list.takeItem(row)
+        self._save_dirs()
+        self.refresh()
+
+    def _save_dirs(self):
+        from mlrvp.config import save_song_paths
+        save_song_paths(self._watched_dirs)
+
+    def _save_cache(self):
+        from mlrvp.config import save_song_metadata_cache
+        save_song_metadata_cache(self._cache)
+
+    def refresh(self):
+        self._row_filepaths = []
+        self._meta = {}
+        self._table.setSortingEnabled(False)
+        self._table.setRowCount(0)
+        seen: set[str] = set()
+        for watched in self._watched_dirs:
+            if not os.path.isdir(watched):
+                continue
+            for root, _dirs, files in os.walk(watched):
+                for fname in sorted(files):
+                    ext = os.path.splitext(fname)[1].lower()
+                    if ext not in {".wav", ".aiff", ".aif", ".flac"}:
+                        continue
+                    fpath = os.path.join(root, fname)
+                    if fpath in seen:
+                        continue
+                    seen.add(fpath)
+                    meta = self._cache.get(fpath) or {}
+                    dirty = False
+                    if not meta.get("duration_sec"):
+                        try:
+                            info = sf.info(fpath)
+                            meta["duration_sec"] = info.frames / float(info.samplerate or 1)
+                            meta["samplerate"] = info.samplerate
+                            meta["channels"] = info.channels
+                            meta["filesize"] = os.path.getsize(fpath)
+                            dirty = True
+                        except Exception:
+                            meta.setdefault("duration_sec", 0.0)
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                    except OSError:
+                        mtime = 0.0
+                    self._cache[fpath] = meta
+                    self._meta[fpath] = meta
+                    self._row_filepaths.append(fpath)
+                    self._add_row(fpath, fname, meta, meta.get("duration_sec", 0.0), mtime)
+                    if dirty:
+                        self._save_cache()
+        self._table.setSortingEnabled(True)
+        self._apply_filter()
+        h = self._table.horizontalHeader()
+        h.setStretchLastSection(True)
+        for c in range(self._table.columnCount()):
+            h.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+        self._table.setColumnWidth(self.COL_NAME, 180)
+        self._table.setColumnWidth(self.COL_DUR, 70)
+        self._table.setColumnWidth(self.COL_DATE, 80)
+        self._table.setColumnWidth(self.COL_SR, 55)
+        self._table.setColumnWidth(self.COL_SIZE, 60)
+
+    def _add_row(self, fpath: str, fname: str, meta: dict, duration: float, mtime: float):
+        from datetime import datetime as _dt
+        r = self._table.rowCount()
+        self._table.insertRow(r)
+
+        name_item = QTableWidgetItem(os.path.splitext(fname)[0])
+        name_item.setData(Qt.ItemDataRole.UserRole + 1, fpath)
+        name_item.setToolTip(fpath)
+        self._table.setItem(r, self.COL_NAME, name_item)
+
+        dur_text = f"{int(duration // 60)}:{duration % 60:04.1f}" if duration > 0 else ""
+        dur_item = _NumericTableItem(dur_text)
+        dur_item.setData(Qt.ItemDataRole.UserRole, float(duration) if duration > 0 else 0.0)
+        dur_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(r, self.COL_DUR, dur_item)
+
+        try:
+            date_text = _dt.fromtimestamp(mtime).strftime("%Y-%m-%d") if mtime > 0 else ""
+        except (OSError, ValueError):
+            date_text = ""
+        date_item = _NumericTableItem(date_text)
+        date_item.setData(Qt.ItemDataRole.UserRole, float(mtime))
+        self._table.setItem(r, self.COL_DATE, date_item)
+
+        sr = meta.get("samplerate", 0)
+        sr_item = _NumericTableItem(f"{sr // 1000}k" if sr else "")
+        sr_item.setData(Qt.ItemDataRole.UserRole, float(sr))
+        sr_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._table.setItem(r, self.COL_SR, sr_item)
+
+        fsize = meta.get("filesize", 0)
+        size_item = _NumericTableItem(_human_size(fsize) if fsize else "")
+        size_item.setData(Qt.ItemDataRole.UserRole, float(fsize))
+        size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._table.setItem(r, self.COL_SIZE, size_item)
+
+        path_item = QTableWidgetItem(fpath)
+        path_item.setToolTip(fpath)
+        path_item.setForeground(QColor(TEXT_SECONDARY))
+        self._table.setItem(r, self.COL_PATH, path_item)
+
+    def _handle_double_click(self, filepath: str):
+        self.load_to_channel.emit(filepath, -1)
+
+    def _on_delete_selected(self):
+        fps = self._get_selected_filepaths()
+        if not fps:
+            return
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self, "Delete Songs",
+            f"Delete {len(fps)} file(s) from disk?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        for p in fps:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+            self._cache.pop(p, None)
+        self._save_cache()
+        self.refresh()
+
+    def _build_context_menu(self, menu: QMenu, filepaths: list[str]) -> None:
+        load_act = menu.addAction("Load to Channel")
+        load_act.triggered.connect(
+            lambda: self.load_to_channel.emit(filepaths[0], -1) if filepaths else None
+        )
+        menu.addSeparator()
+        del_act = menu.addAction("Delete from Disk")
+        del_act.triggered.connect(self._on_delete_selected)
+
+    def _on_scan_result_persist(self, filepath: str, bpm: float, key: str):
+        pass  # no BPM/Key analysis for songs
+
+    def _extra_row_visible(self, row: int) -> bool:
+        return True
+
+    # Overrides for methods that reference BPM/Key which don't exist here
+    def _refresh_key_filter_options(self):
+        pass
+
+    def _apply_filter(self):
+        query = self._search_edit.text().strip().lower()
+        for r in range(self._table.rowCount()):
+            name_item = self._table.item(r, self.COL_NAME)
+            name = name_item.text().lower() if name_item else ""
+            visible = not query or query in name
+            self._table.setRowHidden(r, not visible)
+
+    def _files_to_scan(self) -> list[str]:
+        return []
+
+    def _get_selected_filepaths(self) -> list[str]:
+        fps = []
+        for item in self._table.selectedItems():
+            if item.column() == self.COL_NAME:
+                fp = item.data(Qt.ItemDataRole.UserRole + 1)
+                if fp:
+                    fps.append(fp)
+        return fps
+
+
 class LibraryPanel(QFrame):
-    """Top-level Library tool tab — wraps SLICES + SAMPLES sub-tabs."""
+    """Top-level Library tool tab — wraps SLICES + SAMPLES + SONGS sub-tabs."""
 
     load_to_slicer = Signal(str)
     load_to_channel = Signal(str, int)
@@ -5535,8 +5821,10 @@ class LibraryPanel(QFrame):
         self._tabs.setDocumentMode(True)
         self._slices_tab = _LibrarySlicesTab()
         self._samples_tab = _LibrarySamplesTab()
+        self._songs_tab = _LibrarySongsTab()
         self._tabs.addTab(self._samples_tab, "SAMPLES")
         self._tabs.addTab(self._slices_tab, "SLICES")
+        self._tabs.addTab(self._songs_tab, "SONGS")
         vb.addWidget(self._tabs, stretch=1)
 
         # Bubble all signals
@@ -5545,6 +5833,8 @@ class LibraryPanel(QFrame):
             tab.load_to_channel.connect(self.load_to_channel.emit)
             tab.preview_requested.connect(self.preview_requested.emit)
             tab.preview_stop_requested.connect(self.preview_stop_requested.emit)
+        # Songs tab: only load_to_channel
+        self._songs_tab.load_to_channel.connect(self.load_to_channel.emit)
 
     def refresh(self):
         self._slices_tab.refresh()
@@ -5557,6 +5847,10 @@ class LibraryPanel(QFrame):
     @property
     def samples_tab(self) -> _LibrarySamplesTab:
         return self._samples_tab
+
+    @property
+    def songs_tab(self) -> "_LibrarySongsTab":
+        return self._songs_tab
 
 
 class ToolsView(QWidget):

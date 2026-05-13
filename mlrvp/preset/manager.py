@@ -581,7 +581,7 @@ class PresetManager:
                         ch.live.bars = max(1, min(32, int(live_data.get("bars", ch.live.bars))))
                         ch.live.quantize = int(live_data.get("quantize", ch.live.quantize))
                         ch.live.thru = bool(live_data.get("thru", ch.live.thru))
-                        ch.live.count_in = bool(live_data.get("count_in", ch.live.count_in))
+                        ch.live.count_in = max(0, min(8, int(live_data.get("count_in", ch.live.count_in))))
                         ch.live.input_trim = max(0.0, min(2.0, float(live_data.get("input_trim", ch.live.input_trim))))
                         ch.live.loop_state = str(live_data.get("loop_state", ch.live.loop_state))
                         ch.live.exported_path = str(live_data.get("exported_path", ch.live.exported_path))

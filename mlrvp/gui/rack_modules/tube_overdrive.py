@@ -1,4 +1,4 @@
-"""Hot Snake — 1U tube overdrive with glowing tube vent."""
+"""Glow Worm — 1U tube overdrive with glowing tube vent."""
 
 import math
 
@@ -15,8 +15,8 @@ _YELLOW = "#ccff00"
 _DIM = "#668800"
 
 
-class _FlameLogo(QWidget):
-    """Small flame icon for the Hot Snake overdrive."""
+class _GlowWormLogo(QWidget):
+    """Small glowing worm icon for the Glow Worm overdrive."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -27,21 +27,46 @@ class _FlameLogo(QWidget):
         if not p.isActive():
             return
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # Outer flame
-        path = QPainterPath()
-        path.moveTo(10, 2)
-        path.cubicTo(16, 8, 18, 16, 10, 24)
-        path.cubicTo(2, 16, 4, 8, 10, 2)
+
+        # Bioluminescent tail glow
+        tail_x, tail_y = 10, 21
+        grad = QRadialGradient(tail_x, tail_y, 8)
+        grad.setColorAt(0, QColor(204, 255, 0, 210))
+        grad.setColorAt(0.5, QColor(150, 220, 0, 90))
+        grad.setColorAt(1, QColor(80, 180, 0, 0))
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 100, 0, 160))
-        p.drawPath(path)
-        # Inner flame
-        inner = QPainterPath()
-        inner.moveTo(10, 8)
-        inner.cubicTo(14, 12, 14, 18, 10, 22)
-        inner.cubicTo(6, 18, 6, 12, 10, 8)
-        p.setBrush(QColor(255, 200, 0, 200))
-        p.drawPath(inner)
+        p.setBrush(grad)
+        p.drawEllipse(tail_x - 8, tail_y - 8, 16, 16)
+
+        # Worm body — thick S-curve stroke
+        worm_path = QPainterPath()
+        worm_path.moveTo(10, 3)
+        worm_path.cubicTo(16, 8, 4, 14, 10, 21)
+        pen = QPen(QColor(45, 95, 20), 5, Qt.PenStyle.SolidLine,
+                   Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(worm_path)
+
+        # Body highlight stripe
+        pen2 = QPen(QColor(85, 145, 40, 160), 2, Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap)
+        p.setPen(pen2)
+        p.drawPath(worm_path)
+
+        # Head
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(60, 115, 30))
+        p.drawEllipse(7, 0, 7, 7)
+
+        # Eye
+        p.setBrush(QColor(204, 255, 0, 240))
+        p.drawEllipse(11, 1, 2, 2)
+
+        # Glowing tail tip
+        p.setBrush(QColor(204, 255, 0, 255))
+        p.drawEllipse(8, 19, 4, 4)
+
         p.end()
 
 
@@ -79,8 +104,8 @@ class _TubeVent(QWidget):
         # Tube glow
         alpha = int(40 + self._glow * 160)
         grad = QRadialGradient(cx, cy, r * 0.6)
-        grad.setColorAt(0, QColor(255, 140, 0, alpha))
-        grad.setColorAt(1, QColor(255, 60, 0, 0))
+        grad.setColorAt(0, QColor(180, 255, 0, alpha))
+        grad.setColorAt(1, QColor(80, 200, 0, 0))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(grad)
         p.drawEllipse(cx - r + 4, cy - r + 4, (r - 4) * 2, (r - 4) * 2)
@@ -94,7 +119,7 @@ class TubeOverdriveModule(RackModuleBase):
 
     def __init__(self, parent=None):
         super().__init__(unit_height=1, faceplate_color=_FACE,
-                         title="HOT SNAKE", parent=parent)
+                         title="GLOW WORM", parent=parent)
         self._build_faceplate()
 
     def _build_faceplate(self):
@@ -103,13 +128,13 @@ class TubeOverdriveModule(RackModuleBase):
         row.setSpacing(6)
 
         # Logo
-        row.addWidget(_FlameLogo())
+        row.addWidget(_GlowWormLogo())
 
         # Title block
         title_col = QVBoxLayout()
         title_col.setSpacing(0)
         title_col.setContentsMargins(0, 0, 0, 0)
-        lbl = QLabel("HotSnake")
+        lbl = QLabel("GlowWorm")
         lbl.setStyleSheet(
             f"color: {_YELLOW}; font-size: 12px; font-weight: bold;"
             "font-family: 'Impact'; letter-spacing: 1px;"

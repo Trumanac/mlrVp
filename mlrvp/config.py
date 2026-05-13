@@ -24,9 +24,42 @@ LIVE_STATE_RECORDING = "RECORDING"
 LIVE_STATE_OVERDUBBING = "OVERDUBBING"
 LIVE_STATE_ARMED_RERECORD = "ARMED_RERECORD"
 LIVE_STATE_PLAYING = "PLAYING"
+LIVE_STATE_PENDING = "PENDING"   # sample loaded, waiting for beat/bar boundary to trigger
+LIVE_STATE_ARMED = "ARMED"        # REC held while transport stopped — fires on first beat
 
 # LIVE-mode quantize options (subset of QuantizeMode — maps directly to QuantizeMode values)
 LIVE_QUANTIZE_NAMES = ["IMMEDIATE", "BEAT", "BAR"]
+
+# LIVE-mode source bus selector — index 0 is hardware input (existing behavior),
+# indices 1+ are internal engine bus taps for resample/bus-capture recording.
+LIVE_SOURCE_NAMES = [
+    "INPUT", "MAIN",
+    "FX-A", "FX-B", "FX-C", "FX-D",
+    "GRP-1", "GRP-2", "GRP-3", "GRP-4",
+    "GRP-5", "GRP-6", "GRP-7", "GRP-8",
+]
+LIVE_SOURCE_INPUT = 0
+LIVE_SOURCE_MAIN = 1
+LIVE_SOURCE_FX_BASE = 2     # FX-A..FX-D occupy indices 2..5
+LIVE_SOURCE_GRP_BASE = 6    # GRP-0..GRP-3 occupy indices 6..9
+
+# After-record handoff policy — what to do with the source(s) once recording completes
+LIVE_AFTER_REC_NAMES = ["LAYER", "REPLACE", "REPL+STP", "MANUAL"]
+LIVE_AFTER_REC_LAYER = 0          # keep sources playing; just trigger the new sample
+LIVE_AFTER_REC_REPLACE = 1        # soft-mute source rows + trigger
+LIVE_AFTER_REC_REPLACE_STOP = 2   # stop source rows + trigger (default)
+LIVE_AFTER_REC_MANUAL = 3         # load only — user must trigger manually
+
+# Play-start quantize for the post-record trigger
+LIVE_PLAY_START_NAMES = ["IMMED", "NEXT BT", "NEXT BAR"]
+LIVE_PLAY_START_IMMEDIATE = 0
+LIVE_PLAY_START_NEXT_BEAT = 1
+LIVE_PLAY_START_NEXT_BAR = 2
+
+# Armed-record trigger mode — what fires recording when a LIVE row is ARMED
+LIVE_ARM_TRIG_PAD = 0    # only pad / grid press starts recording (default)
+LIVE_ARM_TRIG_AUDIO = 1  # audio level on the source bus exceeds threshold
+LIVE_ARM_TRIG_NAMES = ["PAD", "AUDIO"]
 
 
 class QuantizeMode(IntEnum):
@@ -135,10 +168,19 @@ class LiveLoopState:
     bars: int = 4                       # loop length in bars (1-32)
     quantize: int = 2                   # combo index: 0=IMMEDIATE, 1=BEAT, 2=BAR (matches LIVE_QUANTIZE_NAMES)
     thru: bool = False                  # input monitoring while recording
-    count_in: bool = False              # 4-beat LED count-in before recording
+    count_in: int = 0                   # bars of count-in before recording (0 = off, 1-8 = bar count)
     input_trim: float = 1.0             # input gain applied before writing to record buffer (0.0-2.0)
     loop_state: str = LIVE_STATE_EMPTY  # current state machine position
     exported_path: str = ""             # filepath of exported WAV (empty if not exported)
+    # Resample / bus-capture extensions (SOURCE != INPUT)
+    source_bus: int = 0                 # LIVE_SOURCE_NAMES index (0=INPUT, 1=MAIN, 2-5=FX-A..D, 6-9=GRP-0..3)
+    after_rec: int = 2                  # LIVE_AFTER_REC_NAMES index (default REPL+STP)
+    play_start: int = 0                 # LIVE_PLAY_START_NAMES index (default IMMED)
+    normalize: bool = True              # peak-normalize the captured buffer before loading
+    fade_ms: int = 10                   # fade-in/out ms applied at finalize
+    exclude_self: bool = True           # zero this row's contribution to a group bus before tapping
+    arm_trig: int = 0                   # LIVE_ARM_TRIG_PAD / LIVE_ARM_TRIG_AUDIO
+    arm_trig_thresh_db: float = -30.0   # audio trigger threshold in dBFS (AUDIO mode only)
 
 
 @dataclass
@@ -586,7 +628,7 @@ class AutoPanState:
 
 @dataclass
 class FuzzState:
-    """State for the Wool Over fuzz/distortion (Big Muff-inspired)."""
+    """State for the Buzz Saw fuzz/distortion (Big Muff-inspired)."""
     enabled: bool = True
     gain: float = 0.7           # 0–1 (maps to 0–60 dB drive)
     tone: float = 0.5           # 0=dark, 1=bright (tone stack)
@@ -712,6 +754,14 @@ class RecorderState:
     normalize: bool = True     # peak normalize to -0.1 dBFS
     trim_silence: bool = False # strip leading/trailing silence
     fade_ms: int = 10          # fade in/out length in ms (0 = off)
+
+
+@dataclass
+class SongRecorderConfig:
+    """Persistent config for the Song Recorder panel."""
+    tape_speed: float = 1.0     # 1.0 = unity; <1 pitches up, >1 pitches down
+    auto_level: bool = True     # real-time soft-clip limiter on recorded signal
+    collapsed: bool = False     # panel collapse state
 
 
 @dataclass
@@ -928,7 +978,7 @@ class AppConfig:
     hall_reverb: HallReverbState = field(default_factory=HallReverbState)
     plate_reverb: PlateReverbState = field(default_factory=PlateReverbState)
 
-    # Byte Me / Hot Snake (disabled by default — enabled when added to rack)
+    # Byte Me / Glow Worm (disabled by default — enabled when added to rack)
     bit_crusher: BitCrusherState = field(default_factory=BitCrusherState)
     tube_overdrive: TubeOverdriveState = field(default_factory=TubeOverdriveState)
 
@@ -1147,6 +1197,9 @@ class AppConfig:
     # Recorder
     recorder: RecorderState = field(default_factory=RecorderState)
 
+    # Song Recorder
+    song_recorder: SongRecorderConfig = field(default_factory=SongRecorderConfig)
+
     # Pattern Recorders
     patterns: list = field(default_factory=lambda: [
         PatternRecorderState(length=4),
@@ -1218,6 +1271,12 @@ def get_slices_dir() -> Path:
 
 def get_setlists_dir() -> Path:
     d = get_config_dir() / "setlists"
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def get_racks_dir() -> Path:
+    d = get_config_dir() / "racks"
     d.mkdir(exist_ok=True)
     return d
 
@@ -1457,5 +1516,67 @@ def save_slice_hidden(hidden) -> None:
     p = get_defaults_dir() / SLICE_HIDDEN_FILE
     try:
         p.write_text(json.dumps(sorted(hidden), indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Song Library — watched directories & metadata cache
+# ---------------------------------------------------------------------------
+
+SONG_PATHS_FILE = "song_paths.json"
+SONG_METADATA_CACHE_FILE = "song_metadata_cache.json"
+
+
+def get_songs_dir() -> Path:
+    """Return (and create) the default songs output directory."""
+    d = get_config_dir() / "songs"
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def get_song_paths() -> list[str]:
+    """Return list of watched song directories for the Songs library tab."""
+    p = get_defaults_dir() / SONG_PATHS_FILE
+    if not p.exists():
+        return [str(get_songs_dir())]
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        dirs = data.get("watched_dirs", [])
+        result = [str(d) for d in dirs if isinstance(d, str)]
+        return result if result else [str(get_songs_dir())]
+    except (OSError, ValueError, json.JSONDecodeError):
+        return [str(get_songs_dir())]
+
+
+def save_song_paths(paths: list[str]) -> None:
+    """Persist the list of watched song directories."""
+    p = get_defaults_dir() / SONG_PATHS_FILE
+    try:
+        p.write_text(
+            json.dumps({"watched_dirs": list(paths)}, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def get_song_metadata_cache() -> dict:
+    """Return metadata cache for songs (filepath -> metadata dict)."""
+    p = get_defaults_dir() / SONG_METADATA_CACHE_FILE
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def save_song_metadata_cache(cache: dict) -> None:
+    """Persist the song metadata cache."""
+    p = get_defaults_dir() / SONG_METADATA_CACHE_FILE
+    try:
+        p.write_text(json.dumps(cache, indent=2), encoding="utf-8")
     except OSError:
         pass

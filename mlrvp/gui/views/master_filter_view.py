@@ -156,9 +156,9 @@ class MasterFilterView(QWidget):
         lp_label.setStyleSheet(f"font-size: 8px; font-weight: bold; color: {TEXT_SECONDARY};")
         lp_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lp_col.addWidget(lp_label)
-        self._lp_knob = RotaryKnob(color="#f5d97a", inverted=True)
-        self._lp_knob.set_value(1.0)
-        self._lp_knob.set_formatter(lambda v: f"{int(round(200.0 + v * 19800.0))} Hz")
+        self._lp_knob = RotaryKnob(color="#f5d97a", inverted=True, drag_inverted=True)
+        self._lp_knob.set_value(0.0)
+        self._lp_knob.set_formatter(lambda v: f"{int(round(20000.0 - v * 19800.0))} Hz")
         self._lp_knob.value_changed.connect(self._on_lp)
         self._lp_knob.setToolTip("Master low-pass trim — rolls off high frequencies from the final mix (200Hz–20kHz)")
         lp_col.addWidget(self._lp_knob, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -174,14 +174,14 @@ class MasterFilterView(QWidget):
         self.hp_changed.emit(val)
 
     def _on_lp(self, val: float):
-        lp_freq = 200.0 + val * 19800.0
+        lp_freq = 20000.0 - val * 19800.0
         self._curve.set_params(self._curve._hp_freq, lp_freq)
         self.lp_changed.emit(val)
 
     def set_lp_value_external(self, val: float):
         """Update LP knob and curve from an external source (tilt/MIDI) without re-emitting lp_changed."""
         if abs(self._lp_knob.value - val) > 0.001:
-            lp_freq = 200.0 + val * 19800.0
+            lp_freq = 20000.0 - val * 19800.0
             self._curve.set_params(self._curve._hp_freq, lp_freq)
             self._lp_knob.set_value(val)
 

@@ -1,6 +1,6 @@
 {
   "monome_backend": "40h-direct",
-  "grid_mode": "mix",
+  "grid_mode": "grid",
   "active_groups": 8,
   "link_enabled": false,
   "control_row": {

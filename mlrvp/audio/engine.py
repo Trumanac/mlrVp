@@ -67,6 +67,8 @@ from mlrvp.audio.effects import (
 from mlrvp.audio.recorder import Recorder, PreRollBuffer
 from mlrvp.audio.sample import SampleBuffer
 from mlrvp.audio.live_loop import LiveLoopRecorder
+from mlrvp.audio.samp_recorder import SampRecorder
+from mlrvp.audio.song_recorder import SongRecorder
 
 # Check Numba status from effects module
 try:
@@ -330,6 +332,8 @@ class AudioEngine:
 
         # Recorder
         self.recorder = Recorder(self.sample_rate)
+        # Song Recorder — always loopback, standalone from the Tools recorder
+        self.song_recorder = SongRecorder(self.sample_rate)
         # Pre-roll ring buffer (always-on, holds last N seconds of input)
         self.pre_roll = PreRollBuffer(self.sample_rate, max_seconds=30.0, num_channels=2)
 
@@ -344,6 +348,22 @@ class AudioEngine:
         # The callback MUST be thread-safe (e.g. enqueue a Qt signal via
         # QMetaObject.invokeMethod). Set by app.py after construction.
         self._live_recorded_callback: Optional[Callable[[int, SampleBuffer], None]] = None
+
+        # SAMP / resample recorder — bus-capture sibling of LiveLoopRecorder.
+        # Active when a LIVE-mode channel's source_bus != INPUT.  Single row at
+        # a time (same constraint as input recording).  source_bus indices follow
+        # config.LIVE_SOURCE_NAMES: 1=MAIN, 2-5=FX-A..D, 6-9=GRP-0..3.
+        self._samp_recorder: Optional[SampRecorder] = None
+        self._samp_recorder_row: int = -1
+        self._samp_source_bus: int = 0
+        self._samp_exclude_self: bool = True
+        self._samp_recorded_callback: Optional[Callable[[int, "SampleBuffer"], None]] = None
+
+        # Audio-threshold arm watches — list of (row, source_bus, threshold_linear).
+        # Populated by arm_audio_trigger(); checked each block in _process_block.
+        # Each entry is single-fire: removed as soon as threshold is exceeded.
+        self._audio_arm_watches: list = []    # [(row, src, thresh), ...]
+        self._audio_arm_callback: Optional[Callable[[int], None]] = None
 
         # Per-bus in-rack flags — True when the module is present in that rack.
         # Rack A → FX1 (Clean Studio): gate → compressor → multiband EQ → delay → stereo widener
@@ -1187,6 +1207,16 @@ class AudioEngine:
                 self.channels[event[1]].load_sample(event[2])
             elif cmd == 'reset_fx':
                 self._do_reset_all_fx()
+            elif cmd == 'arm_watch':
+                # Remove any existing watch for this row, then add the new one
+                self._audio_arm_watches = [
+                    w for w in self._audio_arm_watches if w[0] != event[1]
+                ]
+                self._audio_arm_watches.append((event[1], event[2], event[3]))
+            elif cmd == 'disarm_watch':
+                self._audio_arm_watches = [
+                    w for w in self._audio_arm_watches if w[0] != event[1]
+                ]
 
         # Capture input audio whenever a device frame is available — needed for
         # pre-roll ring buffer, input level metering, and any active recorder/AUX.
@@ -1248,6 +1278,13 @@ class AudioEngine:
         co_count = 0
         active_count = min(self.config.row_count, MAX_ROWS)
 
+        # Snapshot for SAMP exclude-self: the row's post-pan/filter audio so we
+        # can subtract it from the captured bus before recording (anti-feedback).
+        samp_row_audio = None
+        samp_row = self._samp_recorder_row if (self._samp_recorder is not None
+                                                and self._samp_recorder.is_recording
+                                                and self._samp_exclude_self) else -1
+
         for i in range(active_count):
             ch = self.channels[i]
             if ch._playing or ch.state.playing:
@@ -1265,6 +1302,8 @@ class AudioEngine:
                     audio = audio * np.array(
                         [np.cos(_pan_rad), np.sin(_pan_rad)], dtype=np.float32
                     )
+                if i == samp_row:
+                    samp_row_audio = audio
                 if co_count < len(channel_outputs):
                     channel_outputs[co_count][0] = ch.state.group
                     channel_outputs[co_count][1] = audio
@@ -1416,6 +1455,85 @@ class AudioEngine:
         # recording buffer permanently.
         if self.recorder.recording and self.recorder.use_loopback:
             self.recorder.process(dsp_output, rec_trim)
+
+        # SAMP / resample bus capture — runs after master FX so the captured
+        # bus reflects exactly what is heard.  Routes the right tap based on
+        # source_bus and applies exclude-self subtraction for anti-feedback.
+        if self._samp_recorder is not None and self._samp_recorder.is_recording:
+            src = self._samp_source_bus
+            tap = None
+            if src == 1:                        # MAIN
+                tap = dsp_output
+            elif 2 <= src <= 5:                 # FX-A..D (post-FX, pre-master-sum)
+                _fx_buses = (fx1_bus, fx2_bus, fx3_bus, fx4_bus)
+                tap = _fx_buses[src - 2]
+            elif 6 <= src < 6 + NUM_GROUPS:    # GRP-1..N (post group-vol, pre-route)
+                g = src - 6
+                if 0 <= g < len(self.mixer._group_audio):
+                    tap = self.mixer._group_audio[g][:frames]
+            if tap is not None:
+                # Exclude-self: subtract this row's pre-group audio from the
+                # tap to suppress feedback.  This is an approximation (does not
+                # account for group volume scaling or FX wet/dry routing) but
+                # cancels the dominant feedback signal for the common case.
+                if self._samp_exclude_self and samp_row_audio is not None:
+                    n = min(len(tap), len(samp_row_audio))
+                    if n > 0:
+                        tap = tap.copy()
+                        tap[:n] -= samp_row_audio[:n]
+                self._samp_recorder.process(tap)
+            # Hand off completed recorder to GUI thread (mirrors live recorder)
+            if self._samp_recorder.is_done:
+                row = self._samp_recorder_row
+                done_rec = self._samp_recorder
+                cb = self._samp_recorded_callback
+                self._samp_recorder = None
+                self._samp_recorder_row = -1
+                self._samp_source_bus = 0
+                if cb is not None:
+                    try:
+                        cb(row, done_rec)
+                    except Exception:
+                        pass
+
+        # Audio-threshold arm watches — single-fire per entry.  Checked every
+        # block so latency is at most one buffer (~12 ms at 44100/512).
+        if self._audio_arm_watches and self._audio_arm_callback:
+            _fired_rows: list = []
+            for (w_row, w_src, w_thresh) in self._audio_arm_watches:
+                tap = None
+                if w_src == 0:                          # INPUT — hardware input
+                    tap = input_audio
+                elif w_src == 1:                        # MAIN
+                    tap = dsp_output
+                elif 2 <= w_src <= 5:                   # FX-A..D
+                    _fw = (fx1_bus, fx2_bus, fx3_bus, fx4_bus)
+                    tap = _fw[w_src - 2]
+                elif 6 <= w_src < 6 + NUM_GROUPS:      # GRP-1..N
+                    _g = w_src - 6
+                    if 0 <= _g < len(self.mixer._group_audio):
+                        tap = self.mixer._group_audio[_g][:frames]
+                if tap is not None and len(tap) > 0:
+                    peak = float(np.max(np.abs(tap)))
+                    if peak >= w_thresh:
+                        _fired_rows.append(w_row)
+            if _fired_rows:
+                # Remove fired watches before callback to prevent re-entry
+                _fired_set = set(_fired_rows)
+                self._audio_arm_watches = [
+                    w for w in self._audio_arm_watches if w[0] not in _fired_set
+                ]
+                cb = self._audio_arm_callback
+                if cb is not None:
+                    for _fr in _fired_rows:
+                        try:
+                            cb(_fr)
+                        except Exception:
+                            pass
+
+        # Song Recorder — always loopback; armed_or_recording drives VU metering too
+        if self.song_recorder.armed_or_recording:
+            self.song_recorder.process(dsp_output)
 
         # Peak metering — use stereo abs buffer to avoid column view allocs
         if len(dsp_output) > 0:
@@ -1957,9 +2075,132 @@ class AudioEngine:
             return 0.0
         return rec.progress
 
+    # ── SAMP / resample API ──────────────────────────────────────────────
+
+    def set_samp_recorded_callback(self, callback: Callable[[int, SampleBuffer], None]):
+        """Register a callback fired (from audio thread) when a samp recording finishes.
+        Same threading rules as set_live_recorded_callback.
+        """
+        self._samp_recorded_callback = callback
+
+    def start_samp_recording(self, row: int, bars: int, tempo: float,
+                             source_bus: int,
+                             exclude_self: bool = True,
+                             fade_ms: float = 10.0,
+                             normalize: bool = True) -> bool:
+        """Arm and start a bus-capture recording for a row.
+
+        source_bus follows config.LIVE_SOURCE_NAMES index:
+          1       = MAIN (master out)
+          2..5    = FX-A..FX-D buses
+          6..5+NG = GRP-1..GRP-N  (NG = NUM_GROUPS, currently 8 → indices 6..13)
+
+        Returns True if started; False if another samp/live recording is in progress
+        or if source_bus is out of range.
+        """
+        # Valid source buses: 1 (MAIN) + 4 FX + NUM_GROUPS group buses
+        _max_source = 5 + NUM_GROUPS  # e.g. 13 for 8 groups
+        if not (0 <= row < MAX_ROWS):
+            return False
+        if source_bus < 1 or source_bus > _max_source:
+            return False
+        if self._samp_recorder is not None and self._samp_recorder.is_recording:
+            return False
+        # Reuse single-row constraint with live recorder too — only one capture
+        # can be in flight per row at a time.  Different rows can NOT overlap.
+        if self._live_recorder is not None and self._live_recorder.is_recording:
+            return False
+        rec = SampRecorder(row=row, sample_rate=self.sample_rate)
+        rec.arm(bars=bars, tempo=tempo, fade_ms=fade_ms, normalize=normalize)
+        rec.start()
+        self._samp_recorder = rec
+        self._samp_recorder_row = row
+        self._samp_source_bus = int(source_bus)
+        self._samp_exclude_self = bool(exclude_self)
+        return True
+
+    def cancel_samp_recording(self):
+        """Abort any in-progress samp recording (no callback fired)."""
+        if self._samp_recorder is not None:
+            self._samp_recorder.cancel()
+        self._samp_recorder = None
+        self._samp_recorder_row = -1
+        self._samp_source_bus = 0
+
+    # ── Audio-threshold arm trigger ──────────────────────────────────
+
+    def set_audio_arm_callback(self, fn) -> None:
+        """Set the callback fired when an audio-threshold arm watch triggers.
+
+        Signature: fn(row: int) -> None.  Called from the audio thread — must
+        be thread-safe (use a Qt QueuedConnection marshaller in app.py).
+        """
+        self._audio_arm_callback = fn
+
+    def arm_audio_trigger(self, row: int, source_bus: int,
+                          threshold_linear: float) -> None:
+        """Add an audio-threshold watch for *row*.
+
+        When the peak level on *source_bus* exceeds *threshold_linear* during
+        any future _process_block call, the audio_arm_callback is fired with
+        *row* and the watch is removed (single-fire).
+
+        The mutation is deferred to the DSP thread via the event queue so
+        _audio_arm_watches is only ever written on the DSP thread, preventing
+        a race between arm_audio_trigger() and _process_block().
+        """
+        self._event_queue.append(('arm_watch', row, int(source_bus),
+                                  float(threshold_linear)))
+
+    def disarm_audio_trigger(self, row: int) -> None:
+        """Remove any pending audio-threshold watch for *row*."""
+        self._event_queue.append(('disarm_watch', row))
+
+    @property
+    def samp_recording_row(self) -> int:
+        rec = self._samp_recorder
+        if rec is None or not rec.is_recording:
+            return -1
+        return self._samp_recorder_row
+
+    @property
+    def samp_recording_progress(self) -> float:
+        rec = self._samp_recorder
+        if rec is None:
+            return 0.0
+        return rec.progress
+
     def reset_all_fx(self):
         """Queue a full FX buffer reset — processed on the audio thread."""
         self._event_queue.append(('reset_fx',))
+
+    # ------------------------------------------------------------------ Song Recorder
+
+    def arm_song_recorder(self) -> None:
+        """Arm the song recorder; recording begins on the next start_song_recorder() call."""
+        self.song_recorder.arm()
+
+    def start_song_recorder(self) -> None:
+        """Begin capturing the master output into the song recorder."""
+        self.song_recorder.start()
+
+    def start_song_recording_now(self) -> None:
+        """Immediate record — clears the buffer and begins capturing without arming."""
+        self.song_recorder.start_recording_now()
+
+    def clear_song_recording(self) -> None:
+        """Discard recording + result; stop playback. Safe to call any time."""
+        self.song_recorder.clear()
+
+    def stop_song_recorder(self):
+        """Stop the song recorder and return the finalised SampleBuffer."""
+        return self.song_recorder.stop()
+
+    def cancel_song_recorder(self) -> None:
+        """Abort without finalising."""
+        self.song_recorder.cancel()
+
+
 
     def flush_ring_buffer(self):
         """Zero all ring buffer slots and reset pointers.

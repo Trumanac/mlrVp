@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QFrame, QComboBox, QSpinBox, QDoubleSpinBox,
     QCheckBox, QGroupBox, QGridLayout, QSizePolicy, QScrollArea,
-    QProgressBar
+    QProgressBar, QInputDialog, QMenu, QMessageBox
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
@@ -1574,6 +1574,30 @@ class _GroupTabButton(QPushButton):
             )
 
 
+class _RackLoadMenu(QMenu):
+    """QMenu subclass that shows a rename/delete context menu on right-click.
+
+    Rack-profile entries are tagged via QAction.setData(name).  Right-clicking
+    such an entry invokes the parent EffectsView's context-menu handler.
+    """
+
+    def __init__(self, effects_view):
+        super().__init__(effects_view)
+        self._effects_view = effects_view
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            act = self.actionAt(event.pos())
+            if act is not None:
+                name = act.data()
+                if isinstance(name, str) and name:
+                    self._effects_view._rack_profile_context_menu(
+                        name, self, event.globalPosition().toPoint()
+                    )
+                    return
+        super().mousePressEvent(event)
+
+
 class EffectsView(QWidget):
     """FX Rack view with two switchable groups (A/B), each an independent rack."""
 
@@ -1618,6 +1642,9 @@ class EffectsView(QWidget):
     effect_route_changed = Signal(str, int)
     midi_map_toggled = Signal(bool)  # activates the global MIDI map manager
     rack_contents_changed = Signal(dict)  # rack/effect sync payload for app↔engine
+    # RACK profile (LOAD/SAVE) signals
+    rack_save_requested = Signal(str, str, list)  # (profile_name, bus_suffix, [effect_type...])
+    rack_load_requested = Signal(str, str)        # (profile_name, bus_suffix)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1665,12 +1692,40 @@ class EffectsView(QWidget):
             "to assign a MIDI CC controller to that parameter"
         )
 
+        # RACK profile LOAD / SAVE buttons
+        rack_btn_qss = (
+            f"QPushButton {{ background: {BG_PANEL}; border: 1px solid #444444; border-bottom: none;"
+            f"border-top-left-radius: 3px; border-top-right-radius: 3px; color: {TEXT_SECONDARY};"
+            f"font-size: 9px; font-weight: bold; letter-spacing: 1px; }}"
+            f"QPushButton:hover {{ background: #2a2a2a; color: {TEXT_PRIMARY}; }}"
+            f"QPushButton:pressed {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
+        )
+        self._rack_load_btn = QPushButton("LOAD")
+        self._rack_load_btn.setFixedWidth(54)
+        self._rack_load_btn.setFixedHeight(26)
+        self._rack_load_btn.setStyleSheet(rack_btn_qss)
+        self._rack_load_btn.setToolTip(
+            "Load a saved RACK profile into the currently selected rack tab"
+        )
+        self._rack_load_btn.clicked.connect(self._on_rack_load_clicked)
+
+        self._rack_save_btn = QPushButton("SAVE")
+        self._rack_save_btn.setFixedWidth(54)
+        self._rack_save_btn.setFixedHeight(26)
+        self._rack_save_btn.setStyleSheet(rack_btn_qss)
+        self._rack_save_btn.setToolTip(
+            "Save the currently selected rack tab as a named RACK profile"
+        )
+        self._rack_save_btn.clicked.connect(self._on_rack_save_clicked)
+
         tab_bar.addWidget(self._tab_a)
         tab_bar.addWidget(self._tab_b)
         tab_bar.addWidget(self._tab_c)
         tab_bar.addWidget(self._tab_d)
         tab_bar.addWidget(self._tab_m)
         tab_bar.addStretch()
+        tab_bar.addWidget(self._rack_load_btn)
+        tab_bar.addWidget(self._rack_save_btn)
         tab_bar.addWidget(self._midi_map_btn)
         layout.addLayout(tab_bar)
 
@@ -1824,6 +1879,206 @@ class EffectsView(QWidget):
         self._tab_c.setChecked(idx == 2)
         self._tab_d.setChecked(idx == 3)
         self._tab_m.setChecked(idx == 4)
+
+    # --- RACK profile (LOAD / SAVE) ---
+    # Map stack index -> (rack container, AppConfig bus suffix)
+    _BUS_SUFFIX_BY_INDEX = {0: "", 1: "_b", 2: "_c", 3: "_d", 4: "_m"}
+
+    @property
+    def current_bus_suffix(self) -> str:
+        """AppConfig attribute suffix for the rack tab currently visible."""
+        return self._BUS_SUFFIX_BY_INDEX.get(self._stack.currentIndex(), "")
+
+    def _current_rack(self):
+        racks = (self._rack_a, self._rack_b, self._rack_c,
+                 self._rack_d, self._rack_m)
+        idx = self._stack.currentIndex()
+        if 0 <= idx < len(racks):
+            return racks[idx]
+        return self._rack_a
+
+    def _on_rack_save_clicked(self):
+        rack = self._current_rack()
+        types = [getattr(m, "effect_type", None) for m in rack.get_modules()]
+        types = [t for t in types if t]
+        if not types:
+            QMessageBox.information(self, "Save Rack",
+                                    "The current rack is empty — nothing to save.")
+            return
+        name, ok = QInputDialog.getText(self, "Save Rack Profile",
+                                        "Profile name:")
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        # Confirm overwrite if a profile with this name already exists.
+        try:
+            from mlrvp.preset.rack_manager import list_racks, _sanitize_name  # type: ignore
+        except Exception:
+            existing = []
+            sanitised = name
+        else:
+            existing = list_racks()
+            sanitised = _sanitize_name(name)
+        if sanitised in existing:
+            ans = QMessageBox.question(
+                self, "Overwrite Rack Profile",
+                f"A rack profile named '{sanitised}' already exists.\n\nOverwrite it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+        self.rack_save_requested.emit(name, self.current_bus_suffix, types)
+
+    def _on_rack_load_clicked(self):
+        try:
+            from mlrvp.preset.rack_manager import list_racks
+        except Exception:
+            return
+        from mlrvp.gui.widgets.overflow_menu import (
+            MAX_FLAT, COLUMN_SIZE, MENU_QSS,
+            _group_by_letter_range, _cap_to_screen,
+        )
+        names = list_racks()
+        menu = _RackLoadMenu(self)
+        menu.setToolTipsVisible(True)
+        menu.setStyleSheet(MENU_QSS)
+        _cap_to_screen(menu)
+
+        if not names:
+            menu.addAction("(no saved racks)").setEnabled(False)
+        else:
+            bus = self.current_bus_suffix
+            items = [(n, n) for n in sorted(names, key=str.lower)]
+
+            def _add_profile_action(target_menu, n):
+                act = target_menu.addAction(n)
+                act.setData(n)
+                act.setToolTip(
+                    f"Click to load '{n}' into the current rack\n"
+                    "Right-click to rename or delete"
+                )
+                act.triggered.connect(
+                    lambda checked=False, _n=n, _b=bus:
+                        self.rack_load_requested.emit(_n, _b)
+                )
+
+            if len(items) <= MAX_FLAT:
+                for n, _ in items:
+                    _add_profile_action(menu, n)
+            else:
+                groups = _group_by_letter_range(items, COLUMN_SIZE)
+                for group_label, group_items in groups:
+                    if len(group_items) == 1:
+                        _add_profile_action(menu, group_items[0][0])
+                    else:
+                        sub = _RackLoadMenu(self)
+                        sub.setTitle(group_label)
+                        sub.setStyleSheet(MENU_QSS)
+                        sub.setToolTipsVisible(True)
+                        _cap_to_screen(sub)
+                        menu.addMenu(sub)
+                        for n, _ in group_items:
+                            _add_profile_action(sub, n)
+
+        pos = self._rack_load_btn.mapToGlobal(
+            self._rack_load_btn.rect().bottomLeft()
+        )
+        menu.exec(pos)
+
+    def _rack_profile_context_menu(self, profile_name: str, parent_menu: QMenu,
+                                   global_pos):
+        """Show a Rename/Delete context menu for a saved rack profile."""
+        from mlrvp.preset import rack_manager
+        ctx = QMenu(self)
+        ctx.setStyleSheet(parent_menu.styleSheet())
+        rename_act = ctx.addAction("Rename…")
+        delete_act = ctx.addAction("Delete…")
+        chosen = ctx.exec(global_pos)
+        if chosen is None:
+            return
+        if chosen is rename_act:
+            new_name, ok = QInputDialog.getText(
+                self, "Rename Rack Profile",
+                "New name:", text=profile_name,
+            )
+            if not ok:
+                return
+            new_name = new_name.strip()
+            if not new_name or new_name == profile_name:
+                return
+            if not rack_manager.rename_rack(profile_name, new_name):
+                QMessageBox.warning(
+                    self, "Rename Failed",
+                    f"Could not rename '{profile_name}' to '{new_name}'.\n"
+                    "A profile with that name may already exist.",
+                )
+                return
+            # Close parent menu (the list is now stale).
+            parent_menu.close()
+        elif chosen is delete_act:
+            ans = QMessageBox.question(
+                self, "Delete Rack Profile",
+                f"Are you sure you want to permanently delete\n"
+                f"the rack profile '{profile_name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+            if not rack_manager.delete_rack(profile_name):
+                QMessageBox.warning(
+                    self, "Delete Failed",
+                    f"Could not delete '{profile_name}'.",
+                )
+                return
+            parent_menu.close()
+
+    def load_rack_into_current(self, entries: list):
+        """Replace the currently visible rack with the given module entries.
+
+        ``entries`` is a list of ``(module_class, state_obj_or_None)`` tuples
+        in rack order.  Called from app.py after AppConfig has been updated
+        with the saved parameter values.  Existing ``rack_changed`` signal
+        propagates new layout to the engine; app.py is responsible for
+        pushing parameter values to the engine afterwards.
+        """
+        from mlrvp.gui.rack_modules.stowaway import ForeignExchangeModule
+        rack = self._current_rack()
+        rack.clear()
+        # Cap at MAX_MODULES_PER_RACK; respect global cap silently.
+        for entry in entries:
+            try:
+                cls, state = entry
+            except (TypeError, ValueError):
+                continue
+            if cls is None:
+                continue
+            try:
+                if cls is ForeignExchangeModule:
+                    slot = rack._get_next_stowaway_slot() \
+                        if hasattr(rack, "_get_next_stowaway_slot") else None
+                    if slot is None:
+                        continue
+                    mod = cls(slot_index=slot)
+                else:
+                    mod = cls()
+            except Exception:
+                continue
+            if not rack.add_module(mod):
+                # Limit reached — stop loading further entries.
+                try:
+                    mod.deleteLater()
+                except Exception:
+                    pass
+                break
+            if state is not None:
+                try:
+                    mod.set_state(state)
+                except Exception:
+                    pass
 
     # --- Global effects limit ---
     def _at_global_limit(self) -> bool:

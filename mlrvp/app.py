@@ -22,7 +22,13 @@ from mlrvp.config import (
     LED_OFF, LED_DIM, LED_BRIGHT, PITCH_SCALE_MAPS, PITCH_SCALE_NAMES,
     LIVE_STATE_EMPTY, LIVE_STATE_COUNTING_IN, LIVE_STATE_RECORDING,
     LIVE_STATE_OVERDUBBING, LIVE_STATE_ARMED_RERECORD, LIVE_STATE_PLAYING,
-    LIVE_QUANTIZE_NAMES,
+    LIVE_STATE_PENDING,
+    LIVE_STATE_ARMED,
+    LIVE_QUANTIZE_NAMES, LIVE_SOURCE_INPUT,
+    LIVE_AFTER_REC_LAYER, LIVE_AFTER_REC_REPLACE, LIVE_AFTER_REC_REPLACE_STOP,
+    LIVE_AFTER_REC_MANUAL,
+    LIVE_PLAY_START_IMMEDIATE, LIVE_PLAY_START_NEXT_BEAT, LIVE_PLAY_START_NEXT_BAR,
+    LIVE_SOURCE_GRP_BASE, LIVE_SOURCE_FX_BASE,
     MONOME_BACKEND_AUTO, MONOME_BACKEND_SERIALOSC,
     MONOME_BACKEND_40H_DIRECT, MONOME_BACKEND_LEGACY_OSC,
     SEQ_STEP_DIV_BEATS,
@@ -92,6 +98,30 @@ class _LiveLoopMarshaller(QObject):
 
     def recorded(self, row, buffer):
         self._recorded.emit(row, buffer)
+
+
+class _SampMarshaller(QObject):
+    """Bounces audio-thread samp_recorded callback to the Qt main thread."""
+    _recorded = Signal(int, object)  # row, SampRecorder
+
+    def __init__(self, recorded_fn):
+        super().__init__()
+        self._recorded.connect(recorded_fn, Qt.ConnectionType.QueuedConnection)
+
+    def recorded(self, row, recorder):
+        self._recorded.emit(row, recorder)
+
+
+class _AudioArmMarshaller(QObject):
+    """Bounces audio-thread audio-threshold arm trigger to the Qt main thread."""
+    _triggered = Signal(int)  # row
+
+    def __init__(self, triggered_fn):
+        super().__init__()
+        self._triggered.connect(triggered_fn, Qt.ConnectionType.QueuedConnection)
+
+    def triggered(self, row: int):
+        self._triggered.emit(row)
 
 
 class _RecorderCompleteMarshaller(QObject):
@@ -241,6 +271,19 @@ class AppController:
         # LIVE recording marshaller — bounces audio-thread callback to GUI thread
         self._live_loop_marshaller = _LiveLoopMarshaller(self._on_loop_recorded)
 
+        # SAMP / resample state
+        # Source-row snapshot taken at record-start (per row): list of row indices
+        # whose audio was contributing to the captured bus when SAMP started.
+        # Used at finalize time to apply the after_rec policy (mute / stop).
+        self._samp_source_rows: dict[int, list[int]] = {}
+        # SAMP recorded marshaller — same pattern as live
+        self._samp_marshaller = _SampMarshaller(self._on_samp_recorded)
+        # Audio arm threshold marshaller — bounces audio thread signal to Qt
+        self._audio_arm_marshaller = _AudioArmMarshaller(self._on_audio_arm_triggered)
+        # Pending post-record handoff (after-rec + play-start scheduling).
+        # Key=row, value=dict with keys: buffer, after_rec, play_start, source_rows.
+        self._samp_pending_handoff: dict[int, dict] = {}
+
         # Recorder (Tools tab) state
         self._recorder_complete_marshaller = _RecorderCompleteMarshaller(
             self._on_recorder_complete
@@ -253,6 +296,10 @@ class AppController:
         self._recorder_count_in_remaining: int = 0  # bars remaining for count-in
         # GUI poll timer for recorder progress + input meter (started in init_gui)
         self._recorder_poll_timer: Optional[QTimer] = None
+
+        # Song Recorder — armed state for grid trigger
+        self._song_recorder_armed: bool = False
+        self._song_recorder_recording: bool = False
 
         # Unsaved-changes tracking — set whenever the user modifies the loaded
         # preset; cleared on save or when a new preset is recalled.
@@ -292,6 +339,8 @@ class AppController:
         self.engine = AudioEngine(self.config)
         self.engine.set_meter_callback(self._on_meter_levels)
         self.engine.set_live_recorded_callback(self._live_loop_marshaller.recorded)
+        self.engine.set_samp_recorded_callback(self._samp_marshaller.recorded)
+        self.engine.set_audio_arm_callback(self._audio_arm_marshaller.triggered)
         # Recorder completion bounce: audio thread → GUI thread
         self.engine.recorder.set_complete_callback(
             self._recorder_complete_marshaller.completed
@@ -472,6 +521,8 @@ class AppController:
             self.window.virtual_grid.set_col_colors(col_colors)
         # Populate setlist/preset combos
         self._refresh_setlist_ui()
+        # Always start on the Effects tab
+        self.window._side_tabs.setCurrentIndex(0)
         self.window.show()
         self.window.set_status("mlrVp — Ready")
         log.info("GUI initialized")
@@ -652,6 +703,8 @@ class AppController:
         """Beat-boundary work — runs on Qt main thread."""
         # LIVE-mode count-in tick (decrements remaining beats, fires start)
         self._live_advance_countin(beat_int)
+        # SAMP pending play-start (fires NEXT_BEAT now; NEXT_BAR waits for _on_bar)
+        self._samp_advance_pending(beat_int, on_bar=(beat_int % 4 == 0))
         # Recorder (Tools tab) quantized start handler
         self._recorder_advance_clock(beat_int)
         # Pending sample reloads for SEQ channels (staged while SEQ was running)
@@ -812,6 +865,14 @@ class AppController:
         column = x
         columns = self.config.grid_columns
 
+        # Song Recorder grid trigger: any button press while armed starts recording
+        if state == 1 and self._song_recorder_armed and self.engine:
+            self.engine.start_song_recorder()
+            self._song_recorder_armed = False
+            self._song_recorder_recording = True
+            if self.window:
+                self.window.song_recorder_panel.set_recording(True)
+
         if row >= self.config.row_count:
             return
         if self.engine and row >= len(self.engine.channels):
@@ -838,6 +899,11 @@ class AppController:
             if ch.state.mode == PlaybackMode.LIVE:
                 self._handle_live_grid_press(row, column, columns)
                 return
+
+        # Any non-LIVE pad press also fires ARMED LIVE rows so the user can
+        # arm a LIVE row (source=MAIN/GROUP) then start recording by pressing
+        # any sample pad — the armed row begins capturing immediately.
+        self._live_dispatch_armed()
 
         # Check if channel has a sample — if not, ignore the press
         if self.engine and self.engine.channels[row].sample is None:
@@ -887,6 +953,11 @@ class AppController:
             return
         ch = self.engine.channels[row]
         live_state = ch.state.live.loop_state
+
+        if live_state == LIVE_STATE_ARMED:
+            # User pressed the row while armed — start recording now.
+            self._live_begin_recording(row, overdub=False)
+            return
 
         if live_state == LIVE_STATE_EMPTY:
             self._live_begin_recording(row, overdub=False)
@@ -981,14 +1052,38 @@ class AppController:
         self._notify_live_state(row)
 
     def _live_begin_recording(self, row: int, overdub: bool):
-        """Arm a recording — apply count-in or quantize delay, then start."""
+        """Arm a recording — apply count-in or quantize delay, then start.
+
+        Forks based on live.source_bus:
+          - INPUT (0)  → existing input-device path (LiveLoopRecorder)
+          - >=1        → bus-capture path (SampRecorder)
+        Overdub is INPUT-only; for bus capture sources, overdub is ignored.
+        """
         if not self.engine or row >= len(self.engine.channels):
             return
+        # Always disarm any audio-threshold watch — covers both PAD and AUDIO
+        # trigger paths so there is no double-trigger if audio fires first.
+        self.engine.disarm_audio_trigger(row)
         ch = self.engine.channels[row]
         live = ch.state.live
         bars = max(1, int(live.bars))
         tempo = self.config.tempo if self.config else 120.0
 
+        # Bus-capture fork
+        if live.source_bus != LIVE_SOURCE_INPUT:
+            params = (bars, tempo, int(live.source_bus),
+                      bool(live.exclude_self), float(live.fade_ms),
+                      bool(live.normalize))
+            if live.count_in:
+                self._live_pending_start[row] = (params, "samp")
+                self._live_countin_remaining[row] = 4
+                ch.state.live.loop_state = LIVE_STATE_COUNTING_IN
+                self._notify_live_state(row)
+                return
+            self._samp_start_now(row, params)
+            return
+
+        # ── INPUT path (unchanged) ──
         overdub_buf = None
         if overdub and ch.sample is not None:
             try:
@@ -1032,6 +1127,23 @@ class AppController:
         )
         self._notify_live_state(row)
 
+    def _live_dispatch_armed(self):
+        """Called from _execute_beat — fires recording for any rows armed via
+        the REC hold gesture while the transport was stopped."""
+        if not self.engine:
+            return
+        for row in range(min(self.config.row_count, len(self.engine.channels))):
+            ch = self.engine.channels[row]
+            if ch.state.mode != PlaybackMode.LIVE:
+                continue
+            if ch.state.live.loop_state != LIVE_STATE_ARMED:
+                continue
+            # Sample-loaded armed rows behave like overdub-from-PLAYING; empty
+            # rows start a fresh recording. The user's intent in both cases is
+            # "start now" once the transport ticks.
+            overdub = ch.sample is not None
+            self._live_begin_recording(row, overdub=overdub)
+
     def _live_advance_countin(self, beat_int: int):
         """Called from _execute_beat — decrements count-in and fires start."""
         if not self._live_countin_remaining:
@@ -1044,8 +1156,193 @@ class AppController:
                 self._live_countin_remaining.pop(row, None)
                 pending = self._live_pending_start.pop(row, None)
                 if pending is not None:
-                    params, overdub = pending
-                    self._live_start_now(row, params, overdub)
+                    params, mode_flag = pending
+                    if mode_flag == "samp":
+                        self._samp_start_now(row, params)
+                    else:
+                        self._live_start_now(row, params, mode_flag)
+
+    # ── SAMP / resample helpers ─────────────────────────────────────────
+
+    def _samp_source_scope(self, row: int, source_bus: int) -> list[int]:
+        """Snapshot of row indices contributing to the captured bus right now."""
+        if not self.engine:
+            return []
+        rows: list[int] = []
+        # Group sources: rows assigned to that group
+        if source_bus >= LIVE_SOURCE_GRP_BASE:
+            target_group = source_bus - LIVE_SOURCE_GRP_BASE
+            for i, ch in enumerate(self.engine.channels):
+                if i == row:
+                    continue
+                if ch.state.group == target_group and (
+                        ch._playing or ch.state.playing):
+                    rows.append(i)
+            return rows
+        # FX sources: rows whose group is routed to that FX bus
+        if source_bus >= LIVE_SOURCE_FX_BASE:
+            fx_idx = source_bus - LIVE_SOURCE_FX_BASE + 1   # FX route value 1..4
+            for i, ch in enumerate(self.engine.channels):
+                if i == row:
+                    continue
+                if not (ch._playing or ch.state.playing):
+                    continue
+                gi = ch.state.group
+                if 0 <= gi < len(self.engine.mixer.groups):
+                    if self.engine.mixer.groups[gi].fx_route == fx_idx:
+                        rows.append(i)
+            return rows
+        # MAIN: snapshot of all currently audible rows
+        for i, ch in enumerate(self.engine.channels):
+            if i == row:
+                continue
+            if ch._playing or ch.state.playing:
+                rows.append(i)
+        return rows
+
+    def _samp_start_now(self, row: int, params: tuple):
+        """Actually call engine.start_samp_recording with the prepared params."""
+        if not self.engine:
+            return
+        bars, tempo, source_bus, exclude_self, fade_ms, normalize = params
+        # Snapshot source rows BEFORE recording starts so the after-rec policy
+        # acts on the rows that actually contributed to the capture.
+        self._samp_source_rows[row] = self._samp_source_scope(row, source_bus)
+        ok = self.engine.start_samp_recording(
+            row=row, bars=bars, tempo=tempo,
+            source_bus=source_bus,
+            exclude_self=exclude_self,
+            fade_ms=fade_ms, normalize=normalize,
+        )
+        if not ok:
+            ch = self.engine.channels[row]
+            ch.state.live.loop_state = LIVE_STATE_EMPTY
+            self._samp_source_rows.pop(row, None)
+            self._notify_live_state(row)
+            if self.window:
+                from mlrvp.config import LIVE_SOURCE_NAMES
+                src_name = LIVE_SOURCE_NAMES[source_bus] if 0 < source_bus < len(LIVE_SOURCE_NAMES) else str(source_bus)
+                if self.engine.samp_recording_row >= 0 or self.engine.live_recording_row >= 0:
+                    self.window.set_status(f"SAMP [{src_name}]: another recording is already in progress")
+                else:
+                    self.window.set_status(f"SAMP [{src_name}]: could not start recording — check source bus")
+            return
+        ch = self.engine.channels[row]
+        ch.state.live.loop_state = LIVE_STATE_RECORDING
+        self._notify_live_state(row)
+
+    def _on_audio_arm_triggered(self, row: int):
+        """Audio threshold crossed while row is ARMED — start recording now.
+
+        Fired from the audio thread via _AudioArmMarshaller (Qt queued signal),
+        so this runs on the GUI/main thread.
+        """
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        ch = self.engine.channels[row]
+        if ch.state.mode != PlaybackMode.LIVE:
+            return
+        # Only act if still ARMED — a concurrent pad press may have already
+        # started recording (state would be RECORDING or COUNTING_IN).
+        if ch.state.live.loop_state != LIVE_STATE_ARMED:
+            return
+        self._live_begin_recording(row, overdub=False)
+
+    def _on_samp_recorded(self, row: int, recorder):
+        """Audio thread → marshalled to GUI thread.
+
+        A SAMP / bus-capture recording finished. Finalize on this thread
+        (off the audio callback), apply after_rec policy + play_start
+        scheduling, then trigger playback at the chosen quantize boundary.
+        """
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        try:
+            buffer = recorder.finalize() if recorder is not None else None
+        except Exception as e:
+            log.error("SAMP: finalize failed for row %d: %s", row, e)
+            buffer = None
+        ch = self.engine.channels[row]
+        live = ch.state.live
+        if buffer is None:
+            live.loop_state = LIVE_STATE_EMPTY
+            self._samp_source_rows.pop(row, None)
+            self._notify_live_state(row)
+            return
+
+        # Load the buffer into the row immediately (audio engine queues it
+        # for the next block; loading now is safe).
+        try:
+            self.engine.load_sample(row, buffer)
+            if self.window:
+                try:
+                    overview = get_waveform_overview(buffer, num_points=800)
+                    strip = self.window.channel_view.get_strip(row)
+                    strip.set_waveform_data(overview, f"SAMP row {row + 1}")
+                    strip._waveform.set_grid_columns(self.config.grid_columns)
+                except Exception:
+                    pass
+        except Exception as e:
+            log.error("SAMP: failed to apply recorded buffer to row %d: %s", row, e)
+            live.loop_state = LIVE_STATE_EMPTY
+            self._samp_source_rows.pop(row, None)
+            self._notify_live_state(row)
+            return
+
+        # Apply after-rec + play-start handoff.
+        source_rows = self._samp_source_rows.pop(row, [])
+        after_rec = int(live.after_rec)
+        play_start = int(live.play_start)
+
+        # Schedule the boundary-aligned action.  Both source-mute/stop and
+        # the trigger happen at the same boundary to prevent any audible gap.
+        if play_start == LIVE_PLAY_START_IMMEDIATE:
+            self._samp_apply_handoff(row, source_rows, after_rec)
+        else:
+            self._samp_pending_handoff[row] = {
+                "source_rows": source_rows,
+                "after_rec": after_rec,
+                "play_start": play_start,
+            }
+            live.loop_state = LIVE_STATE_PENDING
+            self._notify_live_state(row)
+
+    def _samp_apply_handoff(self, row: int, source_rows: list[int], after_rec: int):
+        """Atomic: mute/stop sources per policy + trigger SAMP row."""
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        ch = self.engine.channels[row]
+        if after_rec == LIVE_AFTER_REC_REPLACE:
+            for sr in source_rows:
+                if 0 <= sr < len(self.engine.channels):
+                    self.engine.channels[sr].state.mute = True
+        elif after_rec == LIVE_AFTER_REC_REPLACE_STOP:
+            for sr in source_rows:
+                self.engine.stop_channel(sr)
+        # LAYER and MANUAL touch nothing in source rows.
+
+        if after_rec != LIVE_AFTER_REC_MANUAL:
+            ch.state.live.loop_state = LIVE_STATE_PLAYING
+            self.engine.trigger_channel(row, 0, max(1, self.config.grid_columns))
+        else:
+            # User must trigger manually; show the loaded-but-idle state
+            ch.state.live.loop_state = LIVE_STATE_PLAYING
+        self._notify_live_state(row)
+
+    def _samp_advance_pending(self, beat_int: int, on_bar: bool):
+        """Fire any PENDING samp handoffs whose play-start boundary has arrived.
+        Called from the beat / bar handlers.
+        """
+        if not self._samp_pending_handoff:
+            return
+        for row in list(self._samp_pending_handoff.keys()):
+            entry = self._samp_pending_handoff[row]
+            ps = entry["play_start"]
+            fire = (ps == LIVE_PLAY_START_NEXT_BEAT) or (
+                ps == LIVE_PLAY_START_NEXT_BAR and on_bar)
+            if fire:
+                self._samp_pending_handoff.pop(row, None)
+                self._samp_apply_handoff(row, entry["source_rows"], entry["after_rec"])
 
     def _on_loop_recorded(self, row: int, recorder):
         """Audio thread → marshalled to GUI thread.
@@ -1105,18 +1402,58 @@ class AppController:
             if cfg_live is not None:
                 cfg_live.thru = bool(value)
         elif param == "count_in":
-            live.count_in = bool(value)
+            live.count_in = max(0, min(8, int(value)))
             if cfg_live is not None:
-                cfg_live.count_in = bool(value)
+                cfg_live.count_in = max(0, min(8, int(value)))
         elif param == "input_trim":
             live.input_trim = float(value)
             if cfg_live is not None:
                 cfg_live.input_trim = float(value)
             if self.engine.live_recording_row == row:
                 self.engine.set_live_input_trim(float(value))
+        elif param == "source_bus":
+            live.source_bus = int(value)
+            if cfg_live is not None:
+                cfg_live.source_bus = int(value)
+        elif param == "after_rec":
+            live.after_rec = int(value)
+            if cfg_live is not None:
+                cfg_live.after_rec = int(value)
+        elif param == "play_start":
+            live.play_start = int(value)
+            if cfg_live is not None:
+                cfg_live.play_start = int(value)
+        elif param == "normalize":
+            live.normalize = bool(value)
+            if cfg_live is not None:
+                cfg_live.normalize = bool(value)
+        elif param == "fade_ms":
+            live.fade_ms = int(value)
+            if cfg_live is not None:
+                cfg_live.fade_ms = int(value)
+        elif param == "exclude_self":
+            live.exclude_self = bool(value)
+            if cfg_live is not None:
+                cfg_live.exclude_self = bool(value)
+        elif param == "arm_trig":
+            live.arm_trig = int(value)
+            if cfg_live is not None:
+                cfg_live.arm_trig = int(value)
+        elif param == "arm_trig_thresh_db":
+            live.arm_trig_thresh_db = float(value)
+            if cfg_live is not None:
+                cfg_live.arm_trig_thresh_db = float(value)
 
     def _on_live_rec_button(self, row: int, is_hold: bool):
-        """REC button on the channel strip clicked (or held 2s)."""
+        """REC button on the channel strip clicked (or held 2s).
+
+        Behavior:
+          * Click: start / stop / cancel recording (state-dependent).
+          * Hold 2s while EMPTY: arm — recording begins on the next beat
+            once the transport is playing (works for INPUT and bus capture).
+          * Hold 2s while PLAYING: arm re-record (existing behavior).
+          * Click while ARMED: cancel the arm (back to EMPTY).
+        """
         if not self.engine or row >= len(self.engine.channels):
             return
         ch = self.engine.channels[row]
@@ -1128,10 +1465,33 @@ class AppController:
             if live_state == LIVE_STATE_PLAYING:
                 ch.state.live.loop_state = LIVE_STATE_ARMED_RERECORD
                 self._notify_live_state(row)
+            elif live_state in (LIVE_STATE_EMPTY, LIVE_STATE_PENDING):
+                # Arm — dispatched on the next _execute_beat. If the transport
+                # is already playing, that fires almost immediately; if stopped,
+                # it waits silently until the user starts the transport.
+                self._samp_pending_handoff.pop(row, None)
+                ch.state.live.loop_state = LIVE_STATE_ARMED
+                self._notify_live_state(row)
+                # If trigger mode is AUDIO, register an engine watch so the
+                # recording starts automatically when the source bus exceeds
+                # the configured threshold (no pad press required).
+                from mlrvp.config import LIVE_ARM_TRIG_AUDIO
+                if (self.engine and
+                        ch.state.live.arm_trig == LIVE_ARM_TRIG_AUDIO):
+                    thresh = 10 ** (ch.state.live.arm_trig_thresh_db / 20.0)
+                    self.engine.arm_audio_trigger(
+                        row, ch.state.live.source_bus, thresh
+                    )
             return
 
         if live_state == LIVE_STATE_EMPTY:
             self._live_begin_recording(row, overdub=False)
+        elif live_state == LIVE_STATE_ARMED:
+            # Cancel the arm — user pressed REC again before transport ran.
+            if self.engine:
+                self.engine.disarm_audio_trigger(row)
+            ch.state.live.loop_state = LIVE_STATE_EMPTY
+            self._notify_live_state(row)
         elif live_state == LIVE_STATE_PLAYING:
             self._live_begin_recording(row, overdub=True)
         elif live_state in (LIVE_STATE_RECORDING, LIVE_STATE_OVERDUBBING,
@@ -1139,17 +1499,29 @@ class AppController:
             self._live_pending_start.pop(row, None)
             self._live_countin_remaining.pop(row, None)
             self.engine.cancel_live_recording()
+            self.engine.cancel_samp_recording()
+            self._samp_source_rows.pop(row, None)
             ch.state.live.loop_state = (
                 LIVE_STATE_PLAYING if live_state == LIVE_STATE_OVERDUBBING
                 else LIVE_STATE_EMPTY
             )
+            self._notify_live_state(row)
+        elif live_state == LIVE_STATE_PENDING:
+            # Cancel the pending boundary trigger; sample stays loaded but idle
+            self._samp_pending_handoff.pop(row, None)
+            ch.state.live.loop_state = LIVE_STATE_PLAYING
             self._notify_live_state(row)
         elif live_state == LIVE_STATE_ARMED_RERECORD:
             ch.state.live.loop_state = LIVE_STATE_PLAYING
             self._notify_live_state(row)
 
     def _on_live_export_requested(self, row: int):
-        """Export the currently-loaded LIVE loop to data/slices/."""
+        """Export the currently-loaded LIVE loop to data/slices/Live/.
+
+        Prompts the user for a slice name (defaults to a timestamped name).
+        The file is written into the dedicated Live/ subfolder so it appears
+        as its own group inside the SLICES library tree.
+        """
         if not self.engine or row >= len(self.engine.channels):
             return
         ch = self.engine.channels[row]
@@ -1157,24 +1529,95 @@ class AppController:
             if self.window:
                 self.window.set_status("LIVE: nothing to export")
             return
+        path = self._export_live_buffer(row, prompt_name=True)
+        if path and self.window:
+            self.window.set_status(f"LIVE row {row + 1} exported → {path}")
+
+    def _export_live_buffer(self, row: int, prompt_name: bool) -> str | None:
+        """Common export path used by EXP and SLC buttons.
+
+        Returns the written file path, or None if cancelled / failed.
+        """
+        import datetime as _dt
+        import os as _os
+        from PySide6.QtWidgets import QInputDialog
+        from mlrvp.audio.live_loop import LiveLoopRecorder
+
+        ch = self.engine.channels[row]
+        data_dir = getattr(self.config, "data_dir", None) or "data"
+        live_dir = _os.path.join(data_dir, "slices", "Live")
         try:
-            from mlrvp.audio.live_loop import LiveLoopRecorder
-            data_dir = getattr(self.config, "data_dir", None) or "data"
-            path = LiveLoopRecorder.export(
-                ch.sample, data_dir, row, self.engine.sample_rate
-            )
-            ch.state.live.exported_path = path
-            if row < len(self.config.channels):
-                self.config.channels[row].live.exported_path = path
-                # Make exported file the channel's filename so preset save records it
-                self.config.channels[row].filename = path
-            if self.window:
-                self.window.set_status(f"LIVE row {row + 1} exported → {path}")
-            log.info("LIVE: exported row %d to %s", row, path)
-        except Exception as e:
-            log.error("LIVE: export failed for row %d: %s", row, e)
+            _os.makedirs(live_dir, exist_ok=True)
+        except OSError as e:
+            log.error("LIVE: mkdir %s failed: %s", live_dir, e)
             if self.window:
                 self.window.set_status(f"LIVE export failed: {e}")
+            return None
+
+        default_name = f"live_row{row + 1:02d}_{_dt.datetime.now():%Y%m%d_%H%M%S}"
+        name = default_name
+        if prompt_name:
+            text, ok = QInputDialog.getText(
+                self.window, "Export LIVE loop",
+                f"Slice name (saved to data/slices/Live/):",
+                text=default_name,
+            )
+            if not ok:
+                return None
+            name = (text or "").strip() or default_name
+        if not name.lower().endswith(".wav"):
+            name += ".wav"
+
+        out_path = _os.path.join(live_dir, name)
+        # De-duplicate to avoid clobbering existing files
+        if _os.path.exists(out_path):
+            base, ext = _os.path.splitext(out_path)
+            n = 1
+            while _os.path.exists(f"{base}_{n}{ext}"):
+                n += 1
+            out_path = f"{base}_{n}{ext}"
+
+        try:
+            import soundfile as sf
+            sf.write(out_path, ch.sample.data, self.engine.sample_rate, subtype="FLOAT")
+        except Exception as e:
+            log.error("LIVE: export write failed for row %d: %s", row, e)
+            if self.window:
+                self.window.set_status(f"LIVE export failed: {e}")
+            return None
+
+        ch.state.live.exported_path = out_path
+        if row < len(self.config.channels):
+            self.config.channels[row].live.exported_path = out_path
+            # Make the exported file the channel's filename so preset save records it
+            self.config.channels[row].filename = out_path
+        log.info("LIVE: exported row %d to %s", row, out_path)
+        return out_path
+
+    def _on_live_to_slicer_requested(self, row: int):
+        """Send the current LIVE loop to the Slicer tool.
+
+        Auto-saves a copy under data/slices/Live/ (no name prompt) and loads
+        it into the Slice tab, switching the side-panel focus there.
+        """
+        if not self.engine or row >= len(self.engine.channels):
+            return
+        ch = self.engine.channels[row]
+        if ch.sample is None:
+            if self.window:
+                self.window.set_status("LIVE: nothing to send to slicer")
+            return
+        path = self._export_live_buffer(row, prompt_name=False)
+        if not path:
+            return
+        try:
+            self._on_library_load_to_slicer(path)
+            if self.window:
+                self.window.set_status(f"LIVE row {row + 1} → Slicer ({path})")
+        except Exception as e:
+            log.error("LIVE to-slicer failed for row %d: %s", row, e)
+            if self.window:
+                self.window.set_status(f"LIVE to-slicer failed: {e}")
 
     def _notify_live_state(self, row: int):
         """Push LIVE state to the channel-view strip (badge + REC button visual)."""
@@ -1864,6 +2307,7 @@ class AppController:
         w.channel_view.live_param_changed.connect(self._on_live_param_changed)
         w.channel_view.live_rec_requested.connect(self._on_live_rec_button)
         w.channel_view.live_export_requested.connect(self._on_live_export_requested)
+        w.channel_view.live_to_slicer_requested.connect(self._on_live_to_slicer_requested)
 
         # --- Mixer ---
         w.mixer_view.group_volume_changed.connect(self._gui_group_volume)
@@ -1923,6 +2367,9 @@ class AppController:
         w.effects_view.rack_contents_changed.connect(self._on_rack_contents_changed)
         # Ensure engine state is immediately consistent with current rack layout.
         self._on_rack_contents_changed(w.effects_view.get_rack_sync_state())
+        # RACK profile (LOAD / SAVE) signals
+        w.effects_view.rack_save_requested.connect(self._on_rack_save_requested)
+        w.effects_view.rack_load_requested.connect(self._on_rack_load_requested)
 
         # --- Tools ---
         w.tools_view.record_toggled.connect(self._gui_record_toggle)
@@ -1961,6 +2408,29 @@ class AppController:
         w.setup_view.midi_grid_disconnect_requested.connect(self._gui_midi_grid_disconnect)
         w.setup_view.save_default_requested.connect(self._gui_save_default)
         w.setup_view.load_default_requested.connect(self._gui_load_default_preset)
+
+        # --- Song Recorder panel ---
+        srp = w.song_recorder_panel
+        srp.arm_toggled.connect(self._on_song_recorder_arm)
+        srp.rec_clicked.connect(self._on_song_recorder_rec)
+        srp.clear_clicked.connect(self._on_song_recorder_clear)
+        srp.loop_toggled.connect(self._on_song_recorder_loop)
+        srp.tape_speed_changed.connect(self._on_song_recorder_tape_speed)
+        srp.save_clicked.connect(self._on_song_recorder_save)
+        srp.save_as_clicked.connect(self._on_song_recorder_save_as)
+        srp.play_clicked.connect(self._on_song_recorder_play)
+        srp.seek_delta_requested.connect(self._on_song_recorder_seek_delta)
+        srp.transport_released.connect(self._on_song_recorder_transport_released)
+        srp.scrub_active.connect(self._on_song_recorder_scrub_active)
+        srp.scrub_position.connect(self._on_song_recorder_scrub_position)
+        srp.stop_clicked.connect(self._on_song_recorder_stop_pause)
+        srp.stop_rewind_clicked.connect(self._on_song_recorder_stop)
+        srp.seek_requested.connect(self._on_song_recorder_seek)
+        srp.playback_volume_changed.connect(self._on_song_recorder_pb_volume)
+        # Restore saved config state
+        srp.set_tape_speed(self.config.song_recorder.tape_speed)
+        # Always start collapsed per UX spec
+        srp.set_collapsed(True)
 
         # --- OSC ---
         w.setup_view.osc_setting_changed.connect(self._gui_osc_setting)
@@ -2178,6 +2648,30 @@ class AppController:
 
     def _gui_new_preset(self):
         """Clear all channels and reset to a fresh default state."""
+        # If there are unsaved changes, offer to save/discard/cancel first
+        if self._preset_dirty:
+            sp = self.presets.setlist_presets
+            idx = self.presets.active_index
+            name = sp[idx] if 0 <= idx < len(sp) else ""
+            display = f'"{name}"' if name else "the current preset"
+
+            from PySide6.QtWidgets import QMessageBox
+            msg = QMessageBox(self.window)
+            msg.setWindowTitle("Unsaved Changes")
+            msg.setText(f"Save changes to {display} before starting a new preset?")
+            msg.setStandardButtons(
+                QMessageBox.StandardButton.Save |
+                QMessageBox.StandardButton.Discard |
+                QMessageBox.StandardButton.Cancel
+            )
+            msg.setDefaultButton(QMessageBox.StandardButton.Save)
+            result = msg.exec()
+
+            if result == QMessageBox.StandardButton.Cancel:
+                return
+            if result == QMessageBox.StandardButton.Save:
+                self._gui_save_preset(name)
+
         # Hard-stop all playback — force_stop sets _playing=False immediately
         # so no release tails re-seed the FX buffers after reset.
         if self.engine:
@@ -3352,8 +3846,8 @@ class AppController:
             self.window.master_filter_view.set_hp_value_external(val)
 
     def _gui_master_lp(self, val: float):
-        """Master LP trim: knob 0.0=200Hz (max trim), 1.0=20kHz (off)."""
-        freq = 200.0 + val * 19800.0  # 200-20000 Hz range
+        """Master LP trim: knob 0.0=20kHz (off), 1.0=200Hz (max trim)."""
+        freq = 20000.0 - val * 19800.0  # 20000-200 Hz range
         self.config.master_lp = freq
         if self.engine:
             self.engine.set_master_lp(freq)
@@ -4122,6 +4616,7 @@ class AppController:
         """Switch to the Tools > Slice tab and load the file."""
         if not self.window:
             return
+        self.slicer_preview.stop()
         try:
             # Switch side panel to Tools tab then to Slice sub-tab
             side = self.window._side_tabs
@@ -4218,6 +4713,326 @@ class AppController:
             except Exception:
                 pass
 
+        # Song recorder metering + waveform + playhead
+        try:
+            srp = self.window.song_recorder_panel
+            sr = self.engine.song_recorder
+            # Meters: only show signal when actively recording or playing back.
+            # Showing the live master-output when idle causes jitter/spiking.
+            if sr.is_playing:
+                srp.set_levels(sr.playback_peak_l, sr.playback_peak_r)
+            elif sr.recording:
+                srp.set_levels(sr.input_peak_l, sr.input_peak_r)
+            else:
+                srp.set_levels(0.0, 0.0)
+            if sr.recording:
+                srp.set_elapsed(sr.elapsed_seconds)
+            # Sync playback indicator
+            if sr.is_playing != srp._play_btn.isChecked():
+                srp.set_playing(sr.is_playing)
+            # Push waveform peaks + playhead + MM:SS / MM:SS
+            total = sr.total_duration_sec
+            if sr.recording:
+                # During recording track the growing tape head position
+                if total > 0:
+                    current_frame = sr._punch_in_frame + sr._total_frames
+                    srp.set_playhead(current_frame / (total * sr.sr))
+                pos = sr.elapsed_seconds
+            elif sr.is_playing:
+                if total > 0:
+                    srp.set_playhead(sr.playback_seconds / total)
+                pos = sr.playback_seconds
+            else:
+                if total > 0:
+                    srp.set_playhead(sr.playback_seconds / total)
+                pos = sr.playback_seconds
+            srp.set_position_total(pos, total)
+            # Refresh waveform peaks (cheap; widget caches)
+            w_pixels = max(64, srp._wave.needed_bins)
+            peaks = sr.get_peaks(w_pixels)
+            srp.set_waveform_peaks(peaks)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ Song Recorder handlers
+
+    def _on_song_recorder_arm(self, armed: bool) -> None:
+        """ARM button toggled in the Song Recorder panel."""
+        if not self.engine:
+            return
+        if armed:
+            # Sync tape speed from config before arming
+            self.engine.song_recorder.tape_speed = self.config.song_recorder.tape_speed
+            self.engine.song_recorder.auto_level = self.config.song_recorder.auto_level
+            self.engine.arm_song_recorder()
+            self._song_recorder_armed = True
+            self._song_recorder_recording = False
+            if self.window:
+                self.window.song_recorder_panel.set_recording(False)
+                # Only auto-populate a filename if there isn't one already
+                if not self.window.song_recorder_panel.get_filename():
+                    name = self.engine.song_recorder.generate_filename()
+                    self.window.song_recorder_panel.set_filename(name)
+        else:
+            # If currently recording, stop and save
+            if self._song_recorder_recording:
+                self._song_recorder_do_stop()
+            else:
+                # Disarm without recording
+                self.engine.cancel_song_recorder()
+                self._song_recorder_armed = False
+                if self.window:
+                    self.window.song_recorder_panel.set_recording(False)
+
+    def _song_recorder_do_stop(self) -> None:
+        """Internal: stop recording and update panel. Does NOT save — user must click Save."""
+        if not self.engine:
+            return
+        buf = self.engine.stop_song_recorder()
+        self._song_recorder_armed = False
+        self._song_recorder_recording = False
+        if self.window:
+            self.window.song_recorder_panel.set_recording(False)
+            self.window.song_recorder_panel.set_armed(False)
+        if buf is None:
+            return
+        # Auto-populate filename field so the user can save with one click,
+        # but do NOT write any file until they explicitly press Save / Save As.
+        if self.window:
+            panel_name = self.window.song_recorder_panel.get_filename().strip()
+            if not panel_name:
+                name = self.engine.song_recorder.generate_filename()
+                self.window.song_recorder_panel.set_filename(name)
+            self.window.set_status("Song Recorder: recording stopped — press Save to export.")
+
+    def _on_song_recorder_tape_speed(self, speed: float) -> None:
+        self.config.song_recorder.tape_speed = float(speed)
+        if self.engine:
+            self.engine.song_recorder.tape_speed = float(speed)
+
+    def _on_song_recorder_save(self, name: str) -> None:
+        """Save As with the current panel filename."""
+        if not self.engine:
+            return
+        from mlrvp.config import get_songs_dir
+        if not name:
+            name = self.engine.song_recorder.generate_filename()
+        songs_dir = get_songs_dir()
+        filepath = str(songs_dir / f"{name}.wav")
+        speed = self.config.song_recorder.tape_speed
+        import threading as _threading
+
+        def _save():
+            ok = self.engine.song_recorder.export(filepath, tape_speed=speed)
+            try:
+                from PySide6.QtCore import QTimer
+                if ok:
+                    QTimer.singleShot(0, self._refresh_songs_library)
+            except Exception:
+                pass
+
+        _threading.Thread(target=_save, daemon=True, name="SongRecorderManualSave").start()
+        if self.window:
+            self.window.set_status(f"Song Recorder: saved '{name}.wav'")
+
+    def _on_song_recorder_save_as(self) -> None:
+        """Open a file dialog and export to chosen path."""
+        if not self.engine:
+            return
+        from PySide6.QtWidgets import QFileDialog
+        from mlrvp.config import get_songs_dir
+        default = str(get_songs_dir() / (self.engine.song_recorder.generate_filename() + ".wav"))
+        path, _ = QFileDialog.getSaveFileName(
+            self.window, "Save Recording", default, "WAV Files (*.wav)"
+        )
+        if not path:
+            return
+        speed = self.config.song_recorder.tape_speed
+        import threading as _threading
+
+        def _save():
+            ok = self.engine.song_recorder.export(path, tape_speed=speed)
+            try:
+                from PySide6.QtCore import QTimer
+                if ok:
+                    QTimer.singleShot(0, self._refresh_songs_library)
+            except Exception:
+                pass
+
+        _threading.Thread(target=_save, daemon=True, name="SongRecorderSaveAs").start()
+        import os
+        name = os.path.splitext(os.path.basename(path))[0]
+        if self.window:
+            self.window.song_recorder_panel.set_filename(name)
+            self.window.set_status(f"Song Recorder: saved to {path}")
+
+    def _on_song_recorder_play(self) -> None:
+        if self.engine:
+            self.engine.song_recorder.play_pause()
+
+    def _on_song_recorder_rec(self) -> None:
+        """REC button — start recording immediately (no arm step)."""
+        if not self.engine:
+            return
+        sr = self.engine.song_recorder
+        # If already recording, REC acts as stop+save
+        if sr.recording:
+            self._song_recorder_do_stop()
+            return
+        # Stop any active playback so _pb_fpos stays at the punch-in point
+        if sr.is_playing:
+            sr._pb_pause()
+            if self.window:
+                self.window.song_recorder_panel.set_playing(False)
+        # Sync settings then start
+        sr.tape_speed = self.config.song_recorder.tape_speed
+        sr.auto_level = self.config.song_recorder.auto_level
+        self.engine.start_song_recording_now()
+        self._song_recorder_armed = False
+        self._song_recorder_recording = True
+        if self.window:
+            srp = self.window.song_recorder_panel
+            srp.set_armed(False)
+            srp.set_recording(True)
+            # Auto-populate a fresh filename if blank
+            if not srp.get_filename():
+                srp.set_filename(sr.generate_filename())
+
+    def _on_song_recorder_seek(self, fraction: float) -> None:
+        """Waveform seek — allowed any time scrub is not active and not recording."""
+        if not self.engine:
+            return
+        sr = self.engine.song_recorder
+        if sr.recording or sr.scrubbing:
+            return
+        sr.seek(fraction)
+
+    def _on_song_recorder_clear(self) -> None:
+        """CLR button — discard recording/result and reset panel to idle."""
+        if not self.engine:
+            return
+        self.engine.clear_song_recording()
+        self._song_recorder_armed = False
+        self._song_recorder_recording = False
+        if self.window:
+            srp = self.window.song_recorder_panel
+            srp.set_armed(False)
+            srp.set_recording(False)
+            srp.set_playing(False)
+            srp.set_waveform_peaks(None)
+            srp.set_playhead(0.0)
+            srp.set_elapsed(0.0)
+            srp.set_position_total(0.0, 0.0)
+            srp.set_filename("")
+
+    def _on_song_recorder_collapsed(self, collapsed: bool) -> None:
+        self.config.song_recorder.collapsed = bool(collapsed)
+
+    def _on_song_recorder_seek_delta(self, speed: float) -> None:
+        """FF/RW transport: signed speed multiplier emitted every 80 ms while button held."""
+        if not self.engine:
+            return
+        sr = self.engine.song_recorder
+        if sr.is_playing:
+            # Smooth speed ramp in the audio callback — no position jump, no click.
+            sr.set_ff_rw_speed(speed)
+        else:
+            # When stopped: silent position skip (same distance as old tick-based behavior).
+            delta_sec = 0.08 * abs(speed)
+            if speed < 0:
+                sr.rewind(delta_sec)
+            else:
+                sr.fast_forward(delta_sec)
+
+    def _on_song_recorder_transport_released(self) -> None:
+        """FF/RW released — clear target so EMA ramps speed smoothly back to normal."""
+        if self.engine:
+            self.engine.song_recorder.set_ff_rw_speed(0.0)
+
+    def _on_song_recorder_scrub_active(self, active: bool) -> None:
+        """Waveform drag started / ended — tape-speed scrub, same as FF/RW."""
+        if not self.engine:
+            return
+        sr = self.engine.song_recorder
+        if active:
+            sr.set_scrubbing(True)
+            sr.set_ff_rw_speed(0.0)
+            self._scrub_was_playing = sr.is_playing
+            self._scrub_prev_frames = sr._pb_fpos
+            self._scrub_prev_time = time.monotonic()
+            if sr.result is not None and not sr.is_playing:
+                sr._pb_play()
+        else:
+            sr.set_ff_rw_speed(0.0)
+            sr.set_scrubbing(False)
+            if not getattr(self, '_scrub_was_playing', False):
+                # Wasn't playing before drag — request a fade-out stop.
+                sr._pb_pause()
+                if self.window:
+                    self.window.song_recorder_panel.set_playing(False)
+            self._scrub_was_playing = False
+
+    def _on_song_recorder_scrub_position(self, fraction: float) -> None:
+        """Drag move — compute time-based velocity and feed it as _ff_rw_speed."""
+        if not self.engine:
+            return
+        sr = self.engine.song_recorder
+        if sr.result is None:
+            return
+        now = time.monotonic()
+        new_pos = fraction * sr.result.num_frames
+        prev_pos = getattr(self, '_scrub_prev_frames', new_pos)
+        prev_time = getattr(self, '_scrub_prev_time', now)
+        dt = now - prev_time
+        if dt >= 0.001:
+            # frames/sec ÷ sample_rate = dimensionless step (same units as tape_speed)
+            raw_step = (new_pos - prev_pos) / dt / sr.sr
+            raw_step = max(-12.0, min(12.0, raw_step))
+            sr.set_ff_rw_speed(raw_step)
+        self._scrub_prev_frames = new_pos
+        self._scrub_prev_time = now
+
+    def _on_song_recorder_loop(self, looping: bool) -> None:
+        if self.engine:
+            self.engine.song_recorder.loop = looping
+
+    def _on_song_recorder_pb_volume(self, volume: float) -> None:
+        if self.engine:
+            self.engine.song_recorder.set_pb_volume(volume)
+
+    def _on_song_recorder_stop_pause(self) -> None:
+        """Single-click STOP — pause playback at current position (or stop recording)."""
+        if not self.engine:
+            return
+        sr = self.engine.song_recorder
+        if sr.recording or self._song_recorder_recording:
+            self._song_recorder_do_stop()
+        elif sr.is_playing:
+            sr._pb_pause()
+        if self.window:
+            self.window.song_recorder_panel.set_playing(False)
+
+    def _on_song_recorder_stop(self) -> None:
+        """Double-click STOP — stops both recording AND playback, rewinds to start."""
+        if not self.engine:
+            return
+        sr = self.engine.song_recorder
+        if sr.recording or self._song_recorder_recording:
+            self._song_recorder_do_stop()
+        sr.stop_playback()
+        if self.window:
+            self.window.song_recorder_panel.set_playing(False)
+
+    def _refresh_songs_library(self) -> None:
+        """Refresh the Songs library tab (called on GUI thread after save)."""
+        try:
+            if self.window and hasattr(self.window, "library_panel"):
+                lp = self.window.library_panel
+                if hasattr(lp, "songs_tab"):
+                    lp.songs_tab.refresh()
+        except Exception:
+            pass
+
     def _recorder_advance_clock(self, beat_int: int):
         """Called from _execute_beat (GUI thread).
 
@@ -4292,6 +5107,106 @@ class AppController:
                 order = payload.get(key)
                 if order is not None:
                     self.engine.set_rack_order(bus, order)
+
+    # --- RACK profile (LOAD / SAVE) handlers ---
+
+    def _on_rack_save_requested(self, name: str, bus_suffix: str,
+                                effect_types: list):
+        """Persist the current rack tab as a named profile.
+
+        Reads each effect's state dataclass from AppConfig (using the
+        per-bus attribute suffix), serialises via dataclasses.asdict,
+        and writes to data/racks/<name>.json on a background thread.
+        """
+        from dataclasses import asdict, is_dataclass
+        from mlrvp.preset import rack_manager
+
+        modules: list[dict] = []
+        for et in effect_types:
+            if not isinstance(et, str) or not et:
+                continue
+            attr = f"{et}{bus_suffix}"
+            state_obj = getattr(self.config, attr, None)
+            if state_obj is None:
+                # Common cases: stateless modules (vu_meter, oscilloscope),
+                # mod-bus-shared (chorus/phaser/flanger -> config.mod), or
+                # stowaway slots (per-instance state). Save layout only.
+                modules.append({"effect_type": et, "state": {}})
+                continue
+            if is_dataclass(state_obj):
+                try:
+                    state_dict = asdict(state_obj)
+                except Exception:
+                    state_dict = {}
+            elif isinstance(state_obj, dict):
+                state_dict = dict(state_obj)
+            else:
+                state_dict = {}
+            modules.append({"effect_type": et, "state": state_dict})
+
+        def _do_save():
+            try:
+                rack_manager.save_rack(name, modules)
+            except Exception as e:
+                print(f"[rack save] failed: {e}")
+        threading.Thread(target=_do_save, daemon=True).start()
+        if self.window:
+            self.window.set_status(f"Saving rack: {name}")
+
+    def _on_rack_load_requested(self, name: str, bus_suffix: str):
+        """Replace the current rack tab with a saved profile.
+
+        - Reads the JSON via rack_manager.load_rack().
+        - For each entry, updates AppConfig fields in place (so engine
+          and GUI stay aligned), then calls EffectsView.load_rack_into_current
+          which clears the rack and instantiates+set_state's each module.
+        - Pushes the updated config to the engine afterwards.
+        """
+        from dataclasses import fields, is_dataclass
+        from mlrvp.preset import rack_manager
+        from mlrvp.gui.widgets.rack_container import (
+            get_module_class_by_effect_type,
+        )
+
+        entries_raw = rack_manager.load_rack(name)
+        if not entries_raw:
+            if self.window:
+                self.window.set_status(f"Rack profile not found: {name}")
+            return
+
+        load_entries: list = []  # (cls, state_obj_or_None)
+        for entry in entries_raw:
+            et = entry.get("effect_type")
+            state_dict = entry.get("state") or {}
+            cls = get_module_class_by_effect_type(et)
+            if cls is None:
+                continue
+            attr = f"{et}{bus_suffix}"
+            state_obj = getattr(self.config, attr, None)
+            if state_obj is not None and is_dataclass(state_obj) and state_dict:
+                # Copy known fields only — silently ignore unknown keys.
+                allowed = {f.name for f in fields(state_obj)}
+                for k, v in state_dict.items():
+                    if k in allowed:
+                        try:
+                            setattr(state_obj, k, v)
+                        except Exception:
+                            pass
+            load_entries.append((cls, state_obj))
+
+        if not self.window:
+            return
+        ev = self.window.effects_view
+        ev.load_rack_into_current(load_entries)
+        # Push updated parameter values to the engine for this bus.
+        # _apply_config_to_engine() pushes the entire config which is
+        # safe and matches what preset-recall already does.
+        try:
+            self._apply_config_to_engine()
+        except Exception as e:
+            print(f"[rack load] _apply_config_to_engine failed: {e}")
+        if self.window:
+            self.window.set_status(f"Rack loaded: {name}")
 
     # --- Setup handlers ---
 
@@ -4755,6 +5670,11 @@ class AppController:
                 strip._pan_knob, f"ch.{i}.pan", f"Ch{i+1} Pan")
             self._midi_map.register_control(
                 strip._stop_btn, f"ch.{i}.stop", f"Ch{i+1} Stop")
+            # LIVE-mode REC button (only meaningful when channel is in LIVE mode)
+            if hasattr(strip, "_live_rec_btn"):
+                self._midi_map.register_control(
+                    strip._live_rec_btn, f"ch.{i}.live_rec",
+                    f"Ch{i+1} LIVE Rec")
 
         # Mixer group controls
         for i in range(NUM_GROUPS):
@@ -4836,6 +5756,23 @@ class AppController:
             w.mixer_view._aux_fx_route_btn, "aux.fx_route", "Aux FX Route")
         self._midi_map.register_control(
             w.mixer_view._master_fader, "master.volume", "Master Volume")
+
+        # Song Recorder controls
+        srp = w.song_recorder_panel
+        self._midi_map.register_control(
+            srp.arm_widget, "song_recorder.arm", "Song Recorder ARM")
+        self._midi_map.register_control(
+            srp.rec_widget, "song_recorder.rec", "Song Recorder REC")
+        self._midi_map.register_control(
+            srp.play_widget, "song_recorder.play", "Song Recorder Play/Pause")
+        self._midi_map.register_control(
+            srp.stop_widget, "song_recorder.stop", "Song Recorder Stop")
+        self._midi_map.register_control(
+            srp.rewind_widget, "song_recorder.rewind", "Song Recorder Rewind")
+        self._midi_map.register_control(
+            srp.ff_widget, "song_recorder.ff", "Song Recorder Fast Fwd")
+        self._midi_map.register_control(
+            srp.tape_speed_widget, "song_recorder.tape_speed", "Song Recorder Tape Speed")
 
         # Wire learn events
         self._midi_map.mapping_started.connect(self._on_midi_map_learn_start)
@@ -5538,6 +6475,47 @@ class AppController:
                 lambda v: QTimer.singleShot(
                     0, self._gui_grid_mode_cycle
                 ) if v > 0.5 else None)
+        elif parts[0] == "song_recorder" and len(parts) == 2:
+            sub = parts[1]
+            if sub == "arm":
+                self.midi.set_param_callback(param_path,
+                    lambda v: QTimer.singleShot(
+                        0, self.window.song_recorder_panel.arm_widget.click
+                    ) if v > 0.5 and self.window else None)
+            elif sub == "rec":
+                self.midi.set_param_callback(param_path,
+                    lambda v: QTimer.singleShot(
+                        0, self.window.song_recorder_panel.rec_widget.click
+                    ) if v > 0.5 and self.window else None)
+            elif sub == "play":
+                self.midi.set_param_callback(param_path,
+                    lambda v: QTimer.singleShot(
+                        0, self.window.song_recorder_panel.play_widget.click
+                    ) if v > 0.5 and self.window else None)
+            elif sub == "stop":
+                self.midi.set_param_callback(param_path,
+                    lambda v: QTimer.singleShot(
+                        0, self.window.song_recorder_panel.stop_widget.click
+                    ) if v > 0.5 and self.window else None)
+            elif sub == "rewind":
+                self.midi.set_param_callback(param_path,
+                    lambda v: QTimer.singleShot(
+                        0, self.window.song_recorder_panel.rewind_widget.click
+                    ) if v > 0.5 and self.window else None)
+            elif sub == "ff":
+                self.midi.set_param_callback(param_path,
+                    lambda v: QTimer.singleShot(
+                        0, self.window.song_recorder_panel.ff_widget.click
+                    ) if v > 0.5 and self.window else None)
+            elif sub == "tape_speed":
+                # Continuous: knob value 0..1 → set tape speed and emit value_changed
+                def _set_tape(v):
+                    if not self.window:
+                        return
+                    knob = self.window.song_recorder_panel.tape_speed_widget
+                    knob.set_value(v)
+                    knob.value_changed.emit(v)
+                self.midi.set_param_callback(param_path, _set_tape)
         elif parts[0] == "transport" and len(parts) == 3:
             if parts[1] == "group_stop":
                 gi = int(parts[2])
@@ -6504,7 +7482,7 @@ class AppController:
 
             # Master filter knobs — convert freq back to 0-1 knob value
             hp_v = max(0.0, min(1.0, (self.config.master_hp - 20.0) / 480.0))
-            lp_v = max(0.0, min(1.0, (self.config.master_lp - 200.0) / 19800.0))
+            lp_v = max(0.0, min(1.0, (20000.0 - self.config.master_lp) / 19800.0))
             mf = w.master_filter_view
             mf._hp_knob.blockSignals(True)
             mf._hp_knob.set_value(hp_v)

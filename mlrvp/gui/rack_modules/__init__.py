@@ -42,55 +42,74 @@ from mlrvp.gui.rack_modules.gated_reverb import GatedReverbModule
 from mlrvp.gui.rack_modules.stutter import StutterModule
 from mlrvp.gui.rack_modules.stowaway import ForeignExchangeModule
 
-from mlrvp.gui.widgets.rack_container import register_rack_module
+from mlrvp.gui.widgets.rack_container import register_rack_module_in_category
 
-# Register all modules in the Add menu
-_MODULES = {
-    "Déjà Vu Delay (Digital Delay)": DigitalDelayModule,
-    "Rewind (Tape Delay)": TapeDelayModule,
-    "Byte Me (Bit Crusher)": BitCrusherModule,
-    "Hot Snake (Tube Overdrive)": TubeOverdriveModule,
-    "Band Practice (Multiband Filter)": MultibandFilterModule,
-    "The Ladder (Moog Filter)": MoogFilterModule,
-    "Snake Charmer (Phaser)": PhaserModule,
-    "Parrot Talk (Chorus)": ChorusModule,
-    "Jet Stream (Flanger)": FlangerModule,
-    "Spring Fling (Plate/Spring Reverb)": PlateSpringReverbModule,
-    "Echo Chamber (Hall Reverb)": HallReverbModule,
-    "Reel Deal (Reel-to-Reel)": ReelToReelModule,
-    "Mixtape (Cassette Tape)": MixtapeModule,
-    "Tracking Shot (VHS)": VHSModule,
-    "Wax Poetic (Vinyl)": VinylModule,
-    "Thrust Issues (Sidechain Compressor)": CompressorModule,
-    "Group Hug (Glue Compressor)": GlueCompressorModule,
-    "Twin Peaks (Dual VU Meter)": DualVUMeterModule,
-    "CRT:// Scope (Oscilloscope)": OscilloscopeModule,
-    "Ether Drift (Bipolar Phaser)": EtherDriftModule,
-    "The Velvet Rope (Noise Gate)": NoiseGateModule,
-    "Heartquake (Tremolo)": TremoloModule,
-    "Funk Doctor (Auto-Wah)": AutoWahModule,
-    "All Buttons In (FET Limiter)": FETLimiterModule,
-    "Spin Cycle (Rotary Speaker)": RotaryModule,
-    "Vitamin E (Aural Exciter)": ExciterModule,
-    "Punch Card (Transient Designer)": TransientShaperModule,
-    "Wrong Lane (Dual Harmonizer)": HarmonizerModule,
-    "Personal Space (Stereo Widener)": StereoWidenerModule,
-    "The Bode Plot (Freq Shifter)": FreqShifterModule,
-    "Ring Leader (Ring Mod)": RingModModule,
-    "Golden Ears (3-Band EQ)": SimpleEQModule,
-    "Table Tennis (Ping-Pong Delay)": PingPongDelayModule,
-    "Stained Glass (Shimmer Reverb)": ShimmerReverbModule,
-    "Tin Can (Lo-Fi Radio)": LoFiRadioModule,
-    "Pendulum (Auto-Pan)": AutoPanModule,
-    "Wool Over (Fuzz)": FuzzModule,
-    "Snow Globe (Granular Freeze)": GranularFreezeModule,
-    "Gate Crasher (Gated Reverb)": GatedReverbModule,
-    "Broken Record (Stutter)": StutterModule,
-    "Foreign Exchange (Plugin Host)": ForeignExchangeModule,
+# ── Add-menu categories (insertion order = display order) ────────────────
+_CATEGORIES = {
+    "Delays": [
+        ("Déjà Vu Delay (Digital Delay)", DigitalDelayModule),
+        ("Rewind (Tape Delay)",            TapeDelayModule),
+        ("Table Tennis (Ping-Pong Delay)", PingPongDelayModule),
+        ("Broken Record (Stutter)",        StutterModule),
+    ],
+    "Reverbs": [
+        ("Spring Fling (Plate/Spring Reverb)", PlateSpringReverbModule),
+        ("Echo Chamber (Hall Reverb)",         HallReverbModule),
+        ("Stained Glass (Shimmer Reverb)",     ShimmerReverbModule),
+        ("Gate Crasher (Gated Reverb)",        GatedReverbModule),
+    ],
+    "Dynamics": [
+        ("Thrust Issues (Sidechain Compressor)", CompressorModule),
+        ("Group Hug (Glue Compressor)",          GlueCompressorModule),
+        ("All Buttons In (FET Limiter)",         FETLimiterModule),
+        ("The Velvet Rope (Noise Gate)",         NoiseGateModule),
+        ("Punch Card (Transient Designer)",      TransientShaperModule),
+    ],
+    "EQ & Filters": [
+        ("Band Practice (Multiband Filter)", MultibandFilterModule),
+        ("The Ladder (Moog Filter)",         MoogFilterModule),
+        ("Golden Ears (3-Band EQ)",          SimpleEQModule),
+    ],
+    "Modulation": [
+        ("Snake Charmer (Phaser)",    PhaserModule),
+        ("Parrot Talk (Chorus)",      ChorusModule),
+        ("Jet Stream (Flanger)",      FlangerModule),
+        ("Ether Drift (Bipolar Phaser)", EtherDriftModule),
+        ("Heartquake (Tremolo)",      TremoloModule),
+        ("Spin Cycle (Rotary Speaker)", RotaryModule),
+        ("Pendulum (Auto-Pan)",       AutoPanModule),
+        ("Ring Leader (Ring Mod)",    RingModModule),
+        ("Funk Doctor (Auto-Wah)",    AutoWahModule),
+    ],
+    "Distortion & Drive": [
+        ("Byte Me (Bit Crusher)",     BitCrusherModule),
+        ("Glow Worm (Tube Overdrive)", TubeOverdriveModule),
+        ("Buzz Saw (Fuzz)",          FuzzModule),
+    ],
+    "Lo-Fi": [
+        ("Reel Deal (Reel-to-Reel)",  ReelToReelModule),
+        ("Mixtape (Cassette Tape)",   MixtapeModule),
+        ("Tracking Shot (VHS)",       VHSModule),
+        ("Needle Drop (Vinyl)",        VinylModule),
+        ("Tin Can (Lo-Fi Radio)",     LoFiRadioModule),
+    ],
+    "Utility": [
+        ("Twin Peaks (Dual VU Meter)",   DualVUMeterModule),
+        ("CRT:// Scope (Oscilloscope)",  OscilloscopeModule),
+        ("Personal Space (Stereo Widener)", StereoWidenerModule),
+        ("Vitamin E (Aural Exciter)",    ExciterModule),
+        ("Lil Freq (Freq Shifter)", FreqShifterModule),
+        ("Wrong Lane (Dual Harmonizer)", HarmonizerModule),
+        ("Snow Globe (Granular Freeze)", GranularFreezeModule),
+    ],
+    "Plugin Host": [
+        ("Foreign Exchange (Plugin Host)", ForeignExchangeModule),
+    ],
 }
 
-for _name, _cls in _MODULES.items():
-    register_rack_module(_name, _cls)
+for _cat, _entries in _CATEGORIES.items():
+    for _name, _cls in _entries:
+        register_rack_module_in_category(_cat, _name, _cls)
 
 __all__ = [
     "DigitalDelayModule", "TapeDelayModule", "BitCrusherModule",

@@ -1,4 +1,4 @@
-"""Wax Poetic — 1U vinyl record character with crackle, pops, surface noise, and warmth."""
+"""Needle Drop — 1U vinyl record character with crackle, pops, surface noise, and warmth."""
 
 import math
 
@@ -16,7 +16,7 @@ _DIM_AMBER = "#885522"
 
 
 class _VinylLogo(QWidget):
-    """Vinyl record icon with grooves for the Wax Poetic module."""
+    """Vinyl record icon with grooves for the Needle Drop module."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -85,14 +85,14 @@ class _WearIndicator(QWidget):
 
 
 class VinylModule(RackModuleBase):
-    """1U Wax Poetic — vinyl record character with crackle, pops, warmth, and wear."""
+    """1U Needle Drop — vinyl record character with crackle, pops, warmth, and wear."""
 
     effect_type = "vinyl"
     _enabled_param: str = "enabled"
 
     def __init__(self, parent=None):
         super().__init__(unit_height=1, faceplate_color=_FACE,
-                         title="WAX POETIC", parent=parent)
+                         title="NEEDLE DROP", parent=parent)
         self._build_faceplate()
 
     def _build_faceplate(self):
@@ -107,7 +107,7 @@ class VinylModule(RackModuleBase):
         title_col = QVBoxLayout()
         title_col.setSpacing(0)
         title_col.setContentsMargins(0, 2, 0, 2)
-        title = QLabel("WAX POETIC")
+        title = QLabel("NEEDLE DROP")
         title.setStyleSheet(
             f"color: {_AMBER}; font-size: 10px; font-weight: bold;"
             "font-family: 'Georgia'; font-style: italic; letter-spacing: 2px;"

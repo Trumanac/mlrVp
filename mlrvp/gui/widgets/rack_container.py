@@ -12,6 +12,8 @@ from mlrvp.gui.widgets.rack_module_base import RackModuleBase, RACK_EAR_WIDTH
 
 # Registry populated by rack_modules package
 _MODULE_REGISTRY: dict[str, type] = {}
+# Category registry: preserves insertion order; category → [display_name, …]
+_CATEGORY_REGISTRY: dict[str, list[str]] = {}
 
 # Performance budget: 512 samples @ 44100 Hz = 11.6ms callback.
 # ~8.9ms available after channel/master/jitter headroom.
@@ -24,8 +26,40 @@ def register_rack_module(name: str, cls: type):
     _MODULE_REGISTRY[name] = cls
 
 
+def register_rack_module_in_category(category: str, name: str, cls: type):
+    """Register a module and assign it to a named category for the Add menu."""
+    _MODULE_REGISTRY[name] = cls
+    if category not in _CATEGORY_REGISTRY:
+        _CATEGORY_REGISTRY[category] = []
+    if name not in _CATEGORY_REGISTRY[category]:
+        _CATEGORY_REGISTRY[category].append(name)
+
+
+def get_category_registry() -> dict[str, list[str]]:
+    return {k: list(v) for k, v in _CATEGORY_REGISTRY.items()}
+
+
 def get_module_registry() -> dict[str, type]:
     return dict(_MODULE_REGISTRY)
+
+
+def get_module_class_by_effect_type(effect_type: str) -> Optional[type]:
+    """Look up a module class by its class-level ``effect_type`` attribute.
+
+    Returns None if no registered module declares that effect_type.
+    For ``stowaway_*`` (per-instance effect_type), returns the
+    ForeignExchangeModule class — caller is responsible for passing
+    the slot index.
+    """
+    if not effect_type:
+        return None
+    if effect_type.startswith("stowaway_") or effect_type == "stowaway":
+        from mlrvp.gui.rack_modules.stowaway import ForeignExchangeModule
+        return ForeignExchangeModule
+    for cls in _MODULE_REGISTRY.values():
+        if getattr(cls, "effect_type", None) == effect_type:
+            return cls
+    return None
 
 
 class RackContainer(QScrollArea):
@@ -180,23 +214,36 @@ class RackContainer(QScrollArea):
         self._layout.addStretch()
 
     def _show_add_menu(self):
+        from mlrvp.gui.widgets.overflow_menu import (
+            make_menu, _make_submenu, MENU_QSS,
+        )
         at_local_limit = len(self._modules) >= MAX_MODULES_PER_RACK
         at_global_limit = self._global_limit_fn and self._global_limit_fn()
 
-        menu = QMenu(self)
-        menu.setStyleSheet(
-            "QMenu { background: #2a2a2a; color: #cccccc; border: 1px solid #555; }"
-            "QMenu::item:selected { background: #444444; }"
-            "QMenu::item:disabled { color: #666666; }"
-        )
+        menu = make_menu(self)
         if at_local_limit or at_global_limit:
             reason = "rack full (max 8)" if at_local_limit else "total FX limit reached"
             menu.addAction(f"({reason})").setEnabled(False)
-        else:
+        elif _CATEGORY_REGISTRY:
+            # Build one submenu per registered category.
+            for cat_label, names in _CATEGORY_REGISTRY.items():
+                sub = _make_submenu(cat_label, menu)
+                for name in names:
+                    cls = _MODULE_REGISTRY.get(name)
+                    if cls is None:
+                        continue
+                    act = sub.addAction(name)
+                    act.triggered.connect(
+                        lambda checked=False, c=cls: self._add_from_menu(c)
+                    )
+        elif _MODULE_REGISTRY:
+            # Fallback: flat alphabetical list when no categories are registered.
             for name, cls in sorted(_MODULE_REGISTRY.items()):
-                action = menu.addAction(name)
-                action.triggered.connect(lambda checked, c=cls: self._add_from_menu(c))
-        if not _MODULE_REGISTRY and not (at_local_limit or at_global_limit):
+                act = menu.addAction(name)
+                act.triggered.connect(
+                    lambda checked=False, c=cls: self._add_from_menu(c)
+                )
+        else:
             menu.addAction("(no modules available)").setEnabled(False)
         menu.exec(self._add_btn.mapToGlobal(self._add_btn.rect().center()))
 

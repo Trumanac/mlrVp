@@ -1,4 +1,4 @@
-"""The Bode Plot — 1U Bode / Eventide-style Single-Sideband Frequency Shifter."""
+"""Lil Freq — 1U Bode / Eventide-style Single-Sideband Frequency Shifter."""
 
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
 from PySide6.QtCore import Qt, QRectF
@@ -18,8 +18,8 @@ _WHITE   = "#c0dce8"   # near-white text
 _AMBER   = "#f0a020"   # amber for Hz readout
 
 
-class _BodeLogo(QWidget):
-    """Tiny sine → shifted-sine icon."""
+class _HzBadge(QWidget):
+    """Stylized Hz badge icon — Lil Freq module."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -31,28 +31,29 @@ class _BodeLogo(QWidget):
         if not p.isActive():
             return
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # Original wave (dim)
-        pen = QPen(QColor(_DIM), 1.0)
-        p.setPen(pen)
-        pts_orig = []
-        for i in range(24):
-            x = 2 + i
-            y = 8 + int(4 * math.sin(i * 0.5))
-            pts_orig.append((x, y))
-        for i in range(len(pts_orig) - 1):
-            p.drawLine(pts_orig[i][0], pts_orig[i][1],
-                        pts_orig[i+1][0], pts_orig[i+1][1])
-        # Shifted wave (bright cyan)
-        pen2 = QPen(QColor(_CYAN), 1.5)
-        p.setPen(pen2)
-        pts_shift = []
-        for i in range(24):
-            x = 2 + i
-            y = 8 + int(4 * math.sin(i * 0.65))
-            pts_shift.append((x, y))
-        for i in range(len(pts_shift) - 1):
-            p.drawLine(pts_shift[i][0], pts_shift[i][1],
-                        pts_shift[i+1][0], pts_shift[i+1][1])
+
+        # Rounded rectangle badge background
+        p.setPen(QPen(QColor(_CYAN), 1.2))
+        p.setBrush(QColor(0, 40, 60, 180))
+        p.drawRoundedRect(1, 1, 26, 14, 3, 3)
+
+        # "Hz" text — bold, slightly italic, cyan
+        font = QFont("Arial Black", 7, QFont.Weight.Bold)
+        font.setItalic(True)
+        p.setFont(font)
+        p.setPen(QColor(_CYAN))
+        p.drawText(0, 0, 28, 16, Qt.AlignmentFlag.AlignCenter, "Hz")
+
+        # Small tilde above — suggests waveform / frequency
+        p.setPen(QPen(QColor(_AMBER), 1.0))
+        cx = 14
+        for i in range(10):
+            x = cx - 4 + i
+            y = int(2 + math.sin(i * 0.9) * 1.2)
+            if i > 0:
+                p.drawLine(x - 1, prev_y, x, y)
+            prev_y = y
+
         p.end()
 
 
@@ -146,14 +147,14 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _WHITE) -> QVBoxLayout:
 
 
 class FreqShifterModule(RackModuleBase):
-    """1U The Bode Plot — SSB Frequency Shifter."""
+    """1U Lil Freq — SSB Frequency Shifter."""
 
     effect_type = "freq_shifter"
     _enabled_param: str = "enabled"
 
     def __init__(self, parent=None):
         super().__init__(unit_height=1, faceplate_color=_FACE,
-                         title="THE BODE PLOT", parent=parent)
+                         title="LIL FREQ", parent=parent)
         self._build_faceplate()
 
     def _build_faceplate(self):
@@ -169,8 +170,8 @@ class FreqShifterModule(RackModuleBase):
         title_row = QHBoxLayout()
         title_row.setSpacing(4)
         title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.addWidget(_BodeLogo())
-        title = QLabel("THE BODE PLOT")
+        title_row.addWidget(_HzBadge())
+        title = QLabel("LIL FREQ")
         title.setStyleSheet(
             f"color: {_CYAN}; font-size: 9px; font-weight: bold;"
             "font-family: 'Arial Black'; letter-spacing: 2px;"

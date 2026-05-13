@@ -1,0 +1,31 @@
+{
+  "version": "1.0.0",
+  "name": "Hot Crunch",
+  "modules": [
+    {
+      "effect_type": "vu_meter",
+      "state": {}
+    },
+    {
+      "effect_type": "bit_crusher",
+      "state": {
+        "enabled": true,
+        "bit_depth": 12,
+        "sample_rate_reduction": 0.5,
+        "mix": 0.5,
+        "fx_route": 1
+      }
+    },
+    {
+      "effect_type": "tube_overdrive",
+      "state": {
+        "enabled": true,
+        "drive": 0.3,
+        "tone": 0.5,
+        "mix": 0.5,
+        "tube_bias": 0.5,
+        "fx_route": 1
+      }
+    }
+  ]
+}

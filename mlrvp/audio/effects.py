@@ -1204,7 +1204,7 @@ class BitCrusherProcessor:
 
 
 # ---------------------------------------------------------------------------
-#  Tube Overdrive (Hot Snake)
+#  Tube Overdrive (Glow Worm)
 # ---------------------------------------------------------------------------
 
 class TubeOverdriveProcessor:
@@ -1228,6 +1228,10 @@ class TubeOverdriveProcessor:
         self._tone_hp.set_highpass(3500.0, 0.707)
         # Track last tone value to avoid rebuilding filters every block
         self._last_tone: float = -1.0
+        # Pre-allocated wet buffer (grow-only, same pattern as all other processors)
+        _sz = 4096
+        self._wet_buf = np.zeros((_sz, 2), dtype=np.float32)
+        self._wet_buf_size = _sz
 
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
@@ -1237,18 +1241,26 @@ class TubeOverdriveProcessor:
         if mix < 0.001:
             return data
 
-        # --- Input drive ---
+        n = len(data)
+        n_ch = data.shape[1] if data.ndim == 2 else 1
+        if n > self._wet_buf_size or n_ch != (self._wet_buf.shape[1] if self._wet_buf.ndim == 2 else 1):
+            self._wet_buf = np.zeros((n, n_ch), dtype=np.float32)
+            self._wet_buf_size = n
+        wet = self._wet_buf[:n]
+
+        # --- Input drive (in-place) ---
         drive = np.float32(1.0 + st.drive * 8.0)  # 1x to 9x pre-gain
-        wet = data * drive
+        np.multiply(data, drive, out=wet)
 
-        # --- Bias offset (asymmetric → even harmonics) ---
+        # --- Bias offset (asymmetric → even harmonics, in-place) ---
         bias_offset = np.float32((st.tube_bias - 0.5) * 0.15)  # ±0.075 offset
-        wet = wet + bias_offset
+        wet += bias_offset
 
-        # --- Polynomial soft clip: tanh-like but slightly asymmetric ---
-        # x / (1 + |x|) gives smooth saturation with gentle knee
-        wet = wet / (np.float32(1.0) + np.abs(wet))
-        wet = wet - np.float32(bias_offset * 0.5)   # partial bias compensation to re-center
+        # --- Polynomial soft clip: x / (1 + |x|), in-place ---
+        abs_wet = np.abs(wet)
+        abs_wet += np.float32(1.0)
+        wet /= abs_wet
+        wet -= np.float32(bias_offset * 0.5)   # partial bias compensation to re-center
 
         # --- Tone control ---
         # tone=0.5 is neutral; <0.5 rolls off highs; >0.5 boosts highs
@@ -5207,7 +5219,7 @@ class AutoPanProcessor:
 # ─── Fuzz ─────────────────────────────────────────────────────────────────────
 
 class FuzzProcessor:
-    """Wool Over — Big Muff-style fuzz/distortion.
+    """Buzz Saw — Big Muff-style fuzz/distortion.
 
     Models a classic transistor fuzz circuit:
       1. Input gain stage (sustain → compression via soft-clip pre-amp)
@@ -5224,6 +5236,31 @@ class FuzzProcessor:
         # Tone filter state for lfilter: shape (1, n_ch) for 1st-order
         self._tone_zi = np.zeros((1, 2), dtype=np.float64)
         self._tone_nch = 2
+        # Pre-allocated buffers (grow-only, same pattern as all other processors)
+        _sz = max(buffer_size, 4096)
+        self._wet_buf = np.zeros((_sz, 2), dtype=np.float32)
+        self._wet_buf_size = _sz
+        self._f64_buf = np.zeros((_sz, 2), dtype=np.float64)
+        self._f64_buf_size = _sz
+        self._lp_buf = np.zeros((_sz, 2), dtype=np.float32)
+        self._lp_buf_size = _sz
+        self._out_f32 = np.zeros((_sz, 2), dtype=np.float32)
+        self._out_f32_size = _sz
+
+    def _ensure_bufs(self, n: int, n_ch: int) -> None:
+        sz = n * n_ch
+        if n > self._wet_buf_size or n_ch != self._wet_buf.shape[1] if self._wet_buf.ndim == 2 else True:
+            self._wet_buf = np.zeros((n, n_ch), dtype=np.float32)
+            self._wet_buf_size = n
+        if n > self._f64_buf_size or n_ch != self._f64_buf.shape[1] if self._f64_buf.ndim == 2 else True:
+            self._f64_buf = np.zeros((n, n_ch), dtype=np.float64)
+            self._f64_buf_size = n
+        if n > self._lp_buf_size or n_ch != self._lp_buf.shape[1] if self._lp_buf.ndim == 2 else True:
+            self._lp_buf = np.zeros((n, n_ch), dtype=np.float32)
+            self._lp_buf_size = n
+        if n > self._out_f32_size or n_ch != self._out_f32.shape[1] if self._out_f32.ndim == 2 else True:
+            self._out_f32 = np.zeros((n, n_ch), dtype=np.float32)
+            self._out_f32_size = n
 
     def process(self, data: np.ndarray) -> np.ndarray:
         st = self.state
@@ -5233,11 +5270,18 @@ class FuzzProcessor:
         if mix < 0.001:
             return data
 
+        n = len(data)
         # Ensure zi matches channel count
         n_ch = data.shape[1] if data.ndim == 2 else 1
         if n_ch != self._tone_nch:
             self._tone_zi = np.zeros((1, n_ch), dtype=np.float64)
             self._tone_nch = n_ch
+
+        self._ensure_bufs(n, n_ch)
+        wet = self._wet_buf[:n]
+        f64 = self._f64_buf[:n]
+        lp_f32 = self._lp_buf[:n]
+        out = self._out_f32[:n]
 
         gain = max(0.0, min(1.0, st.gain))
         tone = max(0.0, min(1.0, st.tone))
@@ -5245,47 +5289,47 @@ class FuzzProcessor:
         gate_thresh = max(0.0, min(0.1, st.gate))
 
         # Drive amount: 0–1 → 1–100x gain
-        drive = 1.0 + gain * 99.0
+        drive = np.float32(1.0 + gain * 99.0)
 
-        wet = data.copy()
+        np.copyto(wet, data, casting='unsafe')  # float32 copy of input
 
-        # Stage 1: Sustain — soft-clip compression before fuzz
+        # Stage 1: Sustain — soft-clip compression before fuzz (in-place)
         if sustain > 0.01:
-            comp_gain = 1.0 + sustain * 4.0  # boost quiet parts
-            wet = np.tanh(wet * comp_gain)
+            comp_gain = np.float32(1.0 + sustain * 4.0)
+            wet *= comp_gain
+            np.tanh(wet, out=wet)
 
-        # Stage 2: Fuzz — hard clip with asymmetric diodes
-        wet = wet * np.float32(drive)
-        # Asymmetric clipping: positive clips at +0.7, negative at -0.5
-        wet = np.where(wet > 0,
-                       np.tanh(wet * 2.0) * 0.7,
-                       np.tanh(wet * 3.0) * 0.5)
+        # Stage 2: Fuzz — hard clip with asymmetric diodes (in-place where possible)
+        wet *= drive
+        # Asymmetric clipping: positive at +0.7, negative at -0.5
+        pos_mask = wet > 0
+        wet[pos_mask] = np.tanh(wet[pos_mask] * 2.0) * 0.7
+        wet[~pos_mask] = np.tanh(wet[~pos_mask] * 3.0) * 0.5
 
-        # Stage 3: Tone stack — blend between LP (dark) and HP (bright)
-        # tone=0: full LP (dark), tone=0.5: flat, tone=1: full HP (bright)
-        # One-pole LP: y[n] = coeff*x[n] + (1-coeff)*y[n-1]
-        lp_coeff = 0.05 + (1.0 - tone) * 0.4  # 0.05–0.45
+        # Stage 3: Tone stack — one-pole LP, then blend LP/HP
+        lp_coeff = 0.05 + (1.0 - tone) * 0.4
         b = np.array([lp_coeff], dtype=np.float64)
         a = np.array([1.0, -(1.0 - lp_coeff)], dtype=np.float64)
-        lp, self._tone_zi = lfilter(
-            b, a, wet.astype(np.float64), axis=0, zi=self._tone_zi)
+        np.copyto(f64, wet, casting='unsafe')
+        lp_f64, self._tone_zi = lfilter(b, a, f64, axis=0, zi=self._tone_zi)
         self._tone_zi[np.abs(self._tone_zi) < 1e-18] = 0.0
-        # Blend LP and HP: out = lp*(1-tone) + (x-lp)*tone
-        lp = lp.astype(np.float32)
-        wet = lp * np.float32(1.0 - tone) + (wet - lp) * np.float32(tone)
+        np.copyto(lp_f32, lp_f64, casting='unsafe')
+        # out = lp*(1-tone) + (wet-lp)*tone  — in-place via out buffer
+        t = np.float32(tone)
+        np.multiply(lp_f32, np.float32(1.0 - tone), out=out)
+        out += (wet - lp_f32) * t
 
-        # Stage 4: Noise gate
+        # Stage 4: Noise gate (in-place on out)
         if gate_thresh > 0.001:
-            env = np.abs(wet)
-            if wet.ndim == 2:
+            env = np.abs(out)
+            if out.ndim == 2:
                 env = np.max(env, axis=1, keepdims=True)
             gate_mask = np.where(env > gate_thresh, 1.0, env / max(gate_thresh, 1e-6))
-            wet = wet * gate_mask.astype(np.float32)
+            out *= gate_mask.astype(np.float32)
 
-        # Normalize output level (fuzz is loud)
-        wet = wet * 0.7
-
-        return data * (1.0 - mix) + wet * mix
+        # Normalize output level and mix (in-place)
+        out *= np.float32(0.7)
+        return data * np.float32(1.0 - mix) + out * np.float32(mix)
 
     def reset(self):
         self._tone_zi[:] = 0.0

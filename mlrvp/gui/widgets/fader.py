@@ -389,13 +389,12 @@ class RotaryKnob(_ValueDisplayMixin, QWidget):
 
         # Value arc
         if self._inverted:
-            # Fill from the end (right) backwards — full at 0, empty at 1
+            # Full at 0, empty at 1; arc grows CW from left — shrinks from right end first
             display_val = 1.0 - self._value
-            end_angle = start_angle + span_angle  # -45 degrees (bottom-right)
-            value_span = int(-span_angle * display_val)  # positive = counter-clockwise
+            value_span = int(span_angle * display_val)  # negative = clockwise
             painter.setPen(QPen(self._color, 3))
             painter.drawArc(int(cx - r), int(cy - r), int(r * 2), int(r * 2),
-                            end_angle * 16, value_span * 16)
+                            start_angle * 16, value_span * 16)
         else:
             value_span = int(span_angle * self._value)
             painter.setPen(QPen(self._color, 3))

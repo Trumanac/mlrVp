@@ -1,0 +1,39 @@
+{
+  "version": "1.0.0",
+  "name": "Master",
+  "modules": [
+    {
+      "effect_type": "vu_meter",
+      "state": {}
+    },
+    {
+      "effect_type": "glue_compressor",
+      "state": {
+        "enabled": true,
+        "threshold": 0.0,
+        "ratio_idx": 1,
+        "attack_idx": 2,
+        "release_idx": 1,
+        "makeup_gain": 0.0,
+        "hpf_idx": 0,
+        "fx_route": 1
+      }
+    },
+    {
+      "effect_type": "fet_limiter",
+      "state": {
+        "enabled": true,
+        "input_gain": 0.5,
+        "output_gain": 0.5,
+        "attack_idx": 4,
+        "release_idx": 2,
+        "ratio_idx": 0,
+        "fx_route": 0
+      }
+    },
+    {
+      "effect_type": "oscilloscope",
+      "state": {}
+    }
+  ]
+}

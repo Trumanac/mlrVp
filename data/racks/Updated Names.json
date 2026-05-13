@@ -1,0 +1,55 @@
+{
+  "version": "1.0.0",
+  "name": "Updated Names",
+  "modules": [
+    {
+      "effect_type": "vu_meter",
+      "state": {}
+    },
+    {
+      "effect_type": "tube_overdrive",
+      "state": {
+        "enabled": true,
+        "drive": 0.51,
+        "tone": 0.5,
+        "mix": 0.5,
+        "tube_bias": 0.5,
+        "fx_route": 1
+      }
+    },
+    {
+      "effect_type": "fuzz",
+      "state": {
+        "enabled": true,
+        "gain": 0.7,
+        "tone": 0.5,
+        "sustain": 0.6,
+        "gate": 0.02,
+        "mix": 0.5,
+        "fx_route": 0
+      }
+    },
+    {
+      "effect_type": "vinyl",
+      "state": {
+        "enabled": true,
+        "crackle": 0.3,
+        "pops": 0.2,
+        "warmth": 0.5,
+        "wear": 0.3,
+        "mix": 0.5,
+        "fx_route": 1
+      }
+    },
+    {
+      "effect_type": "freq_shifter",
+      "state": {
+        "enabled": true,
+        "shift_hz": 0.0,
+        "feedback": 0.0,
+        "mix": 0.5,
+        "fx_route": 0
+      }
+    }
+  ]
+}

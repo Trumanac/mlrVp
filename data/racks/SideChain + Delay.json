@@ -1,0 +1,44 @@
+{
+  "version": "1.0.0",
+  "name": "SideChain + Delay",
+  "modules": [
+    {
+      "effect_type": "vu_meter",
+      "state": {}
+    },
+    {
+      "effect_type": "compressor",
+      "state": {
+        "enabled": true,
+        "threshold": -20.0,
+        "ratio": 4.0,
+        "attack": 10.0,
+        "release": 100.0,
+        "makeup_gain": 0.0,
+        "sidechain_source": 0,
+        "sc_hp_freq": 150.0,
+        "thrust_enabled": true,
+        "fx_route": 1
+      }
+    },
+    {
+      "effect_type": "delay",
+      "state": {
+        "enabled": true,
+        "sync_time": 3,
+        "ms_time": 0.0,
+        "time_mode": 0,
+        "fb_attack": 67.0,
+        "fb_release": 67.0,
+        "fb_range_low": 42.0,
+        "fb_range_high": 90.0,
+        "filter_lp": true,
+        "filter_hp": true,
+        "filter_freq_lp": 7165.0,
+        "filter_freq_hp": 311.0,
+        "gain": 0.7,
+        "fx_route": 1
+      }
+    }
+  ]
+}

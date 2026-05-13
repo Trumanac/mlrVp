@@ -54,13 +54,13 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
   - **Parrot Talk** — chorus with rate, depth, feedback, and mix
   - **Jet Stream** — flanger with rate, depth, feedback, and mix
   - **Byte Me** — bit crusher with bit depth and sample rate reduction, mix
-  - **Hot Snake** — tube overdrive with drive, tone, bias, and mix
+  - **Glow Worm** — tube overdrive with drive, tone, bias, and mix
   - **Spring Fling** — plate/spring reverb with decay, damping, pre-delay, and mix
   - **Echo Chamber** — hall/room reverb with room size, decay, diffusion, mix, and room type selector
   - **Reel Deal** — studio reel-to-reel tape with saturation, flutter, bias, tone, and tape speed selector
   - **Mixtape** — home cassette tape character with saturation, hiss, punch, warp, and tone
   - **Tracking Shot** — VHS tape degradation with wobble, dropout, worn-tape character, and noise
-  - **Wax Poetic** — vinyl record character with crackle, pops, warmth, and groove wear
+  - **Needle Drop** — vinyl record character with crackle, pops, warmth, and groove wear
   - **Thrust Issues** — sidechain compressor with threshold, ratio, attack, release, makeup gain, and sidechain HPF
   - **Group Hug** — glue bus compressor with threshold, ratio, attack, release, makeup gain, and switchable sidechain HPF
   - **Twin Peaks** — dual analog VU meter with selectable **VU** (ballistic), **PEAK** (fast attack/slow decay), and **RMS** (power average) modes; reads per-FX-bus signal levels
@@ -72,7 +72,7 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
   - **All Buttons In** — FET limiter with input drive, output, attack, release, and mix
   - **Vitamin E** — aural exciter with high-frequency tune, low-frequency tune, output level, and mix
   - **Punch Card** — transient shaper with attack boost/cut, sustain boost/cut, output, and mix
-  - **The Bode Plot** — single-sideband frequency shifter with shift amount (Hz), feedback, and mix
+  - **Lil Freq** — single-sideband frequency shifter with shift amount (Hz), feedback, and mix
   - **Ring Leader** — ring modulator with carrier frequency, shape, and mix
   - **Spin Cycle** — rotary speaker simulator with speed, drive, horn/drum balance, and mix
   - **Personal Space** — stereo widener with width, center, low-frequency mono crossover, and mix
@@ -82,7 +82,7 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
   - **Stained Glass** — shimmer reverb with decay, shimmer pitch-shift amount, damping, and mix
   - **Tin Can** — lo-fi radio emulation with noise, wobble, lo-cut/hi-cut filters, and mix
   - **Pendulum** — auto-panner with rate, depth, shape, and mix
-  - **Wool Over** — fuzz with drive, tone, gate, and mix
+  - **Buzz Saw** — fuzz with drive, tone, gate, and mix
   - **Snow Globe** — granular freeze processor with grain size, scatter, pitch spread, density, freeze toggle, and mix
   - **Gate Crasher** — gated/reverse reverb with room size, gate time, slope, pre-delay, gate/reverse mode toggle, and mix
   - **Broken Record** — stutter/glitch buffer looper with loop size, retrigger rate, chaos, smear, trigger toggle, and mix
@@ -456,11 +456,11 @@ MLRVp/
 │           ├── chorus.py           # Parrot Talk (1U)
 │           ├── flanger.py          # Jet Stream (1U)
 │           ├── bit_crusher.py      # Byte Me (1U)
-│           ├── tube_overdrive.py   # Hot Snake (1U)
+│           ├── tube_overdrive.py   # Glow Worm (1U)
 │           ├── reel_to_reel.py     # Reel Deal (1U)
 │           ├── cassette_tape.py    # Mixtape (1U)
 │           ├── vhs.py              # Tracking Shot (1U)
-│           ├── vinyl.py            # Wax Poetic (1U)
+│           ├── vinyl.py            # Needle Drop (1U)
 │           ├── plate_spring_reverb.py # Spring Fling (2U)
 │           ├── hall_reverb.py      # Echo Chamber (2U)
 │           ├── compressor.py       # Thrust Issues — Sidechain Compressor (2U)
@@ -472,7 +472,7 @@ MLRVp/
 │           ├── fet_limiter.py      # All Buttons In — FET Limiter (1U)
 │           ├── exciter.py          # Vitamin E — Aural Exciter (1U)
 │           ├── transient_shaper.py # Punch Card — Transient Shaper (1U)
-│           ├── freq_shifter.py     # The Bode Plot — Freq Shifter (1U)
+│           ├── freq_shifter.py     # Lil Freq — Freq Shifter (1U)
 │           ├── ring_mod.py         # Ring Leader — Ring Modulator (1U)
 │           ├── rotary.py           # Spin Cycle — Rotary Speaker (1U)
 │           ├── stereo_widener.py   # Personal Space — Stereo Widener (1U)
@@ -482,7 +482,7 @@ MLRVp/
 │           ├── shimmer_reverb.py   # Stained Glass — Shimmer Reverb (1U)
 │           ├── lofi_radio.py       # Tin Can — Lo-Fi Radio (1U)
 │           ├── auto_pan.py         # Pendulum — Auto Pan (1U)
-│           ├── fuzz.py             # Wool Over — Fuzz (1U)
+│           ├── fuzz.py             # Buzz Saw — Fuzz (1U)
 │           ├── granular_freeze.py  # Snow Globe — Granular Freeze (1U)
 │           ├── gated_reverb.py     # Gate Crasher — Gated Reverb (1U)
 │           ├── stutter.py          # Broken Record — Stutter (1U)
@@ -851,11 +851,11 @@ All of the following are available for MIDI mapping:
 | **Parrot Talk** (Chorus) | Enable, Rate, Depth, Feedback, Mix |
 | **Jet Stream** (Flanger) | Enable, Rate, Depth, Feedback, Mix |
 | **Byte Me** (Bit Crusher) | Enable, Bit Depth, Sample Rate Reduction, Mix |
-| **Hot Snake** (Overdrive) | Enable, Drive, Tone, Bias, Mix |
+| **Glow Worm** (Overdrive) | Enable, Drive, Tone, Bias, Mix |
 | **Reel Deal** (Reel-to-Reel) | Enable, Saturation, Flutter, Bias, Tone, Speed |
 | **Mixtape** (Cassette Tape) | Enable, Saturation, Hiss, Punch, Warp, Tone |
 | **Tracking Shot** (VHS) | Enable, Wobble, Dropout, Character, Noise |
-| **Wax Poetic** (Vinyl) | Enable, Crackle, Warmth, Groove Wear |
+| **Needle Drop** (Vinyl) | Enable, Crackle, Warmth, Groove Wear |
 | **Spring Fling** (Reverb) | Enable, Decay, Damping, Pre-Delay, Mix |
 | **Echo Chamber** (Reverb) | Enable, Room Size, Decay, Diffusion, Mix |
 | **Thrust Issues** (Compressor) | Enable, Threshold, Ratio, Attack, Release, Makeup, Sidechain HPF |
@@ -866,7 +866,7 @@ All of the following are available for MIDI mapping:
 | **All Buttons In** (FET Limiter) | Enable, Input, Output, Attack, Release, Mix |
 | **Vitamin E** (Exciter) | Enable, Tune, Lo Tune, Output, Mix |
 | **Punch Card** (Transient Shaper) | Enable, Attack, Sustain, Output, Mix |
-| **The Bode Plot** (Freq Shifter) | Enable, Shift, Feedback, Mix |
+| **Lil Freq** (Freq Shifter) | Enable, Shift, Feedback, Mix |
 | **Ring Leader** (Ring Mod) | Enable, Frequency, Shape, Mix |
 | **Spin Cycle** (Rotary) | Enable, Speed, Drive, Balance, Mix |
 | **Personal Space** (Stereo Widener) | Enable, Width, Center, Lo Mono, Mix |
@@ -876,7 +876,7 @@ All of the following are available for MIDI mapping:
 | **Stained Glass** (Shimmer Reverb) | Enable, Decay, Shimmer, Damping, Mix |
 | **Tin Can** (Lo-Fi Radio) | Enable, Noise, Wobble, Lo Cut, Hi Cut, Mix |
 | **Pendulum** (Auto Pan) | Enable, Rate, Depth, Shape, Mix |
-| **Wool Over** (Fuzz) | Enable, Drive, Tone, Gate, Mix |
+| **Buzz Saw** (Fuzz) | Enable, Drive, Tone, Gate, Mix |
 | **Snow Globe** (Granular Freeze) | Enable, Grain Size, Scatter, Spread, Density, Freeze, Mix |
 | **Gate Crasher** (Gated Reverb) | Enable, Room, Gate Time, Slope, Pre-Delay, Mode, Mix |
 | **Broken Record** (Stutter) | Enable, Size, Rate, Chaos, Smear, Trigger, Mix |
@@ -1023,11 +1023,11 @@ Each FX group has a curated default loadout:
 | **Parrot Talk** | Modulation | Chorus with rate, depth, feedback, and mix |
 | **Jet Stream** | Modulation | Flanger with rate, depth, feedback, and mix |
 | **Byte Me** | Distortion | Bit crusher — bit depth, sample rate reduction, mix |
-| **Hot Snake** | Distortion | Tube overdrive — drive, tone, bias, mix |
+| **Glow Worm** | Distortion | Tube overdrive — drive, tone, bias, mix |
 | **Reel Deal** | Lo-Fi / Tape | Studio reel-to-reel — saturation, flutter, bias, tone, tape speed |
 | **Mixtape** | Lo-Fi / Tape | Home cassette tape — saturation, hiss, punch, warp, tone |
 | **Tracking Shot** | Lo-Fi / Media | VHS degradation — wobble, dropout, worn character, noise |
-| **Wax Poetic** | Lo-Fi / Media | Vinyl record — crackle, pops, warmth, groove wear |
+| **Needle Drop** | Lo-Fi / Media | Vinyl record — crackle, pops, warmth, groove wear |
 | **Spring Fling** | Reverb | Plate/spring reverb — decay, damping, pre-delay, mix |
 | **Echo Chamber** | Reverb | Hall/room reverb — room size, decay, diffusion, mix, room type |
 | **Thrust Issues** | Dynamics | Sidechain compressor — threshold, ratio, attack, release, makeup, HPF sidechain filter |
@@ -1041,7 +1041,7 @@ Each FX group has a curated default loadout:
 | **All Buttons In** | Dynamics | FET limiter — input drive, output, attack, release, mix |
 | **Vitamin E** | Enhancement | Aural exciter — high-frequency tune, low-frequency tune, output, mix |
 | **Punch Card** | Enhancement | Transient shaper — attack boost/cut, sustain boost/cut, output, mix |
-| **The Bode Plot** | Modulation | Frequency shifter (SSB) — shift (Hz), feedback, mix |
+| **Lil Freq** | Modulation | Frequency shifter (SSB) — shift (Hz), feedback, mix |
 | **Ring Leader** | Modulation | Ring modulator — carrier frequency, shape, mix |
 | **Spin Cycle** | Modulation | Rotary speaker — speed, drive, horn/drum balance, mix |
 | **Personal Space** | Enhancement | Stereo widener — width, center, low-frequency mono crossover, mix |
@@ -1051,7 +1051,7 @@ Each FX group has a curated default loadout:
 | **Stained Glass** | Reverb | Shimmer reverb — decay, shimmer pitch-shift amount, damping, mix |
 | **Tin Can** | Lo-Fi | Lo-fi radio — noise, wobble, lo-cut/hi-cut filters, mix |
 | **Pendulum** | Modulation | Auto-panner — rate, depth, shape, mix |
-| **Wool Over** | Distortion | Fuzz — drive, tone, gate, mix |
+| **Buzz Saw** | Distortion | Fuzz — drive, tone, gate, mix |
 | **Snow Globe** | Pitch / Texture | Granular freeze processor — grain size, scatter, pitch spread, density, freeze toggle, mix |
 | **Gate Crasher** | Reverb | Gated/reverse reverb — room size, gate time, slope, pre-delay, gate/reverse mode toggle, mix |
 | **Broken Record** | Glitch | Stutter/glitch buffer looper — loop size, retrigger rate, chaos, smear, trigger toggle, mix |

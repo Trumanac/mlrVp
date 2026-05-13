@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QTextBrowser, QPushButton, QButtonGroup, QLabel,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QIcon
+from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
 
 from mlrvp.gui.views.channel_view import ChannelView
 from mlrvp.gui.views.mixer_view import MixerView
@@ -18,6 +18,7 @@ from mlrvp.gui.views.tools_view import ToolsView, LibraryPanel
 from mlrvp.gui.views.master_filter_view import MasterFilterView
 from mlrvp.gui.widgets.virtual_grid import VirtualGridWidget
 from mlrvp.gui.widgets.fader import ControlDisplaySettings
+from mlrvp.gui.widgets.song_recorder_panel import SongRecorderPanel
 from mlrvp.gui.styles import get_stylesheet, BG_BLACK
 
 
@@ -221,6 +222,9 @@ class MainWindow(QMainWindow):
         self._mixer_view = MixerView()
         right_layout.addWidget(self._mixer_view)
 
+        self._song_recorder_panel = SongRecorderPanel()
+        right_layout.addWidget(self._song_recorder_panel)
+
         right_panel.setMinimumWidth(400)
         right_panel.setMaximumWidth(600)
         self._main_splitter.addWidget(right_panel)
@@ -406,15 +410,44 @@ class MainWindow(QMainWindow):
 
     def _on_about(self):
         from mlrvp import __version__ as _ver
-        QMessageBox.about(
-            self, "About mlrVp",
-            "<h2>mlrVp</h2>"
-            "<p>A modern Python recreation of mlrV2.2</p>"
-            "<p>Based on the original Max/MSP mlrV by<br>"
+        import os
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("About mlrVp")
+        dlg.setFixedWidth(420)
+
+        outer = QHBoxLayout(dlg)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.setSpacing(20)
+
+        # Logo on the left
+        icon_path = os.path.join(os.path.dirname(__file__), "..", "resources", "icon.png")
+        icon_path = os.path.normpath(icon_path)
+        if os.path.exists(icon_path):
+            pix = QPixmap(icon_path).scaled(
+                96, 96,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            icon_label = QLabel()
+            icon_label.setPixmap(pix)
+            icon_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+            outer.addWidget(icon_label)
+
+        # Text on the right
+        text_label = QLabel(
+            "<h2 style='margin:0 0 6px 0'>mlrVp</h2>"
+            "<p style='margin:0 0 4px 0'>A modern Python recreation of mlrV2.2</p>"
+            "<p style='margin:0 0 4px 0'>Based on the original Max/MSP mlrV by<br>"
             "trent gill &amp; friends at monome.org</p>"
-            "<p>Rebuilt with PySide6, sounddevice, and numpy.</p>"
+            "<p style='margin:0 0 4px 0'>Rebuilt with PySide6, sounddevice, and numpy.</p>"
             f"<p><b>Version {_ver}</b></p>"
         )
+        text_label.setWordWrap(True)
+        text_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        outer.addWidget(text_label, 1)
+
+        dlg.exec()
 
     def _on_howto(self):
         """Show a scrollable How-to-Use guide popup (non-modal — drag it around freely)."""
@@ -455,6 +488,10 @@ class MainWindow(QMainWindow):
     @property
     def master_filter_view(self) -> MasterFilterView:
         return self._master_filter_view
+
+    @property
+    def song_recorder_panel(self) -> SongRecorderPanel:
+        return self._song_recorder_panel
 
     @property
     def effects_view(self) -> EffectsView:

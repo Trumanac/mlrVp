@@ -112,37 +112,45 @@ class LiveLoopRecorder:
         tempo = max(20.0, min(300.0, float(tempo)))
         duration_sec = bars * 4 * (60.0 / tempo)
 
+        # --- Allocate outside the lock to avoid blocking the audio thread.
+        # The audio thread acquires self._lock on every process() call, so
+        # holding it across a multi-MB malloc (fresh buffer) or large copy
+        # (overdub) causes an audible dropout.  Only the final state swap
+        # goes inside the lock (identical pattern to SampRecorder.arm()).
+        if overdub_buffer is not None and overdub_buffer.size > 0:
+            # Overdub: copy source buffer as starting contents, match its length
+            src = overdub_buffer
+            if src.ndim == 1:
+                src = np.column_stack([src, src])
+            elif src.shape[1] == 1:
+                src = np.column_stack([src[:, 0], src[:, 0]])
+            elif src.shape[1] > 2:
+                src = src[:, :2]  # discard extra channels — buffer is always stereo
+
+            num_frames = src.shape[0]
+            buf_data = src.astype(np.float32, copy=True)
+            new_buffer = SampleBuffer(
+                data=buf_data,
+                sample_rate=self.sr,
+                num_frames=num_frames,
+                num_channels=2,
+                filename=f"live_row{self.row:02d}_overdub",
+                duration_sec=num_frames / self.sr,
+            )
+            _is_overdub = True
+            _target_frames = num_frames
+        else:
+            # Fresh recording
+            new_buffer = create_empty_buffer(
+                duration_sec, num_channels=2, sample_rate=self.sr
+            )
+            _is_overdub = False
+            _target_frames = new_buffer.num_frames
+
         with self._lock:
-            if overdub_buffer is not None and overdub_buffer.size > 0:
-                # Overdub: copy source buffer as starting contents, match its length
-                src = overdub_buffer
-                if src.ndim == 1:
-                    src = np.column_stack([src, src])
-                elif src.shape[1] == 1:
-                    src = np.column_stack([src[:, 0], src[:, 0]])
-                elif src.shape[1] > 2:
-                    src = src[:, :2]  # discard extra channels — buffer is always stereo
-
-                num_frames = src.shape[0]
-                buf_data = src.astype(np.float32, copy=True)
-                self._buffer = SampleBuffer(
-                    data=buf_data,
-                    sample_rate=self.sr,
-                    num_frames=num_frames,
-                    num_channels=2,
-                    filename=f"live_row{self.row:02d}_overdub",
-                    duration_sec=num_frames / self.sr,
-                )
-                self._is_overdub = True
-                self._target_frames = num_frames
-            else:
-                # Fresh recording
-                self._buffer = create_empty_buffer(
-                    duration_sec, num_channels=2, sample_rate=self.sr
-                )
-                self._is_overdub = False
-                self._target_frames = self._buffer.num_frames
-
+            self._buffer = new_buffer
+            self._is_overdub = _is_overdub
+            self._target_frames = _target_frames
             self._write_pos = 0
             self._thru = bool(thru)
             self._state = _RecState.ARMED

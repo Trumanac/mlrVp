@@ -1,0 +1,47 @@
+{
+  "version": "1.0.0",
+  "name": "Drums - TAPE",
+  "modules": [
+    {
+      "effect_type": "vu_meter",
+      "state": {}
+    },
+    {
+      "effect_type": "glue_compressor",
+      "state": {
+        "enabled": true,
+        "threshold": 0.0,
+        "ratio_idx": 1,
+        "attack_idx": 2,
+        "release_idx": 1,
+        "makeup_gain": 0.0,
+        "hpf_idx": 0,
+        "fx_route": 1
+      }
+    },
+    {
+      "effect_type": "transient_shaper",
+      "state": {
+        "enabled": true,
+        "attack_shape": 0.0,
+        "sustain_shape": 0.0,
+        "output": 0.0,
+        "stereo_link": true,
+        "fx_route": 0
+      }
+    },
+    {
+      "effect_type": "cassette_tape",
+      "state": {
+        "enabled": true,
+        "saturation": 0.5,
+        "hiss": 0.3,
+        "punch": 0.5,
+        "warp": 0.2,
+        "tone": 0.55,
+        "mix": 0.5,
+        "fx_route": 1
+      }
+    }
+  ]
+}
