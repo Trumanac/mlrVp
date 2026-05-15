@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — vintage radio: olive/rust/cream ─────────────────────────
 _FACE   = "#141210"   # dark olive brown
@@ -23,7 +24,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _CREAM) -> QVBoxLayout:
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -39,7 +40,7 @@ class _RadioLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(24, 22)
+        bind_fixed_size(self, 24, 22)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -84,7 +85,7 @@ class _BandSelector(QWidget):
         self._btns = []
         for i, label in enumerate(self._BANDS):
             btn = QPushButton(label)
-            btn.setFixedSize(28, 14)
+            bind_fixed_size(btn, 28, 14)
             btn.setCheckable(True)
             btn.setChecked(i == 0)
             btn.clicked.connect(lambda checked, idx=i: self._select(idx))
@@ -168,7 +169,7 @@ class LoFiRadioModule(RackModuleBase):
         band_col.setSpacing(0)
         band_col.setContentsMargins(0, 0, 0, 0)
         band_lbl = QLabel("BAND")
-        band_lbl.setFixedHeight(10)
+        bind_fixed_height(band_lbl, 10)
         band_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         band_lbl.setStyleSheet(
             f"color: {_DIM}; font-size: 6px; font-weight: bold;"

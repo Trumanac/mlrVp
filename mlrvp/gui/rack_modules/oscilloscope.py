@@ -12,6 +12,7 @@ from PySide6.QtGui import (
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_size, bind_min_size
 
 _FACE = "#080808"
 _PHOSPHOR = "#33ff66"         # Classic green phosphor
@@ -28,7 +29,7 @@ class _PulseLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(26, 18)
+        bind_fixed_size(self, 26, 18)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -53,7 +54,7 @@ class _CRTDisplay(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(160, 80)
+        bind_min_size(self, 160, 80)
         self._buffer_l = collections.deque([0.0] * _BUFFER_LEN, maxlen=_BUFFER_LEN)
         self._buffer_r = collections.deque([0.0] * _BUFFER_LEN, maxlen=_BUFFER_LEN)
         self._buf_lock = threading.Lock()
@@ -239,7 +240,7 @@ class OscilloscopeModule(RackModuleBase):
         # Mode selector
         self._mode_combo = QComboBox()
         self._mode_combo.addItems(_MODES)
-        self._mode_combo.setFixedSize(70, 18)
+        bind_fixed_size(self._mode_combo, 70, 18)
         self._mode_combo.setStyleSheet(
             f"QComboBox {{ background: #111; color: {_PHOSPHOR}; font-size: 8px;"
             "border: 1px solid #333; border-radius: 2px; }"

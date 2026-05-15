@@ -32,6 +32,7 @@ from mlrvp.gui.styles import (
 )
 from mlrvp.gui.widgets.waveform import WaveformWidget
 from mlrvp.gui.widgets.fader import HorizontalFader, RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width, bind_max_width, bind_min_height, bind_min_width
 
 
 # ── Gain-fader dB helpers ────────────────────────────────────────────────
@@ -116,7 +117,7 @@ class ChannelStrip(QFrame):
             div.setFrameShape(QFrame.Shape.VLine)
             div.setFrameShadow(QFrame.Shadow.Plain)
             div.setStyleSheet(f"background: {SEPARATOR}; max-width: 1px;")
-            div.setFixedWidth(1)
+            bind_fixed_width(div, 1)
             return div
 
         def _section(label_text, *widgets, inner_spacing=2):
@@ -126,7 +127,7 @@ class ChannelStrip(QFrame):
             vb.setSpacing(0)
             lbl = QLabel(label_text)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setFixedHeight(10)
+            bind_fixed_height(lbl, 10)
             lbl.setStyleSheet(
                 f"color: {TEXT_SECONDARY}; font-size: 7px; background: transparent;"
             )
@@ -145,7 +146,7 @@ class ChannelStrip(QFrame):
 
         # Group color indicator bar (left edge)
         self._group_bar = QFrame()
-        self._group_bar.setFixedSize(4, 20)
+        bind_fixed_size(self._group_bar, 4, 20)
         self._group_bar.setStyleSheet(f"background: {GROUP_COLORS[0]};")
         top_row.addWidget(self._group_bar)
         self._current_group_idx = 0
@@ -154,7 +155,7 @@ class ChannelStrip(QFrame):
 
         # Row number
         self._row_label = QLabel(f"{row + 1}")
-        self._row_label.setFixedWidth(14)
+        bind_fixed_width(self._row_label, 14)
         self._row_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._row_label.setStyleSheet(
             f"color: {TEXT_PRIMARY}; font-weight: bold; font-size: 11px; background: transparent;"
@@ -164,8 +165,8 @@ class ChannelStrip(QFrame):
         # Clickable sample name label
         self._sample_name = QPushButton("(no sample)")
         self._sample_name.setFlat(True)
-        self._sample_name.setFixedHeight(20)
-        self._sample_name.setMinimumWidth(60)
+        bind_fixed_height(self._sample_name, 20)
+        bind_min_width(self._sample_name, 60)
         self._sample_name.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._sample_name.setStyleSheet(
             f"QPushButton {{ color: {TEXT_SECONDARY}; font-size: 9px; "
@@ -176,7 +177,7 @@ class ChannelStrip(QFrame):
         self._sample_name.clicked.connect(self._show_sample_menu)
 
         self._load_btn = QPushButton("LOAD")
-        self._load_btn.setFixedSize(40, 20)
+        bind_fixed_size(self._load_btn, 40, 20)
         self._load_btn.setToolTip("Load sample")
         self._load_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_GOLD}; "
@@ -191,7 +192,7 @@ class ChannelStrip(QFrame):
         _ss_vb.setContentsMargins(2, 0, 2, 0)
         _ss_vb.setSpacing(0)
         _ss_lbl = QLabel("SAMPLE")
-        _ss_lbl.setFixedHeight(10)
+        bind_fixed_height(_ss_lbl, 10)
         _ss_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
         _ss_lbl.setStyleSheet(
             f"color: {TEXT_SECONDARY}; font-size: 7px; background: transparent;"
@@ -219,8 +220,8 @@ class ChannelStrip(QFrame):
         ]
         self._mode_combo = QComboBox()
         self._mode_combo.addItems([label for label, _ in self._mode_map])
-        self._mode_combo.setFixedHeight(20)
-        self._mode_combo.setMaximumWidth(48)
+        bind_fixed_height(self._mode_combo, 20)
+        bind_max_width(self._mode_combo, 48)
         self._mode_combo.setStyleSheet(
             f"QComboBox {{ font-size: 10px; padding: 2px 4px; color: {TEXT_PRIMARY}; }}"
             f"QComboBox QAbstractItemView {{ min-width: 56px; }}"
@@ -234,7 +235,7 @@ class ChannelStrip(QFrame):
         self._rev_btn = QPushButton("REV")
         self._rev_btn.setCheckable(True)
         self._rev_btn.setChecked(False)
-        self._rev_btn.setFixedSize(30, 20)
+        bind_fixed_size(self._rev_btn, 30, 20)
         self._rev_btn.setToolTip("Reverse one-shot — play backwards from the triggered position")
         self._rev_btn.setStyleSheet(
             f"QPushButton {{ background: #1a1a1a; color: {TEXT_SECONDARY}; "
@@ -249,7 +250,7 @@ class ChannelStrip(QFrame):
         self._hold_btn = QPushButton("HOLD")
         self._hold_btn.setCheckable(True)
         self._hold_btn.setChecked(False)
-        self._hold_btn.setFixedSize(34, 20)
+        bind_fixed_size(self._hold_btn, 34, 20)
         self._hold_btn.setToolTip("Hold — loop one-shot while grid button is held")
         self._hold_btn.setStyleSheet(
             f"QPushButton {{ background: #1a1a1a; color: {TEXT_SECONDARY}; "
@@ -268,7 +269,7 @@ class ChannelStrip(QFrame):
         for i in range(NUM_GROUPS):
             color = GROUP_COLORS[i % len(GROUP_COLORS)]
             btn = QPushButton(str(i + 1))
-            btn.setFixedSize(18, 20)
+            bind_fixed_size(btn, 18, 20)
             btn.setCheckable(True)
             btn.setChecked(i == 0)
             btn.setStyleSheet(
@@ -286,7 +287,7 @@ class ChannelStrip(QFrame):
 
         self._gain_fader = HorizontalFader(default_value=_UNITY_POS)
         self._gain_fader.set_value(_UNITY_POS)  # 0 dB unity
-        self._gain_fader.setFixedWidth(80)
+        bind_fixed_width(self._gain_fader, 80)
         self._gain_fader.set_formatter(_gain_db_label)
         self._gain_fader.value_changed.connect(
             lambda v: self.param_changed.emit(self._row, "gain", _fader_to_gain(v))
@@ -301,8 +302,8 @@ class ChannelStrip(QFrame):
         self._speed_spin.setSingleStep(0.1)
         self._speed_spin.setValue(1.0)
         self._speed_spin.setDecimals(2)
-        self._speed_spin.setFixedWidth(64)
-        self._speed_spin.setFixedHeight(20)
+        bind_fixed_width(self._speed_spin, 64)
+        bind_fixed_height(self._speed_spin, 20)
         self._speed_spin.setSuffix("x")
         self._speed_spin.setStyleSheet(
             f"QDoubleSpinBox {{ font-size: 10px; color: {TEXT_PRIMARY}; "
@@ -326,13 +327,13 @@ class ChannelStrip(QFrame):
             f"QPushButton:hover {{ color: {TEXT_PRIMARY}; border-color: #79b1ff; }}"
         )
         self._half_btn = QPushButton("-½")
-        self._half_btn.setFixedSize(28, 20)
+        bind_fixed_size(self._half_btn, 28, 20)
         self._half_btn.setToolTip("Halve speed (double sample length)")
         self._half_btn.setStyleSheet(rate_btn_style)
         self._half_btn.clicked.connect(self._on_half_speed)
 
         self._double_btn = QPushButton("+2x")
-        self._double_btn.setFixedSize(28, 20)
+        bind_fixed_size(self._double_btn, 28, 20)
         self._double_btn.setToolTip("Double speed (halve sample length)")
         self._double_btn.setStyleSheet(rate_btn_style)
         self._double_btn.clicked.connect(self._on_double_speed)
@@ -345,8 +346,8 @@ class ChannelStrip(QFrame):
         self._pitch_spin = QSpinBox()
         self._pitch_spin.setRange(-24, 24)
         self._pitch_spin.setValue(0)
-        self._pitch_spin.setFixedWidth(56)
-        self._pitch_spin.setFixedHeight(20)
+        bind_fixed_width(self._pitch_spin, 56)
+        bind_fixed_height(self._pitch_spin, 20)
         self._pitch_spin.setSuffix(" st")
         self._pitch_spin.setToolTip("Transpose in semitones (–24 to +24)")
         self._pitch_spin.setStyleSheet(
@@ -371,8 +372,8 @@ class ChannelStrip(QFrame):
         self._pitch_root_spin = QSpinBox()
         self._pitch_root_spin.setRange(-24, 24)
         self._pitch_root_spin.setValue(0)
-        self._pitch_root_spin.setFixedWidth(56)
-        self._pitch_root_spin.setFixedHeight(20)
+        bind_fixed_width(self._pitch_root_spin, 56)
+        bind_fixed_height(self._pitch_root_spin, 20)
         self._pitch_root_spin.setSuffix(" st")
         self._pitch_root_spin.setToolTip("Root pitch offset in semitones")
         self._pitch_root_spin.setStyleSheet(
@@ -399,8 +400,8 @@ class ChannelStrip(QFrame):
         # SCALE section — scale combo + HOLD toggle, visible only in PTCH mode
         self._pitch_scale_combo = QComboBox()
         self._pitch_scale_combo.addItems(PITCH_SCALE_NAMES)
-        self._pitch_scale_combo.setFixedHeight(20)
-        self._pitch_scale_combo.setMaximumWidth(72)
+        bind_fixed_height(self._pitch_scale_combo, 20)
+        bind_max_width(self._pitch_scale_combo, 72)
         self._pitch_scale_combo.setStyleSheet(
             f"QComboBox {{ font-size: 10px; padding: 2px 6px; color: {TEXT_PRIMARY}; }}"
             f"QComboBox QAbstractItemView {{ min-width: 80px; }}"
@@ -409,7 +410,7 @@ class ChannelStrip(QFrame):
             lambda idx: self.param_changed.emit(self._row, "pitch_scale", idx)
         )
         self._pitch_loop_btn = QPushButton("LOOP")
-        self._pitch_loop_btn.setFixedSize(38, 20)
+        bind_fixed_size(self._pitch_loop_btn, 38, 20)
         self._pitch_loop_btn.setCheckable(True)
         self._pitch_loop_btn.setToolTip("Loop sample continuously on each pitch trigger")
         self._pitch_loop_btn.setStyleSheet(
@@ -430,8 +431,8 @@ class ChannelStrip(QFrame):
         self._steps_spin = QSpinBox()
         self._steps_spin.setRange(1, 32)
         self._steps_spin.setValue(8)
-        self._steps_spin.setFixedWidth(52)
-        self._steps_spin.setFixedHeight(20)
+        bind_fixed_width(self._steps_spin, 52)
+        bind_fixed_height(self._steps_spin, 20)
         self._steps_spin.setToolTip("Number of steps (slices) — maps grid buttons to sample positions")
         self._steps_spin.setStyleSheet(
             f"QSpinBox {{ font-size: 10px; color: {TEXT_PRIMARY}; "
@@ -455,8 +456,8 @@ class ChannelStrip(QFrame):
         self._seq_div_combo = QComboBox()
         self._seq_div_combo.addItems(SEQ_STEP_DIV_NAMES)
         self._seq_div_combo.setCurrentIndex(SEQ_STEP_DIV_DEFAULT)
-        self._seq_div_combo.setFixedHeight(20)
-        self._seq_div_combo.setMaximumWidth(64)
+        bind_fixed_height(self._seq_div_combo, 20)
+        bind_max_width(self._seq_div_combo, 64)
         self._seq_div_combo.setToolTip("SEQ step rate: how long each step lasts")
         self._seq_div_combo.setStyleSheet(
             f"QComboBox {{ font-size: 10px; padding: 2px 4px; color: {TEXT_PRIMARY}; }}"
@@ -468,6 +469,36 @@ class ChannelStrip(QFrame):
         self._seq_div_section = _section("DIV", self._seq_div_combo)
         self._seq_div_section.setVisible(False)
         top_row.addWidget(self._seq_div_section)
+
+        # SEQ swing spinbox — visible only in SEQ mode
+        self._seq_swing_spin = QSpinBox()
+        self._seq_swing_spin.setRange(50, 75)
+        self._seq_swing_spin.setValue(50)
+        self._seq_swing_spin.setSuffix("%")
+        self._seq_swing_spin.setSingleStep(1)
+        bind_fixed_width(self._seq_swing_spin, 52)
+        bind_fixed_height(self._seq_swing_spin, 20)
+        self._seq_swing_spin.setToolTip(
+            "SEQ swing: 50%=straight, 67%=triplet/shuffle, 75%=heavy dotted swing"
+        )
+        self._seq_swing_spin.setStyleSheet(
+            f"QSpinBox {{ font-size: 10px; color: {TEXT_PRIMARY}; "
+            f"padding-left: 2px; background: {BG_BLACK}; border: 1px solid {SEPARATOR}; }}"
+            f"QSpinBox::up-button {{ width: 16px; background: {BG_BLACK}; "
+            f"border: none; border-left: 1px solid {SEPARATOR}; "
+            f"subcontrol-origin: border; subcontrol-position: top right; }}"
+            f"QSpinBox::down-button {{ width: 16px; background: {BG_BLACK}; "
+            f"border: none; border-left: 1px solid {SEPARATOR}; "
+            f"subcontrol-origin: border; subcontrol-position: bottom right; }}"
+            f"QSpinBox::up-arrow {{ image: url({_ARROW_UP}); width: 8px; height: 5px; }}"
+            f"QSpinBox::down-arrow {{ image: url({_ARROW_DOWN}); width: 8px; height: 5px; }}"
+        )
+        self._seq_swing_spin.valueChanged.connect(
+            lambda v: self.param_changed.emit(self._row, "seq_swing", v)
+        )
+        self._seq_swing_section = _section("SWING", self._seq_swing_spin)
+        self._seq_swing_section.setVisible(False)
+        top_row.addWidget(self._seq_swing_section)
 
         top_row.addWidget(_vdiv())
 
@@ -481,7 +512,7 @@ class ChannelStrip(QFrame):
             return f"{int(round(freq))} Hz" if freq < 1000 else f"{freq/1000:.1f} kHz"
 
         self._ch_hp_knob = RotaryKnob(color="#ff9944", default_value=0.0)
-        self._ch_hp_knob.setFixedSize(28, 28)
+        bind_fixed_size(self._ch_hp_knob, 28, 28)
         self._ch_hp_knob.set_value(0.0)
         self._ch_hp_knob.setToolTip("High-pass filter: 0=open (20 Hz), 1=closed (8 kHz)")
         self._ch_hp_knob.set_formatter(_hz_label_hp)
@@ -495,12 +526,12 @@ class ChannelStrip(QFrame):
         _hp_vb.addWidget(self._ch_hp_knob, alignment=Qt.AlignmentFlag.AlignCenter)
         _hp_sub = QLabel("HP")
         _hp_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        _hp_sub.setFixedHeight(8)
+        bind_fixed_height(_hp_sub, 8)
         _hp_sub.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 7px; background: transparent;")
         _hp_vb.addWidget(_hp_sub)
 
         self._ch_lp_knob = RotaryKnob(color="#79b1ff", inverted=True, default_value=0.0, drag_inverted=True)
-        self._ch_lp_knob.setFixedSize(28, 28)
+        bind_fixed_size(self._ch_lp_knob, 28, 28)
         self._ch_lp_knob.set_value(0.0)
         self._ch_lp_knob.setToolTip("Low-pass filter: 0=open (20 kHz), 1=closed (200 Hz)")
         self._ch_lp_knob.set_formatter(_hz_label_lp)
@@ -514,7 +545,7 @@ class ChannelStrip(QFrame):
         _lp_vb.addWidget(self._ch_lp_knob, alignment=Qt.AlignmentFlag.AlignCenter)
         _lp_sub = QLabel("LP")
         _lp_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        _lp_sub.setFixedHeight(8)
+        bind_fixed_height(_lp_sub, 8)
         _lp_sub.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 7px; background: transparent;")
         _lp_vb.addWidget(_lp_sub)
 
@@ -529,7 +560,7 @@ class ChannelStrip(QFrame):
             return f"{'R' if v > 0.5 else 'L'}{pct}"
 
         self._pan_knob = RotaryKnob(color="#aaddaa", default_value=0.5)
-        self._pan_knob.setFixedSize(28, 28)
+        bind_fixed_size(self._pan_knob, 28, 28)
         self._pan_knob.set_value(0.5)
         self._pan_knob.setToolTip("Pan: left (L) to right (R), double-click to reset to centre")
         self._pan_knob.set_formatter(_pan_label)
@@ -540,7 +571,7 @@ class ChannelStrip(QFrame):
         top_row.addWidget(_vdiv())
 
         self._mute_btn = QPushButton("MUTE")
-        self._mute_btn.setFixedSize(44, 20)
+        bind_fixed_size(self._mute_btn, 44, 20)
         self._mute_btn.setCheckable(True)
         self._mute_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {SEPARATOR}; "
@@ -554,7 +585,7 @@ class ChannelStrip(QFrame):
         )
 
         self._solo_btn = QPushButton("SOLO")
-        self._solo_btn.setFixedSize(36, 20)
+        bind_fixed_size(self._solo_btn, 36, 20)
         self._solo_btn.setCheckable(True)
         self._solo_btn.setToolTip("Solo this channel — silences all other channels")
         self._solo_btn.setStyleSheet(
@@ -570,7 +601,7 @@ class ChannelStrip(QFrame):
         )
 
         self._stop_btn = QPushButton("STOP")
-        self._stop_btn.setFixedSize(36, 20)
+        bind_fixed_size(self._stop_btn, 36, 20)
         self._stop_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {SEPARATOR}; "
             f"border: 1px solid {SEPARATOR}; font-size: 8px; font-weight: bold; "
@@ -601,7 +632,7 @@ class ChannelStrip(QFrame):
 
         # ── Waveform display (full width below controls) ──
         self._waveform = WaveformWidget()
-        self._waveform.setMinimumHeight(60)
+        bind_min_height(self._waveform, 60)
         self._waveform.selection_changed.connect(
             lambda s, e: self.param_changed.emit(self._row, "selection", (s, e))
         )
@@ -621,7 +652,7 @@ class ChannelStrip(QFrame):
         # CFG toggle — shows/hides the per-strip LIVE settings panel
         self._live_cfg_btn = QPushButton("CFG")
         self._live_cfg_btn.setCheckable(True)
-        self._live_cfg_btn.setFixedSize(30, 20)
+        bind_fixed_size(self._live_cfg_btn, 30, 20)
         self._live_cfg_btn.setToolTip(
             "Show / hide LIVE settings (REC, source, bars, quantize, options, trim, after-rec, play-start)"
         )
@@ -657,7 +688,7 @@ class ChannelStrip(QFrame):
 
         # ── REC button (moved from inline LIVE section) ──
         self._live_rec_btn = QPushButton("●REC")
-        self._live_rec_btn.setFixedSize(40, 20)
+        bind_fixed_size(self._live_rec_btn, 40, 20)
         self._live_rec_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: #ff6666; "
             f"border: 1px solid #ff6666; font-size: 9px; font-weight: bold; "
@@ -680,8 +711,8 @@ class ChannelStrip(QFrame):
 
         # ── STATE badge (moved from inline LIVE section) ──
         self._live_status_label = QLabel("EMPTY")
-        self._live_status_label.setFixedHeight(20)
-        self._live_status_label.setFixedWidth(52)
+        bind_fixed_height(self._live_status_label, 20)
+        bind_fixed_width(self._live_status_label, 52)
         self._live_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._live_status_label.setStyleSheet(
             f"QLabel {{ color: {TEXT_SECONDARY}; background: {BG_BLACK}; "
@@ -696,7 +727,7 @@ class ChannelStrip(QFrame):
         # Group entries are filtered to the currently active group count via
         # set_active_groups() so users only see channels they can route to.
         self._live_src_btn = QPushButton(LIVE_SOURCE_NAMES[0])
-        self._live_src_btn.setFixedSize(62, 20)
+        bind_fixed_size(self._live_src_btn, 62, 20)
         self._live_src_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"border: 1px solid {SEPARATOR}; font-size: 9px; font-weight: bold; "
@@ -715,8 +746,8 @@ class ChannelStrip(QFrame):
         # ── TRIG: what fires recording when ARMED (PAD or AUDIO threshold) ──
         self._live_trig_combo = QComboBox()
         self._live_trig_combo.addItems(LIVE_ARM_TRIG_NAMES)
-        self._live_trig_combo.setFixedHeight(20)
-        self._live_trig_combo.setFixedWidth(52)
+        bind_fixed_height(self._live_trig_combo, 20)
+        bind_fixed_width(self._live_trig_combo, 52)
         self._live_trig_combo.setStyleSheet(
             f"QComboBox {{ font-size: 9px; padding: 2px 4px; color: {TEXT_PRIMARY}; }}"
         )
@@ -733,8 +764,8 @@ class ChannelStrip(QFrame):
         self._live_thrsh_spin.setRange(-60, 0)
         self._live_thrsh_spin.setValue(-30)
         self._live_thrsh_spin.setSuffix("dB")
-        self._live_thrsh_spin.setFixedWidth(60)
-        self._live_thrsh_spin.setFixedHeight(20)
+        bind_fixed_width(self._live_thrsh_spin, 60)
+        bind_fixed_height(self._live_thrsh_spin, 20)
         self._live_thrsh_spin.setToolTip(
             "Audio trigger threshold (dBFS) \u2014 recording starts when source "
             "bus peak exceeds this level"
@@ -765,7 +796,7 @@ class ChannelStrip(QFrame):
 
         # ── TRIM (visible only when SRC=INPUT) ──
         self._live_trim_fader = HorizontalFader(default_value=0.5)  # 0.5 = 1.0 trim
-        self._live_trim_fader.setFixedWidth(62)
+        bind_fixed_width(self._live_trim_fader, 62)
         self._live_trim_fader.set_formatter(lambda pos: f"{pos * 2.0:.2f}x")
         self._live_trim_fader.value_changed.connect(
             lambda v: self.live_param_changed.emit(self._row, "input_trim", v * 2.0)
@@ -779,8 +810,8 @@ class ChannelStrip(QFrame):
         self._live_bars_spin = QSpinBox()
         self._live_bars_spin.setRange(1, 32)
         self._live_bars_spin.setValue(4)
-        self._live_bars_spin.setFixedWidth(44)
-        self._live_bars_spin.setFixedHeight(20)
+        bind_fixed_width(self._live_bars_spin, 44)
+        bind_fixed_height(self._live_bars_spin, 20)
         self._live_bars_spin.setToolTip("Loop length in bars")
         self._live_bars_spin.setStyleSheet(
             f"QSpinBox {{ font-size: 10px; color: {TEXT_PRIMARY}; "
@@ -803,8 +834,8 @@ class ChannelStrip(QFrame):
         # ── QUANTIZE combo ──
         self._live_quant_combo = QComboBox()
         self._live_quant_combo.addItems(LIVE_QUANTIZE_NAMES)
-        self._live_quant_combo.setFixedHeight(20)
-        self._live_quant_combo.setFixedWidth(70)
+        bind_fixed_height(self._live_quant_combo, 20)
+        bind_fixed_width(self._live_quant_combo, 70)
         self._live_quant_combo.setToolTip(
             "Record quantize: when to begin recording after pressing REC\n"
             "IMMEDIATE: start at once  |  BEAT: wait for next beat  |  BAR: wait for next bar"
@@ -845,8 +876,8 @@ class ChannelStrip(QFrame):
         self._live_countin_spin = QSpinBox()
         self._live_countin_spin.setRange(0, 8)
         self._live_countin_spin.setValue(0)
-        self._live_countin_spin.setFixedWidth(44)
-        self._live_countin_spin.setFixedHeight(20)
+        bind_fixed_width(self._live_countin_spin, 44)
+        bind_fixed_height(self._live_countin_spin, 20)
         self._live_countin_spin.setToolTip("Count-in bars before recording starts (0 = none)")
         self._live_countin_spin.setStyleSheet(self._live_bars_spin.styleSheet())
         # CNTI is stored as bool (count_in) in LiveLoopState; treat any value > 0 as True.
@@ -870,8 +901,8 @@ class ChannelStrip(QFrame):
         self._live_aftr_combo = QComboBox()
         self._live_aftr_combo.addItems(LIVE_AFTER_REC_NAMES)
         self._live_aftr_combo.setCurrentIndex(2)  # REPL+STP default
-        self._live_aftr_combo.setFixedHeight(20)
-        self._live_aftr_combo.setFixedWidth(58)
+        bind_fixed_height(self._live_aftr_combo, 20)
+        bind_fixed_width(self._live_aftr_combo, 58)
         self._live_aftr_combo.setStyleSheet(self._live_quant_combo.styleSheet())
         self._live_aftr_combo.setToolTip(
             "After recording: LAYER (keep sources), REPLACE (mute sources),\n"
@@ -888,8 +919,8 @@ class ChannelStrip(QFrame):
         self._live_strt_combo = QComboBox()
         self._live_strt_combo.addItems(LIVE_PLAY_START_NAMES)
         self._live_strt_combo.setCurrentIndex(0)  # IMMED default
-        self._live_strt_combo.setFixedHeight(20)
-        self._live_strt_combo.setFixedWidth(58)
+        bind_fixed_height(self._live_strt_combo, 20)
+        bind_fixed_width(self._live_strt_combo, 58)
         self._live_strt_combo.setStyleSheet(self._live_quant_combo.styleSheet())
         self._live_strt_combo.setToolTip(
             "Play-start quantize for post-record trigger"
@@ -906,8 +937,8 @@ class ChannelStrip(QFrame):
         self._live_fade_spin.setRange(0, 50)
         self._live_fade_spin.setValue(10)
         self._live_fade_spin.setSuffix("ms")
-        self._live_fade_spin.setFixedWidth(50)
-        self._live_fade_spin.setFixedHeight(20)
+        bind_fixed_width(self._live_fade_spin, 50)
+        bind_fixed_height(self._live_fade_spin, 20)
         self._live_fade_spin.setToolTip("Fade-in / fade-out applied to the captured buffer")
         self._live_fade_spin.setStyleSheet(self._live_bars_spin.styleSheet())
         self._live_fade_spin.valueChanged.connect(
@@ -918,7 +949,7 @@ class ChannelStrip(QFrame):
 
         # ── EXPORT button ──
         self._live_export_btn = QPushButton("EXP")
-        self._live_export_btn.setFixedSize(28, 20)
+        bind_fixed_size(self._live_export_btn, 28, 20)
         self._live_export_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"border: 1px solid {SEPARATOR}; font-size: 9px; font-weight: bold; "
@@ -936,7 +967,7 @@ class ChannelStrip(QFrame):
 
         # ── SLC: send current loop to the Slicer tool ──
         self._live_to_slicer_btn = QPushButton("SLC")
-        self._live_to_slicer_btn.setFixedSize(28, 20)
+        bind_fixed_size(self._live_to_slicer_btn, 28, 20)
         self._live_to_slicer_btn.setStyleSheet(self._live_export_btn.styleSheet())
         self._live_to_slicer_btn.setToolTip(
             "Send the current loop to the Slicer tool (auto-saves a copy in data/slices/Live/)"
@@ -1138,6 +1169,7 @@ class ChannelStrip(QFrame):
         # STEP replaced by DIV in SEQ mode
         self._steps_section.setVisible(not is_pitch and not is_seq)
         self._seq_div_section.setVisible(is_seq)
+        self._seq_swing_section.setVisible(is_seq)
         # REV toggle only in SHOT mode
         self._rev_btn.setVisible(is_shot)
         self._hold_btn.setVisible(is_shot)
@@ -1193,12 +1225,12 @@ class ChannelStrip(QFrame):
         """Apply the group bar style, lit up when the live loop is playing."""
         color = GROUP_COLORS[self._current_group_idx % len(GROUP_COLORS)]
         if self._live_is_playing:
-            self._group_bar.setFixedWidth(6)
+            bind_fixed_width(self._group_bar, 6)
             self._group_bar.setStyleSheet(
                 f"background: {color}; border-right: 2px solid #ffffff;"
             )
         else:
-            self._group_bar.setFixedWidth(4)
+            bind_fixed_width(self._group_bar, 4)
             self._group_bar.setStyleSheet(f"background: {color};")
 
     def _on_speed_spin_changed(self, v):
@@ -1308,6 +1340,12 @@ class ChannelStrip(QFrame):
         self._steps_section.setVisible(not is_pitch and not is_seq)
         # STEP spinner enabled only when visible (not locked by SEQ/PITCH)
         self._steps_spin.setEnabled(not is_pitch and not is_seq)
+
+        # SEQ swing — visible only in SEQ mode
+        self._seq_swing_spin.blockSignals(True)
+        self._seq_swing_spin.setValue(max(50, min(75, state.seq_swing)))
+        self._seq_swing_spin.blockSignals(False)
+        self._seq_swing_section.setVisible(is_seq)
 
         # LIVE mode controls — sync from state.live
         is_live = state.mode == PlaybackMode.LIVE

@@ -78,8 +78,8 @@ class SliceWaveformWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(80)
-        self.setMaximumHeight(140)
+        bind_min_height(self, 80)
+        bind_max_height(self, 140)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -526,12 +526,12 @@ class SlicePanel(QFrame):
         file_row = QHBoxLayout()
         file_row.setSpacing(4)
         self._file_combo = QComboBox()
-        self._file_combo.setMinimumWidth(120)
+        bind_min_width(self._file_combo, 120)
         self._file_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._file_combo.currentIndexChanged.connect(self._on_file_selected)
         file_row.addWidget(self._file_combo)
         self._load_btn = QPushButton("LOAD")
-        self._load_btn.setFixedSize(50, 24)
+        bind_fixed_size(self._load_btn, 50, 24)
         self._load_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-weight: bold; font-size: 9px; border: 1px solid {SEPARATOR}; }}"
@@ -564,7 +564,7 @@ class SlicePanel(QFrame):
         self._start_spin.setSuffix("s")
         self._start_spin.setRange(0.0, 9999.0)
         self._start_spin.setSingleStep(0.001)
-        self._start_spin.setFixedWidth(80)
+        bind_fixed_width(self._start_spin, 80)
         self._start_spin.setStyleSheet(spin_style)
         self._start_spin.setToolTip("Selection start time in seconds (3 decimal places)")
         self._start_spin.valueChanged.connect(self._on_start_spin_changed)
@@ -578,7 +578,7 @@ class SlicePanel(QFrame):
         self._end_spin.setSuffix("s")
         self._end_spin.setRange(0.0, 9999.0)
         self._end_spin.setSingleStep(0.001)
-        self._end_spin.setFixedWidth(80)
+        bind_fixed_width(self._end_spin, 80)
         self._end_spin.setStyleSheet(spin_style)
         self._end_spin.setToolTip("Selection end time in seconds")
         self._end_spin.valueChanged.connect(self._on_end_spin_changed)
@@ -592,7 +592,7 @@ class SlicePanel(QFrame):
         self._dur_spin.setSuffix("s")
         self._dur_spin.setRange(0.0, 9999.0)
         self._dur_spin.setSingleStep(0.001)
-        self._dur_spin.setFixedWidth(80)
+        bind_fixed_width(self._dur_spin, 80)
         self._dur_spin.setStyleSheet(spin_style)
         self._dur_spin.setToolTip("Selection duration in seconds")
         self._dur_spin.valueChanged.connect(self._on_dur_spin_changed)
@@ -607,7 +607,7 @@ class SlicePanel(QFrame):
         )
         self._zx_btn = QPushButton("ZX")
         self._zx_btn.setCheckable(True)
-        self._zx_btn.setFixedSize(32, 22)
+        bind_fixed_size(self._zx_btn, 32, 22)
         self._zx_btn.setToolTip("Zero-crossing snap (auto-snap markers on release)")
         self._zx_btn.setStyleSheet(snap_btn_style)
         self._zx_btn.toggled.connect(self._on_zx_toggled)
@@ -616,7 +616,7 @@ class SlicePanel(QFrame):
         # Grid snap toggle
         self._grid_btn = QPushButton("GRID")
         self._grid_btn.setCheckable(True)
-        self._grid_btn.setFixedSize(40, 22)
+        bind_fixed_size(self._grid_btn, 40, 22)
         self._grid_btn.setToolTip("BPM-grid snap (snap markers to beat subdivisions)")
         self._grid_btn.setStyleSheet(snap_btn_style)
         self._grid_btn.toggled.connect(self._on_grid_toggled)
@@ -635,21 +635,21 @@ class SlicePanel(QFrame):
             f"QPushButton:hover {{ background: #333; }}"
         )
         self._play_btn = QPushButton("\u25B6")  # play triangle
-        self._play_btn.setFixedSize(36, 26)
+        bind_fixed_size(self._play_btn, 36, 26)
         self._play_btn.setStyleSheet(btn_style)
         self._play_btn.setToolTip("Play / Pause full sample (Space)")
         self._play_btn.clicked.connect(self._toggle_play)
         transport_row.addWidget(self._play_btn)
 
         self._stop_btn = QPushButton("\u25A0")  # stop square
-        self._stop_btn.setFixedSize(36, 26)
+        bind_fixed_size(self._stop_btn, 36, 26)
         self._stop_btn.setStyleSheet(btn_style)
         self._stop_btn.setToolTip("Stop playback")
         self._stop_btn.clicked.connect(self._stop_play)
         transport_row.addWidget(self._stop_btn)
 
         self._play_sel_btn = QPushButton("\u25B6 Sel")
-        self._play_sel_btn.setFixedSize(50, 26)
+        bind_fixed_size(self._play_sel_btn, 50, 26)
         self._play_sel_btn.setStyleSheet(btn_style)
         self._play_sel_btn.setToolTip(
             "Play the selected region through the cue output.\n"
@@ -674,13 +674,13 @@ class SlicePanel(QFrame):
 
         # Separator
         _tsep = QFrame()
-        _tsep.setFixedSize(1, 22)
+        bind_fixed_size(_tsep, 1, 22)
         _tsep.setStyleSheet(f"background: {SEPARATOR};")
         transport_row.addWidget(_tsep)
 
         # Bar-count selector for auto-loop
         self._bar_combo = QComboBox()
-        self._bar_combo.setFixedSize(60, 24)
+        bind_fixed_size(self._bar_combo, 60, 24)
         self._bar_combo.setStyleSheet(
             f"QComboBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 2px; }}"
@@ -695,7 +695,7 @@ class SlicePanel(QFrame):
 
         # Auto Loop button — snaps selection to musical loop
         self._auto_loop_btn = QPushButton("AUTO")
-        self._auto_loop_btn.setFixedSize(46, 26)
+        bind_fixed_size(self._auto_loop_btn, 46, 26)
         self._auto_loop_btn.setStyleSheet(
             f"QPushButton {{ background: {ACCENT_BLUE}; color: {BG_BLACK}; "
             f"font-weight: bold; font-size: 9px; border: none; }}"
@@ -719,7 +719,7 @@ class SlicePanel(QFrame):
 
         # Separator
         _bsep = QFrame()
-        _bsep.setFixedSize(1, 22)
+        bind_fixed_size(_bsep, 1, 22)
         _bsep.setStyleSheet(f"background: {SEPARATOR};")
         transport_row.addWidget(_bsep)
 
@@ -733,7 +733,7 @@ class SlicePanel(QFrame):
         self._bpm_spin.setValue(0.0)
         self._bpm_spin.setSpecialValueText("auto")
         self._bpm_spin.setSingleStep(0.5)
-        self._bpm_spin.setFixedSize(58, 24)
+        bind_fixed_size(self._bpm_spin, 58, 24)
         self._bpm_spin.setToolTip("Set target BPM (0 = auto-detect from audio)")
         self._bpm_spin.setStyleSheet(
             f"QDoubleSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
@@ -757,7 +757,7 @@ class SlicePanel(QFrame):
         self._cue_vol_fader = HorizontalFader(
             color=ACCENT_BLUE, default_value=0.5
         )
-        self._cue_vol_fader.setFixedSize(80, 20)
+        bind_fixed_size(self._cue_vol_fader, 80, 20)
         self._cue_vol_fader.set_value(0.5)  # 100 % (maps 0-1 → 0-200%)
         self._cue_vol_fader.setToolTip("Cue preview volume (0–200%)")
         self._cue_vol_fader.value_changed.connect(self._on_cue_vol_changed)
@@ -768,8 +768,8 @@ class SlicePanel(QFrame):
         cue_row.addWidget(cue_dev_lbl)
 
         self._cue_device_combo = QComboBox()
-        self._cue_device_combo.setFixedHeight(22)
-        self._cue_device_combo.setMinimumWidth(100)
+        bind_fixed_height(self._cue_device_combo, 22)
+        bind_min_width(self._cue_device_combo, 100)
         self._cue_device_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
@@ -786,7 +786,7 @@ class SlicePanel(QFrame):
         cue_row.addWidget(ch_lbl)
 
         self._cue_ch_combo = QComboBox()
-        self._cue_ch_combo.setFixedSize(50, 22)
+        bind_fixed_size(self._cue_ch_combo, 50, 22)
         self._cue_ch_combo.setStyleSheet(
             f"QComboBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 2px; }}"
@@ -801,7 +801,7 @@ class SlicePanel(QFrame):
         cue_row.addWidget(mode_lbl)
 
         self._cue_mode_combo = QComboBox()
-        self._cue_mode_combo.setFixedSize(80, 22)
+        bind_fixed_size(self._cue_mode_combo, 80, 22)
         self._cue_mode_combo.setStyleSheet(
             f"QComboBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 2px; }}"
@@ -835,7 +835,7 @@ class SlicePanel(QFrame):
         chop_row.addWidget(chop_lbl)
 
         self._chop_mode_combo = QComboBox()
-        self._chop_mode_combo.setFixedSize(80, 22)
+        bind_fixed_size(self._chop_mode_combo, 80, 22)
         self._chop_mode_combo.setStyleSheet(
             f"QComboBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 2px; }}"
@@ -860,7 +860,7 @@ class SlicePanel(QFrame):
         self._slices_spin = QSpinBox()
         self._slices_spin.setRange(2, 128)
         self._slices_spin.setValue(8)
-        self._slices_spin.setFixedSize(50, 22)
+        bind_fixed_size(self._slices_spin, 50, 22)
         self._slices_spin.setStyleSheet(
             f"QSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 2px; }}"
@@ -874,14 +874,14 @@ class SlicePanel(QFrame):
         chop_row.addWidget(sens_lbl)
 
         self._sens_fader = HorizontalFader(color=ACCENT_GOLD, default_value=0.5)
-        self._sens_fader.setFixedSize(70, 20)
+        bind_fixed_size(self._sens_fader, 70, 20)
         self._sens_fader.set_value(0.5)
         self._sens_fader.setEnabled(False)
         self._sens_fader.setToolTip("Transient detection sensitivity (Transient mode only)")
         chop_row.addWidget(self._sens_fader)
 
         self._chop_btn = QPushButton("CHOP")
-        self._chop_btn.setFixedSize(50, 22)
+        bind_fixed_size(self._chop_btn, 50, 22)
         self._chop_btn.setStyleSheet(
             f"QPushButton {{ background: {ACCENT_BLUE}; color: {BG_BLACK}; "
             f"font-weight: bold; font-size: 9px; border: none; }}"
@@ -916,7 +916,7 @@ class SlicePanel(QFrame):
         slice_row.addWidget(self._name_edit, stretch=1)
 
         self._slice_btn = QPushButton("SLICE + SAVE")
-        self._slice_btn.setFixedSize(90, 26)
+        bind_fixed_size(self._slice_btn, 90, 26)
         self._slice_btn.setStyleSheet(
             f"QPushButton {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; "
             f"font-weight: bold; font-size: 10px; border: none; }}"
@@ -930,7 +930,7 @@ class SlicePanel(QFrame):
         slice_row.addWidget(self._slice_btn)
 
         self._export_all_btn = QPushButton("EXPORT ALL")
-        self._export_all_btn.setFixedSize(80, 26)
+        bind_fixed_size(self._export_all_btn, 80, 26)
         self._export_all_btn.setStyleSheet(
             f"QPushButton {{ background: {ACCENT_BLUE}; color: {BG_BLACK}; "
             f"font-weight: bold; font-size: 9px; border: none; }}"
@@ -951,7 +951,7 @@ class SlicePanel(QFrame):
         self._library = SliceLibraryPanel()
         self._library.load_requested.connect(self.load_file)
         self._library.load_to_channel.connect(self._on_library_load_to_channel)
-        self._library.setMinimumHeight(80)
+        bind_min_height(self._library, 80)
         layout.addWidget(self._library, stretch=1)
 
         # Refresh library when a new slice is saved
@@ -2133,6 +2133,7 @@ class SlicePanel(QFrame):
 
 # RecorderPanel is imported from effects_view
 from mlrvp.gui.views.effects_view import RecorderPanel
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width, bind_max_height, bind_max_width, bind_min_height, bind_min_width
 
 
 class _SliceLibraryRow(QWidget):
@@ -2148,7 +2149,7 @@ class _SliceLibraryRow(QWidget):
         self._bpm: float | None = None
         self._key: str | None = None
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setFixedHeight(22)
+        bind_fixed_height(self, 22)
         self.setAcceptDrops(False)
 
         hl = QHBoxLayout(self)
@@ -2166,7 +2167,7 @@ class _SliceLibraryRow(QWidget):
 
         # BPM badge (shown if metadata sidecar exists)
         self._bpm_lbl = QLabel("")
-        self._bpm_lbl.setFixedWidth(40)
+        bind_fixed_width(self._bpm_lbl, 40)
         self._bpm_lbl.setStyleSheet(
             f"color: {ACCENT_GOLD}; font-size: 8px; font-weight: bold; background: transparent;"
         )
@@ -2174,7 +2175,7 @@ class _SliceLibraryRow(QWidget):
 
         # Key badge (shown if metadata sidecar has a key)
         self._key_lbl = QLabel("")
-        self._key_lbl.setFixedWidth(40)
+        bind_fixed_width(self._key_lbl, 40)
         self._key_lbl.setStyleSheet(
             f"color: {ACCENT_BLUE}; font-size: 8px; font-weight: bold; background: transparent;"
         )
@@ -2182,7 +2183,7 @@ class _SliceLibraryRow(QWidget):
         self._load_metadata(metadata)
 
         del_btn = QPushButton("\u2715")
-        del_btn.setFixedSize(18, 18)
+        bind_fixed_size(del_btn, 18, 18)
         del_btn.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {TEXT_SECONDARY}; "
             f"border: none; font-size: 9px; padding: 0px; min-height: 0px; }}"
@@ -2371,7 +2372,7 @@ class SliceLibraryPanel(QFrame):
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("Search\u2026")
         self._search_edit.setClearButtonEnabled(True)
-        self._search_edit.setFixedHeight(20)
+        bind_fixed_height(self._search_edit, 20)
         self._search_edit.setStyleSheet(
             f"QLineEdit {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
@@ -2384,7 +2385,7 @@ class SliceLibraryPanel(QFrame):
         filter_row.addWidget(self._search_edit, stretch=1)
 
         self._sort_combo = QComboBox()
-        self._sort_combo.setFixedHeight(20)
+        bind_fixed_height(self._sort_combo, 20)
         self._sort_combo.setStyleSheet(
             f"QComboBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
@@ -2403,7 +2404,7 @@ class SliceLibraryPanel(QFrame):
 
         # Scan BPM + Key button
         self._scan_btn = QPushButton("Scan")
-        self._scan_btn.setFixedHeight(20)
+        bind_fixed_height(self._scan_btn, 20)
         self._scan_btn.setToolTip("Scan BPM + Key for all slices missing data")
         self._scan_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_BLUE}; "
@@ -2415,7 +2416,7 @@ class SliceLibraryPanel(QFrame):
 
         # Batch delete button
         self._batch_del_btn = QPushButton("Delete")
-        self._batch_del_btn.setFixedHeight(20)
+        bind_fixed_height(self._batch_del_btn, 20)
         self._batch_del_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
@@ -2439,7 +2440,7 @@ class SliceLibraryPanel(QFrame):
         filter_row2.addWidget(_key_lbl)
 
         self._key_filter = QComboBox()
-        self._key_filter.setFixedHeight(20)
+        bind_fixed_height(self._key_filter, 20)
         self._key_filter.setStyleSheet(
             f"QComboBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
@@ -2460,8 +2461,8 @@ class SliceLibraryPanel(QFrame):
         self._bpm_min.setSingleStep(1)
         self._bpm_min.setValue(0)
         self._bpm_min.setSpecialValueText("Min")
-        self._bpm_min.setFixedHeight(20)
-        self._bpm_min.setFixedWidth(50)
+        bind_fixed_height(self._bpm_min, 20)
+        bind_fixed_width(self._bpm_min, 50)
         self._bpm_min.setStyleSheet(
             f"QDoubleSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 0px 2px; }}"
@@ -2481,8 +2482,8 @@ class SliceLibraryPanel(QFrame):
         self._bpm_max.setSingleStep(1)
         self._bpm_max.setValue(0)
         self._bpm_max.setSpecialValueText("Max")
-        self._bpm_max.setFixedHeight(20)
-        self._bpm_max.setFixedWidth(50)
+        bind_fixed_height(self._bpm_max, 20)
+        bind_fixed_width(self._bpm_max, 50)
         self._bpm_max.setStyleSheet(
             f"QDoubleSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 0px 2px; }}"
@@ -2491,7 +2492,7 @@ class SliceLibraryPanel(QFrame):
         filter_row2.addWidget(self._bpm_max)
 
         self._clear_filter_btn = QPushButton("\u2715")
-        self._clear_filter_btn.setFixedSize(20, 20)
+        bind_fixed_size(self._clear_filter_btn, 20, 20)
         self._clear_filter_btn.setToolTip("Clear filters")
         self._clear_filter_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -2505,7 +2506,7 @@ class SliceLibraryPanel(QFrame):
 
         # Scan progress (hidden when idle)
         self._scan_progress = QProgressBar()
-        self._scan_progress.setFixedHeight(8)
+        bind_fixed_height(self._scan_progress, 8)
         self._scan_progress.setTextVisible(False)
         self._scan_progress.setStyleSheet(
             f"QProgressBar {{ background: {BG_BLACK}; border: 1px solid {SEPARATOR}; }}"
@@ -3200,8 +3201,8 @@ class _LibraryTableBase(QWidget):
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("Search\u2026")
         self._search_edit.setClearButtonEnabled(True)
-        self._search_edit.setFixedHeight(20)
-        self._search_edit.setMaximumWidth(300)
+        bind_fixed_height(self._search_edit, 20)
+        bind_max_width(self._search_edit, 300)
         self._search_edit.setStyleSheet(
             f"QLineEdit {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
@@ -3214,7 +3215,7 @@ class _LibraryTableBase(QWidget):
         row1.addWidget(self._search_edit)
 
         self._refresh_btn = QPushButton("Refresh")
-        self._refresh_btn.setFixedSize(50, 20)
+        bind_fixed_size(self._refresh_btn, 50, 20)
         self._refresh_btn.setToolTip("Refresh sample list")
         self._refresh_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -3225,7 +3226,7 @@ class _LibraryTableBase(QWidget):
         row1.addWidget(self._refresh_btn)
 
         self._scan_btn = QPushButton("Scan BPM")
-        self._scan_btn.setFixedSize(60, 20)
+        bind_fixed_size(self._scan_btn, 60, 20)
         self._scan_btn.setToolTip("Detect BPM and musical key for unscanned files")
         self._scan_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_BLUE}; "
@@ -3236,7 +3237,7 @@ class _LibraryTableBase(QWidget):
         row1.addWidget(self._scan_btn)
 
         self._batch_del_btn = QPushButton("Delete")
-        self._batch_del_btn.setFixedHeight(20)
+        bind_fixed_height(self._batch_del_btn, 20)
         self._batch_del_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
@@ -3256,8 +3257,8 @@ class _LibraryTableBase(QWidget):
         _kl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 8px;")
         row2.addWidget(_kl)
         self._key_filter = QComboBox()
-        self._key_filter.setFixedHeight(20)
-        self._key_filter.setFixedWidth(90)
+        bind_fixed_height(self._key_filter, 20)
+        bind_fixed_width(self._key_filter, 90)
         self._key_filter.setStyleSheet(
             f"QComboBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
@@ -3274,8 +3275,8 @@ class _LibraryTableBase(QWidget):
         self._bpm_min.setDecimals(0)
         self._bpm_min.setSingleStep(1)
         self._bpm_min.setSpecialValueText("Min")
-        self._bpm_min.setFixedHeight(20)
-        self._bpm_min.setFixedWidth(58)
+        bind_fixed_height(self._bpm_min, 20)
+        bind_fixed_width(self._bpm_min, 58)
         self._bpm_min.setStyleSheet(
             f"QDoubleSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 0px 2px; }}"
@@ -3290,8 +3291,8 @@ class _LibraryTableBase(QWidget):
         self._bpm_max.setDecimals(0)
         self._bpm_max.setSingleStep(1)
         self._bpm_max.setSpecialValueText("Max")
-        self._bpm_max.setFixedHeight(20)
-        self._bpm_max.setFixedWidth(58)
+        bind_fixed_height(self._bpm_max, 20)
+        bind_fixed_width(self._bpm_max, 58)
         self._bpm_max.setStyleSheet(
             f"QDoubleSpinBox {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 0px 2px; }}"
@@ -3299,7 +3300,7 @@ class _LibraryTableBase(QWidget):
         self._bpm_max.valueChanged.connect(lambda _v: self._apply_filter())
         row2.addWidget(self._bpm_max)
         self._clear_filter_btn = QPushButton("Clear")
-        self._clear_filter_btn.setFixedHeight(20)
+        bind_fixed_height(self._clear_filter_btn, 20)
         self._clear_filter_btn.setToolTip("Clear all filters")
         self._clear_filter_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -3316,8 +3317,8 @@ class _LibraryTableBase(QWidget):
         self._vol_slider = QSlider(Qt.Orientation.Horizontal)
         self._vol_slider.setRange(0, 100)
         self._vol_slider.setValue(50)
-        self._vol_slider.setFixedWidth(80)
-        self._vol_slider.setFixedHeight(18)
+        bind_fixed_width(self._vol_slider, 80)
+        bind_fixed_height(self._vol_slider, 18)
         self._vol_slider.setToolTip("Preview playback volume")
         self._vol_slider.setStyleSheet(
             f"QSlider::groove:horizontal {{ background: {SEPARATOR}; height: 4px; "
@@ -3331,7 +3332,7 @@ class _LibraryTableBase(QWidget):
 
         # Stop-preview button
         self._stop_preview_btn = QPushButton("■")
-        self._stop_preview_btn.setFixedSize(22, 18)
+        bind_fixed_size(self._stop_preview_btn, 22, 18)
         self._stop_preview_btn.setToolTip("Stop preview playback")
         self._stop_preview_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -3360,7 +3361,7 @@ class _LibraryTableBase(QWidget):
 
         # Scan progress (hidden when idle)
         self._scan_progress = QProgressBar()
-        self._scan_progress.setFixedHeight(8)
+        bind_fixed_height(self._scan_progress, 8)
         self._scan_progress.setTextVisible(False)
         self._scan_progress.setStyleSheet(
             f"QProgressBar {{ background: {BG_BLACK}; border: 1px solid {SEPARATOR}; }}"
@@ -3663,7 +3664,7 @@ class _LibrarySlicesTab(_LibraryTableBase):
 
         # View toggle button
         self._folder_view_btn = QPushButton("All")
-        self._folder_view_btn.setFixedSize(36, 20)
+        bind_fixed_size(self._folder_view_btn, 36, 20)
         self._folder_view_btn.setCheckable(True)
         self._folder_view_btn.setToolTip("Switch between flat list and folder tree")
         self._folder_view_btn.setStyleSheet(
@@ -3679,7 +3680,7 @@ class _LibrarySlicesTab(_LibraryTableBase):
         # ★ Favs filter
         self._fav_filter_btn = QPushButton("★ Favs")
         self._fav_filter_btn.setCheckable(True)
-        self._fav_filter_btn.setFixedSize(52, 20)
+        bind_fixed_size(self._fav_filter_btn, 52, 20)
         self._fav_filter_btn.setToolTip("Show only favorited slices")
         self._fav_filter_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -3694,7 +3695,7 @@ class _LibrarySlicesTab(_LibraryTableBase):
         # Recent filter
         self._recent_filter_btn = QPushButton("Recent")
         self._recent_filter_btn.setCheckable(True)
-        self._recent_filter_btn.setFixedSize(52, 20)
+        bind_fixed_size(self._recent_filter_btn, 52, 20)
         self._recent_filter_btn.setToolTip("Show only recently used slices")
         self._recent_filter_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -3714,8 +3715,8 @@ class _LibrarySlicesTab(_LibraryTableBase):
         self._tag_filter_edit = QLineEdit()
         self._tag_filter_edit.setPlaceholderText("tag\u2026")
         self._tag_filter_edit.setClearButtonEnabled(True)
-        self._tag_filter_edit.setFixedHeight(20)
-        self._tag_filter_edit.setMaximumWidth(110)
+        bind_fixed_height(self._tag_filter_edit, 20)
+        bind_max_width(self._tag_filter_edit, 110)
         self._tag_filter_edit.setStyleSheet(
             f"QLineEdit {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
@@ -4588,7 +4589,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
         self._dirs_toggle = QPushButton("WATCHED DIRS \u25BE")
         self._dirs_toggle.setCheckable(True)
         self._dirs_toggle.setChecked(False)
-        self._dirs_toggle.setFixedHeight(20)
+        bind_fixed_height(self._dirs_toggle, 20)
         self._dirs_toggle.setStyleSheet(
             f"QPushButton {{ background: {BG_PANEL}; color: {TEXT_SECONDARY}; "
             f"font-size: 8px; font-weight: bold; border: 1px solid {SEPARATOR}; "
@@ -4603,7 +4604,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
         dvl.setContentsMargins(2, 2, 2, 2)
         dvl.setSpacing(2)
         self._dirs_list = QListWidget()
-        self._dirs_list.setFixedHeight(80)
+        bind_fixed_height(self._dirs_list, 80)
         self._dirs_list.setStyleSheet(
             f"QListWidget {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; }}"
@@ -4614,7 +4615,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
         dirs_btn_row = QHBoxLayout()
         dirs_btn_row.setSpacing(4)
         add_btn = QPushButton("+ Add Dir")
-        add_btn.setFixedHeight(20)
+        bind_fixed_height(add_btn, 20)
         add_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_GOLD}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
@@ -4623,7 +4624,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
         add_btn.clicked.connect(self._on_add_dir)
         dirs_btn_row.addWidget(add_btn)
         rem_btn = QPushButton("Remove")
-        rem_btn.setFixedHeight(20)
+        bind_fixed_height(rem_btn, 20)
         rem_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
@@ -4669,7 +4670,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
 
         # Toggle button: inserted into toolbar row 1 between ↻ and Scan
         self._folder_view_btn = QPushButton("All")
-        self._folder_view_btn.setFixedSize(36, 20)
+        bind_fixed_size(self._folder_view_btn, 36, 20)
         self._folder_view_btn.setCheckable(True)
         self._folder_view_btn.setToolTip("Switch between flat list (All) and folder tree view (Dir)")
         self._folder_view_btn.setStyleSheet(
@@ -4691,7 +4692,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
         # ★ Favs filter toggle (appended to toolbar row 1)
         self._fav_filter_btn = QPushButton("★ Favs")
         self._fav_filter_btn.setCheckable(True)
-        self._fav_filter_btn.setFixedSize(52, 20)
+        bind_fixed_size(self._fav_filter_btn, 52, 20)
         self._fav_filter_btn.setToolTip("Show only favorited samples")
         self._fav_filter_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -4706,7 +4707,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
         # Recent filter toggle
         self._recent_filter_btn = QPushButton("Recent")
         self._recent_filter_btn.setCheckable(True)
-        self._recent_filter_btn.setFixedSize(52, 20)
+        bind_fixed_size(self._recent_filter_btn, 52, 20)
         self._recent_filter_btn.setToolTip("Show only recently used samples")
         self._recent_filter_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -4726,8 +4727,8 @@ class _LibrarySamplesTab(_LibraryTableBase):
         self._tag_filter_edit = QLineEdit()
         self._tag_filter_edit.setPlaceholderText("tag…")
         self._tag_filter_edit.setClearButtonEnabled(True)
-        self._tag_filter_edit.setFixedHeight(20)
-        self._tag_filter_edit.setMaximumWidth(110)
+        bind_fixed_height(self._tag_filter_edit, 20)
+        bind_max_width(self._tag_filter_edit, 110)
         self._tag_filter_edit.setStyleSheet(
             f"QLineEdit {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 1px 4px; }}"
@@ -5546,7 +5547,7 @@ class _LibrarySongsTab(_LibraryTableBase):
         self._dirs_toggle = QPushButton("WATCHED DIRS \u25BE")
         self._dirs_toggle.setCheckable(True)
         self._dirs_toggle.setChecked(False)
-        self._dirs_toggle.setFixedHeight(20)
+        bind_fixed_height(self._dirs_toggle, 20)
         self._dirs_toggle.setStyleSheet(
             f"QPushButton {{ background: {BG_PANEL}; color: {TEXT_SECONDARY}; "
             f"font-size: 8px; font-weight: bold; border: 1px solid {SEPARATOR}; "
@@ -5561,7 +5562,7 @@ class _LibrarySongsTab(_LibraryTableBase):
         dvl.setContentsMargins(2, 2, 2, 2)
         dvl.setSpacing(2)
         self._dirs_list = QListWidget()
-        self._dirs_list.setFixedHeight(80)
+        bind_fixed_height(self._dirs_list, 80)
         self._dirs_list.setStyleSheet(
             f"QListWidget {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; }}"
@@ -5572,7 +5573,7 @@ class _LibrarySongsTab(_LibraryTableBase):
         dirs_btn_row = QHBoxLayout()
         dirs_btn_row.setSpacing(4)
         add_btn = QPushButton("+ Add Dir")
-        add_btn.setFixedHeight(20)
+        bind_fixed_height(add_btn, 20)
         add_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_GOLD}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
@@ -5581,7 +5582,7 @@ class _LibrarySongsTab(_LibraryTableBase):
         add_btn.clicked.connect(self._on_add_dir)
         dirs_btn_row.addWidget(add_btn)
         rem_btn = QPushButton("Remove")
-        rem_btn.setFixedHeight(20)
+        bind_fixed_height(rem_btn, 20)
         rem_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"

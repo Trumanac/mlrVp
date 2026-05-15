@@ -12,6 +12,7 @@ from mlrvp.gui.widgets.fader import (
     _MIDI_HIGHLIGHT_COLOR, _MIDI_LEARNING_COLOR,
 )
 from mlrvp.config import FilterBState
+from mlrvp.gui.scale import bind_fixed_size, bind_fixed_width
 
 _FACE = "#f0ede4"   # Moog-style off-white panel
 _DARK = "#1a1a1a"
@@ -24,7 +25,7 @@ class _LadderLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(18, 28)
+        bind_fixed_size(self, 18, 28)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -46,7 +47,7 @@ class _WoodCheek(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(6)
+        bind_fixed_width(self, 6)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -73,7 +74,7 @@ class _CompactKnob(_ValueDisplayMixin, QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(38, 38)
+        bind_fixed_size(self, 38, 38)
         self._value = 0.8
         self._dragging = False
         self._drag_start_y = 0.0

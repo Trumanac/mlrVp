@@ -13,6 +13,7 @@ from PySide6.QtGui import QColor, QPalette, QAction
 from mlrvp.config import (
     AppConfig,
     MAX_ROWS,
+    MAX_COLUMNS,
     NUM_GROUPS,
     MONOME_BACKEND_AUTO,
     MONOME_BACKEND_SERIALOSC,
@@ -23,9 +24,12 @@ from mlrvp.config import (
     CR_SLOT_PATTERN,
     CR_SLOT_ALL_STOP,
     CR_SLOT_GRID_MODE,
+    CR_SLOT_PRESET_PREV,
+    CR_SLOT_PRESET_NEXT,
     CR_PRESETS,
 )
 from mlrvp.gui.styles import ACCENT_BLUE, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width, bind_min_width
 
 
 class AudioSetupPanel(QFrame):
@@ -123,7 +127,7 @@ class AudioSetupPanel(QFrame):
 
         # Rescan button
         self._rescan_btn = QPushButton("Rescan Audio Devices")
-        self._rescan_btn.setFixedHeight(28)
+        bind_fixed_height(self._rescan_btn, 28)
         self._rescan_btn.setToolTip("Rescan and refresh the list of available audio devices")
         layout.addWidget(self._rescan_btn)
 
@@ -137,7 +141,7 @@ class AudioSetupPanel(QFrame):
         link_hl.addWidget(_link_lbl)
         self._link_btn = QPushButton("—")
         self._link_btn.setCheckable(True)
-        self._link_btn.setFixedSize(60, 26)
+        bind_fixed_size(self._link_btn, 60, 26)
         self._link_btn.setToolTip(
             "Ableton Link — sync tempo with Ableton Live and other Link-enabled apps\n"
             "on the same network.  Just click — no setup required."
@@ -437,18 +441,54 @@ class GridSetupPanel(QFrame):
 
         layout.addLayout(grid)
 
+        # ── Grid size quick-presets ───────────────────────────────────────
+        preset_label = QLabel("Quick Size:")
+        preset_label.setStyleSheet("color: #aaa; font-size: 10px;")
+        layout.addWidget(preset_label)
+
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(4)
+        preset_row.setContentsMargins(0, 0, 0, 0)
+
+        _grid_presets = [
+            ("8×8",   8,  8),
+            ("8×16",  8, 16),
+            ("16×8",  16,  8),
+            ("16×16", 16, 16),
+        ]
+        self._grid_preset_btns: list[QPushButton] = []
+        for label, rows, cols in _grid_presets:
+            btn = QPushButton(label)
+            bind_fixed_height(btn, 26)
+            btn.setCheckable(True)
+            btn.setToolTip(f"Set grid to {rows} rows × {cols} columns")
+            btn.setStyleSheet(
+                "QPushButton { background: #1a1a1a; color: #888; border: 1px solid #333;"
+                "  font-size: 9px; padding: 0 4px; }"
+                "QPushButton:checked { background: #2a4a2a; color: #aef; border: 1px solid #4af; }"
+                "QPushButton:hover { background: #222; color: #ccc; }"
+            )
+            btn.clicked.connect(lambda _checked, r=rows, c=cols: self._on_grid_preset(r, c))
+            preset_row.addWidget(btn)
+            self._grid_preset_btns.append(btn)
+
+        # Mark 8×8 as default
+        self._grid_preset_btns[0].setChecked(True)
+
+        layout.addLayout(preset_row)
+
         # Scan + connect buttons row
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
 
         self._scan_btn = QPushButton("Scan for Controllers")
-        self._scan_btn.setFixedHeight(28)
+        bind_fixed_height(self._scan_btn, 28)
         self._scan_btn.clicked.connect(self.scan_requested.emit)
         self._scan_btn.setToolTip("Scan for connected hardware grid controllers (monome / MIDI)")
         btn_row.addWidget(self._scan_btn)
 
         self._connect_btn = QPushButton("Connect")
-        self._connect_btn.setFixedHeight(28)
+        bind_fixed_height(self._connect_btn, 28)
         self._connect_btn.clicked.connect(self._on_connect_click)
         self._connect_btn.setToolTip("Connect to the selected hardware grid controller")
         btn_row.addWidget(self._connect_btn)
@@ -535,7 +575,7 @@ class GridSetupPanel(QFrame):
         self._monome_row_spin = QSpinBox()
         self._monome_row_spin.setRange(0, 15)
         self._monome_row_spin.setValue(0)
-        self._monome_row_spin.setFixedWidth(52)
+        bind_fixed_width(self._monome_row_spin, 52)
         self._monome_row_spin.setStyleSheet(_cr_spin_ss)
         self._monome_row_spin.setVisible(False)
         self._monome_row_spin.valueChanged.connect(
@@ -580,7 +620,7 @@ class GridSetupPanel(QFrame):
         self._cr_buttons: list[QPushButton] = []
         for i in range(8):
             btn = QPushButton()
-            btn.setFixedSize(QSize(36, 36))
+            bind_fixed_size(btn, 36, 36)
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn.setToolTip(f"Button {i+1}: click to reassign")
             btn.clicked.connect(lambda checked=False, idx=i: self._on_cr_button_clicked(idx))
@@ -608,13 +648,13 @@ class GridSetupPanel(QFrame):
 
         def_row = QHBoxLayout()
         self._default_combo = QComboBox()
-        self._default_combo.setMinimumWidth(120)
+        bind_min_width(self._default_combo, 120)
         self._default_combo.addItem("(blank)")
         self._refresh_defaults_list()
         def_row.addWidget(self._default_combo)
 
         self._save_default_btn = QPushButton("Save Default")
-        self._save_default_btn.setFixedHeight(24)
+        bind_fixed_height(self._save_default_btn, 24)
         self._save_default_btn.clicked.connect(self._on_save_default)
         self._save_default_btn.setToolTip("Save the current app state as the startup default")
         def_row.addWidget(self._save_default_btn)
@@ -682,6 +722,8 @@ class GridSetupPanel(QFrame):
             idx = self._backend_combo.findData(MONOME_BACKEND_AUTO)
         self._backend_combo.setCurrentIndex(max(0, idx))
         self._backend_combo.blockSignals(False)
+
+        self._sync_preset_btns(row_count, grid_columns)
 
     def set_tilt_enabled(self, enabled: bool):
         """Programmatically set the tilt checkbox (e.g. on monome connect)."""
@@ -805,6 +847,14 @@ class GridSetupPanel(QFrame):
             "background: #006633; color: #fff; border: 1px solid #00aa55; "
             "font-size: 8px; font-weight: bold;"
         ),
+        CR_SLOT_PRESET_PREV: (
+            "background: #4a0080; color: #fff; border: 1px solid #9933ff; "
+            "font-size: 8px; font-weight: bold;"
+        ),
+        CR_SLOT_PRESET_NEXT: (
+            "background: #005555; color: #fff; border: 1px solid #00cccc; "
+            "font-size: 8px; font-weight: bold;"
+        ),
         CR_SLOT_EMPTY: (
             "background: #222; color: #555; border: 1px solid #333; "
             "font-size: 8px;"
@@ -822,6 +872,10 @@ class GridSetupPanel(QFrame):
             return "ALL\nSTP"
         if t == CR_SLOT_GRID_MODE:
             return "MODE"
+        if t == CR_SLOT_PRESET_PREV:
+            return "\u25C4 PRE"
+        if t == CR_SLOT_PRESET_NEXT:
+            return "PRE \u25BA"
         return "—"
 
     def _refresh_cr_button_visuals(self):
@@ -840,6 +894,10 @@ class GridSetupPanel(QFrame):
                 tip = f"Button {i+1}: All Stop (stops all groups)"
             elif t == CR_SLOT_GRID_MODE:
                 tip = f"Button {i+1}: Grid Mode Cycle"
+            elif t == CR_SLOT_PRESET_PREV:
+                tip = f"Button {i+1}: Preset Prev (navigate to previous preset)"
+            elif t == CR_SLOT_PRESET_NEXT:
+                tip = f"Button {i+1}: Preset Next (navigate to next preset)"
             else:
                 tip = f"Button {i+1}: Unassigned"
             btn.setToolTip(tip + "\nClick to reassign")
@@ -908,7 +966,22 @@ class GridSetupPanel(QFrame):
         )
         menu.addAction(grid_mode_act)
 
+        # Preset navigation
+        menu.addSeparator()
+        preset_prev_act = QAction("\u25C4 Preset Prev", self)
+        preset_prev_act.triggered.connect(
+            lambda: self._assign_cr_slot(btn_idx, {"type": CR_SLOT_PRESET_PREV, "value": 0})
+        )
+        menu.addAction(preset_prev_act)
+
+        preset_next_act = QAction("Preset Next \u25BA", self)
+        preset_next_act.triggered.connect(
+            lambda: self._assign_cr_slot(btn_idx, {"type": CR_SLOT_PRESET_NEXT, "value": 0})
+        )
+        menu.addAction(preset_next_act)
+
         # Empty
+        menu.addSeparator()
         empty_act = QAction("Unassigned (empty)", self)
         empty_act.triggered.connect(
             lambda: self._assign_cr_slot(btn_idx, {"type": CR_SLOT_EMPTY, "value": 0})
@@ -957,6 +1030,26 @@ class GridSetupPanel(QFrame):
             if d.get("in_port", -1) < 0:
                 return
             self.midi_grid_connect_requested.emit(d["in_port"], d["out_port"])
+
+    def _on_grid_preset(self, rows: int, cols: int):
+        """Quick-preset button clicked — emit both row_count and grid_columns."""
+        self._rows_spin.blockSignals(True)
+        self._rows_spin.setValue(rows)
+        self._rows_spin.blockSignals(False)
+        self._cols_combo.blockSignals(True)
+        self._cols_combo.setCurrentText(str(cols))
+        self._cols_combo.blockSignals(False)
+        self._sync_preset_btns(rows, cols)
+        self.setting_changed.emit("row_count", rows)
+        self.setting_changed.emit("grid_columns", cols)
+
+    def _sync_preset_btns(self, rows: int, cols: int):
+        """Check the matching quick-preset button, uncheck the rest."""
+        _presets = [(8, 8), (8, 16), (16, 8), (16, 16)]
+        for btn, (r, c) in zip(self._grid_preset_btns, _presets):
+            btn.blockSignals(True)
+            btn.setChecked(r == rows and c == cols)
+            btn.blockSignals(False)
 
     def _on_backend_changed(self, index: int):
         backend = self._backend_combo.itemData(index) or MONOME_BACKEND_AUTO
@@ -1017,6 +1110,9 @@ class MidiSetupPanel(QFrame):
     midi_input_added = Signal(int)                       # port index
     midi_input_removed = Signal(int)                     # port index
     control_row_learn_requested = Signal(str)            # param_path
+    grid_cc_learn_requested = Signal(int, int)           # row, col
+    grid_cc_cleared = Signal(int, int)                   # row, col
+    grid_cc_size_changed = Signal(int, int)              # rows, cols
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1037,7 +1133,7 @@ class MidiSetupPanel(QFrame):
         layout.addLayout(self._inputs_container)
 
         add_input_btn = QPushButton("+ Add MIDI Input")
-        add_input_btn.setFixedHeight(24)
+        bind_fixed_height(add_input_btn, 24)
         add_input_btn.setStyleSheet(
             "QPushButton { background: #1a2a1a; color: #66aa66; "
             "font-size: 9px; border: 1px solid #336633; }"
@@ -1067,7 +1163,7 @@ class MidiSetupPanel(QFrame):
         # MIDI Learn
         self._learn_btn = QPushButton("MIDI Learn")
         self._learn_btn.setCheckable(True)
-        self._learn_btn.setFixedHeight(28)
+        bind_fixed_height(self._learn_btn, 28)
         self._learn_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_PANEL}; border: 1px solid #444444;"
             f"border-radius: 0px; color: {TEXT_SECONDARY}; font-weight: bold; }}"
@@ -1083,7 +1179,7 @@ class MidiSetupPanel(QFrame):
 
         # Rescan
         self._rescan_btn = QPushButton("Rescan MIDI Devices")
-        self._rescan_btn.setFixedHeight(28)
+        bind_fixed_height(self._rescan_btn, 28)
         self._rescan_btn.setToolTip("Rescan and refresh the list of available MIDI devices")
         btn_row.addWidget(self._rescan_btn)
 
@@ -1136,11 +1232,13 @@ class MidiSetupPanel(QFrame):
             "Active MIDI CC mappings — each row shows a mapped parameter with its CC number,\n"
             "channel, value range, and toggle mode. Use Min/Max spinboxes to scale the range."
         )
-        layout.addWidget(self._map_table, stretch=1)
+        self._map_table.setMinimumHeight(60)
+        self._map_table.setMaximumHeight(180)
+        layout.addWidget(self._map_table)
 
         # Clear all button
         self._clear_all_btn = QPushButton("Clear All Mappings")
-        self._clear_all_btn.setFixedHeight(24)
+        bind_fixed_height(self._clear_all_btn, 24)
         self._clear_all_btn.setStyleSheet(
             "QPushButton { background: #3a1a1a; color: #cc4444; "
             "font-size: 9px; border: 1px solid #663333; }"
@@ -1159,7 +1257,7 @@ class MidiSetupPanel(QFrame):
         self._cr_toggle_btn = QPushButton("CONTROL ROW ACTIONS  \u25BE")
         self._cr_toggle_btn.setCheckable(True)
         self._cr_toggle_btn.setChecked(False)
-        self._cr_toggle_btn.setFixedHeight(22)
+        bind_fixed_height(self._cr_toggle_btn, 22)
         self._cr_toggle_btn.setStyleSheet(
             "QPushButton { background: #1a1a1a; color: #666; font-weight: bold; "
             "font-size: 10px; border: none; text-align: left; padding: 0 4px; }"
@@ -1182,10 +1280,8 @@ class MidiSetupPanel(QFrame):
         cr_hint.setWordWrap(True)
         cr_panel_layout.addWidget(cr_hint)
 
+        self._cr_panel_layout = cr_panel_layout
         self._control_row_rows_container = QWidget()
-        self._control_row_rows_layout = QVBoxLayout(self._control_row_rows_container)
-        self._control_row_rows_layout.setContentsMargins(0, 0, 0, 0)
-        self._control_row_rows_layout.setSpacing(2)
         cr_panel_layout.addWidget(self._control_row_rows_container)
 
         self._control_row_panel.setVisible(False)
@@ -1253,7 +1349,7 @@ class MidiSetupPanel(QFrame):
             min_spin.setDecimals(2)
             min_spin.setValue(0.0)
             min_spin.setSingleStep(0.05)
-            min_spin.setFixedWidth(60)
+            bind_fixed_width(min_spin, 60)
             min_spin.setStyleSheet(_spin_ss)
             min_spin.setToolTip("Output value at rest (device held flat — no tilt)")
             min_spin.valueChanged.connect(lambda v, ax=i: self._on_tilt_range_changed(ax))
@@ -1263,7 +1359,7 @@ class MidiSetupPanel(QFrame):
             max_spin.setDecimals(2)
             max_spin.setValue(1.0)
             max_spin.setSingleStep(0.05)
-            max_spin.setFixedWidth(60)
+            bind_fixed_width(max_spin, 60)
             max_spin.setStyleSheet(_spin_ss)
             max_spin.setToolTip("Output value at full tilt deflection")
             max_spin.valueChanged.connect(lambda v, ax=i: self._on_tilt_range_changed(ax))
@@ -1273,7 +1369,7 @@ class MidiSetupPanel(QFrame):
             sens_spin.setDecimals(1)
             sens_spin.setValue(5.0)
             sens_spin.setSingleStep(0.5)
-            sens_spin.setFixedWidth(70)
+            bind_fixed_width(sens_spin, 70)
             sens_spin.setStyleSheet(_spin_ss)
             sens_spin.setToolTip(
                 "Sensitivity — how strongly a small physical tilt moves the output.\n"
@@ -1305,6 +1401,129 @@ class MidiSetupPanel(QFrame):
 
         self._tilt_container.setVisible(False)
         layout.addWidget(self._tilt_container)
+
+        # ── Grid MIDI CC Map (collapsible) ──
+        gm_sep = QFrame()
+        gm_sep.setFrameShape(QFrame.Shape.HLine)
+        gm_sep.setStyleSheet("color: #444;")
+        layout.addWidget(gm_sep)
+
+        self._gm_toggle_btn = QPushButton("GRID MIDI CC MAP  \u25BE")
+        self._gm_toggle_btn.setCheckable(True)
+        self._gm_toggle_btn.setChecked(False)
+        bind_fixed_height(self._gm_toggle_btn, 22)
+        self._gm_toggle_btn.setStyleSheet(
+            "QPushButton { background: #1a1a1a; color: #666; font-weight: bold; "
+            "font-size: 10px; border: none; text-align: left; padding: 0 4px; }"
+            "QPushButton:hover { color: #aaa; }"
+            "QPushButton:checked { color: #aaa; }"
+        )
+        self._gm_toggle_btn.clicked.connect(self._on_toggle_grid_cc_map)
+        layout.addWidget(self._gm_toggle_btn)
+
+        self._gm_panel = QWidget()
+        gm_layout = QVBoxLayout(self._gm_panel)
+        gm_layout.setContentsMargins(0, 2, 0, 2)
+        gm_layout.setSpacing(4)
+
+        gm_hint = QLabel(
+            "Map a MIDI CC output to each grid button. "
+            "Click a cell to MIDI learn, right-click to clear."
+        )
+        gm_hint.setStyleSheet("font-size: 9px; color: #555; font-style: italic;")
+        gm_hint.setWordWrap(True)
+        gm_layout.addWidget(gm_hint)
+
+        # Row / col size + clear-all row
+        gm_size_row = QHBoxLayout()
+        gm_size_row.setSpacing(6)
+        _lbl_ss = "color: #aaa; font-size: 10px;"
+        _spin_ss2 = (
+            "QSpinBox { background: #1a1a1a; color: #ccc; "
+            "border: 1px solid #333; font-size: 9px; }"
+        )
+        rows_lbl = QLabel("Rows:")
+        rows_lbl.setStyleSheet(_lbl_ss)
+        gm_size_row.addWidget(rows_lbl)
+        self._gm_rows_spin = QSpinBox()
+        self._gm_rows_spin.setRange(1, MAX_ROWS)
+        self._gm_rows_spin.setValue(8)
+        bind_fixed_width(self._gm_rows_spin, 48)
+        self._gm_rows_spin.setStyleSheet(_spin_ss2)
+        self._gm_rows_spin.setToolTip("Number of grid rows shown in the CC map editor")
+        self._gm_rows_spin.valueChanged.connect(self._on_grid_cc_size_changed)
+        gm_size_row.addWidget(self._gm_rows_spin)
+        cols_lbl = QLabel("Cols:")
+        cols_lbl.setStyleSheet(_lbl_ss)
+        gm_size_row.addWidget(cols_lbl)
+        self._gm_cols_spin = QSpinBox()
+        self._gm_cols_spin.setRange(1, MAX_COLUMNS)
+        self._gm_cols_spin.setValue(8)
+        bind_fixed_width(self._gm_cols_spin, 48)
+        self._gm_cols_spin.setStyleSheet(_spin_ss2)
+        self._gm_cols_spin.setToolTip("Number of grid columns shown in the CC map editor")
+        self._gm_cols_spin.valueChanged.connect(self._on_grid_cc_size_changed)
+        gm_size_row.addWidget(self._gm_cols_spin)
+        gm_size_row.addStretch()
+        gm_clear_all_btn = QPushButton("Clear All")
+        bind_fixed_height(gm_clear_all_btn, 20)
+        bind_fixed_width(gm_clear_all_btn, 58)
+        gm_clear_all_btn.setStyleSheet(
+            "QPushButton { background: #3a1a1a; color: #cc4444; "
+            "font-size: 9px; border: 1px solid #663333; }"
+            "QPushButton:hover { background: #4a2a2a; }"
+        )
+        gm_clear_all_btn.setToolTip("Remove all grid MIDI CC assignments")
+        gm_clear_all_btn.clicked.connect(self._on_grid_cc_clear_all)
+        gm_size_row.addWidget(gm_clear_all_btn)
+        gm_layout.addLayout(gm_size_row)
+
+        # Scroll area holding the grid of cell buttons
+        self._gm_scroll = QScrollArea()
+        self._gm_scroll.setWidgetResizable(True)
+        self._gm_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._gm_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._gm_scroll.setFrameShape(QFrame.Shape.StyledPanel)
+        self._gm_scroll.setStyleSheet(
+            "QScrollArea { background: #111; border: 1px solid #333; }")
+        self._gm_scroll.setMinimumHeight(60)
+        self._gm_scroll.setMaximumHeight(300)
+        gm_layout.addWidget(self._gm_scroll)
+
+        self._gm_grid_widget = QWidget()
+        self._gm_grid_widget.setStyleSheet("background: #111;")
+        self._gm_scroll.setWidget(self._gm_grid_widget)
+        self._gm_grid_inner = QGridLayout(self._gm_grid_widget)
+        self._gm_grid_inner.setSpacing(2)
+        self._gm_grid_inner.setContentsMargins(4, 4, 4, 4)
+
+        # Shared cell button stylesheets (stored on instance for _refresh_cell_style)
+        self._gm_ss_empty = (
+            "QPushButton { background: #1a1a1a; color: #444; border: 1px solid #222; "
+            "font-size: 8px; padding: 1px; }"
+            "QPushButton:hover { background: #252525; color: #888; border-color: #444; }"
+        )
+        self._gm_ss_mapped = (
+            "QPushButton { background: #1a2a1a; color: #7fc97f; border: 1px solid #336633; "
+            "font-size: 8px; padding: 1px; }"
+            "QPushButton:hover { background: #243824; color: #99e999; }"
+        )
+        self._gm_ss_learning = (
+            "QPushButton { background: #2a2200; color: #f5d97a; border: 1px solid #665500; "
+            "font-size: 8px; padding: 1px; font-weight: bold; }"
+        )
+
+        self._gm_buttons: dict[tuple[int, int], QPushButton] = {}
+        self._gm_learning_cell: tuple[int, int] | None = None
+        self._gm_cc_map: dict[tuple[int, int], dict] = {}
+
+        self._gm_panel.setVisible(False)
+        layout.addWidget(self._gm_panel)
+
+        # Build initial grid
+        self._rebuild_grid_cc_editor(8, 8)
 
     def set_midi_devices(self, inputs: list[str], outputs: list[str]):
         self._available_inputs = list(inputs)
@@ -1338,70 +1557,99 @@ class MidiSetupPanel(QFrame):
         Called by the app whenever num_group_stops or num_patterns changes, and
         on startup / preset load. Clears existing rows then rebuilds them.
         """
-        # Remove old rows
-        for row_info in self._control_row_rows:
-            row_info["container"].setParent(None)
-            row_info["container"].deleteLater()
+        # Replace the container widget so we get a clean layout each time
+        self._control_row_rows_container.setParent(None)
+        self._control_row_rows_container.deleteLater()
         self._control_row_rows.clear()
+
+        new_container = QWidget()
+        grid = QGridLayout(new_container)
+        grid.setContentsMargins(0, 2, 0, 2)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(4)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        self._control_row_rows_container = new_container
+        self._cr_panel_layout.addWidget(new_container)
 
         _btn_ss = (
             "QPushButton { background: #2a2a2a; color: #aaa; border: 1px solid #444; "
-            "font-size: 9px; padding: 2px 6px; }"
+            "font-size: 9px; padding: 1px 5px; }"
             "QPushButton:hover { background: #3a3a3a; color: #fff; }"
         )
         _clr_ss = (
             "QPushButton { background: transparent; color: #cc4444; "
-            "font-weight: bold; border: none; font-size: 11px; }"
+            "font-weight: bold; border: none; font-size: 11px; padding: 0; }"
             "QPushButton:hover { color: #ff6666; }"
+        )
+        _cell_ss = (
+            "QWidget#crCell { background: #1e1e1e; border: 1px solid #2a2a2a; "
+            "border-radius: 3px; }"
         )
 
         entries = (
             [(f"Group Stop {i + 1}", f"transport.group_stop.{i}") for i in range(num_groups)]
             + [(f"Pattern {i + 1}", f"transport.pattern.{i}") for i in range(num_patterns)]
             + [("Grid Mode Cycle", "transport.grid_mode_cycle")]
+            + [("\u25C4 Preset Prev", "transport.preset_prev"),
+               ("Preset Next \u25BA", "transport.preset_next")]
         )
 
-        for label_text, param_path in entries:
-            row_widget = QWidget()
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(4)
+        for i, (label_text, param_path) in enumerate(entries):
+            grid_row = i // 2
+            grid_col = i % 2
+
+            cell = QWidget()
+            cell.setObjectName("crCell")
+            cell.setStyleSheet(_cell_ss)
+            cell_layout = QHBoxLayout(cell)
+            cell_layout.setContentsMargins(5, 3, 3, 3)
+            cell_layout.setSpacing(4)
 
             lbl = QLabel(label_text)
-            lbl.setStyleSheet("color: #aaa; font-size: 10px;")
-            lbl.setFixedWidth(90)
-            row_layout.addWidget(lbl)
+            lbl.setStyleSheet("color: #bbb; font-size: 10px;")
+            lbl.setMinimumWidth(80)
+            lbl.setSizePolicy(
+                lbl.sizePolicy().horizontalPolicy(),
+                lbl.sizePolicy().verticalPolicy(),
+            )
+            cell_layout.addWidget(lbl, stretch=1)
 
             assign_lbl = QLabel("\u2014")
             assign_lbl.setStyleSheet("color: #555; font-size: 9px; font-style: italic;")
-            assign_lbl.setFixedWidth(80)
-            row_layout.addWidget(assign_lbl)
+            assign_lbl.setMinimumWidth(60)
+            assign_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cell_layout.addWidget(assign_lbl)
 
             learn_btn = QPushButton("Learn")
-            learn_btn.setFixedHeight(20)
+            bind_fixed_height(learn_btn, 18)
+            bind_fixed_width(learn_btn, 40)
             learn_btn.setStyleSheet(_btn_ss)
             learn_btn.setToolTip(f"MIDI Learn: next incoming CC/Note \u2192 {label_text}")
             learn_btn.clicked.connect(
                 lambda _checked=False, p=param_path: self.control_row_learn_requested.emit(p)
             )
-            row_layout.addWidget(learn_btn)
+            cell_layout.addWidget(learn_btn)
 
             clear_btn = QPushButton("\u2715")
-            clear_btn.setFixedSize(20, 20)
+            bind_fixed_size(clear_btn, 18, 18)
             clear_btn.setStyleSheet(_clr_ss)
             clear_btn.setToolTip(f"Clear MIDI mapping for {label_text}")
             clear_btn.clicked.connect(
                 lambda _checked=False, p=param_path: self.mapping_removed.emit(p)
             )
-            row_layout.addWidget(clear_btn)
-            row_layout.addStretch()
+            cell_layout.addWidget(clear_btn)
 
-            self._control_row_rows_layout.addWidget(row_widget)
+            grid.addWidget(cell, grid_row, grid_col)
             self._control_row_rows.append({
                 "param_path": param_path,
                 "assign_lbl": assign_lbl,
-                "container": row_widget,
+                "container": cell,
             })
+
+        # If odd number of entries, fill last cell with a spacer so columns stay even
+        if len(entries) % 2 == 1:
+            grid.addWidget(QWidget(), len(entries) // 2, 1)
 
     def update_control_row_assignment(self, param_path: str, info: str):
         """Update the assignment label for one control row action row.
@@ -1437,6 +1685,143 @@ class MidiSetupPanel(QFrame):
             "CONTROL ROW ACTIONS  \u25B4" if checked else "CONTROL ROW ACTIONS  \u25BE"
         )
 
+    # ── Grid MIDI CC Map helpers ──
+
+    def _on_toggle_grid_cc_map(self, checked: bool):
+        self._gm_panel.setVisible(checked)
+        self._gm_toggle_btn.setText(
+            "GRID MIDI CC MAP  \u25B4" if checked else "GRID MIDI CC MAP  \u25BE"
+        )
+
+    def _on_grid_cc_size_changed(self):
+        rows = self._gm_rows_spin.value()
+        cols = self._gm_cols_spin.value()
+        self._rebuild_grid_cc_editor(rows, cols)
+        self.grid_cc_size_changed.emit(rows, cols)
+
+    def _rebuild_grid_cc_editor(self, rows: int, cols: int):
+        """Destroy and recreate all cell buttons for the given grid dimensions."""
+        for btn in self._gm_buttons.values():
+            btn.setParent(None)
+            btn.deleteLater()
+        self._gm_buttons.clear()
+
+        for r in range(rows):
+            for c in range(cols):
+                btn = QPushButton()
+                btn.setFixedSize(42, 28)
+                btn.setToolTip(
+                    f"Row {r + 1}, Col {c + 1}\n"
+                    "Click to MIDI learn, right-click to clear"
+                )
+                self._apply_cell_style(btn, r, c)
+                btn.clicked.connect(
+                    lambda _=False, row=r, col=c:
+                        self.grid_cc_learn_requested.emit(row, col)
+                )
+                btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                btn.customContextMenuRequested.connect(
+                    lambda _pos, row=r, col=c: self._on_grid_cc_ctx(row, col)
+                )
+                self._gm_grid_inner.addWidget(btn, r, c)
+                self._gm_buttons[(r, c)] = btn
+
+    def _apply_cell_style(self, btn: QPushButton, row: int, col: int):
+        """Set button text and stylesheet to reflect current cell state."""
+        key = (row, col)
+        if self._gm_learning_cell == key:
+            btn.setText("LEARN\n...")
+            btn.setStyleSheet(self._gm_ss_learning)
+        elif key in self._gm_cc_map:
+            m = self._gm_cc_map[key]
+            btn.setText(f"CC{m['cc']}\nCh{m['channel'] + 1}")
+            btn.setStyleSheet(self._gm_ss_mapped)
+        else:
+            btn.setText(f"R{row + 1}\nC{col + 1}")
+            btn.setStyleSheet(self._gm_ss_empty)
+
+    def _on_grid_cc_ctx(self, row: int, col: int):
+        """Right-click context menu on a grid CC cell."""
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        clear_act = menu.addAction("Clear Mapping")
+        act = menu.exec(self.cursor().pos())
+        if act == clear_act:
+            self.grid_cc_cleared.emit(row, col)
+
+    def _on_grid_cc_clear_all(self):
+        """Emit clear for every cell in the current grid."""
+        rows = self._gm_rows_spin.value()
+        cols = self._gm_cols_spin.value()
+        for r in range(rows):
+            for c in range(cols):
+                self.grid_cc_cleared.emit(r, c)
+
+    # ── Public API for Grid CC Map ──
+
+    def set_grid_cc_size(self, rows: int, cols: int):
+        """Update size spinboxes (without re-emitting) and rebuild the grid."""
+        self._gm_rows_spin.blockSignals(True)
+        self._gm_rows_spin.setValue(rows)
+        self._gm_rows_spin.blockSignals(False)
+        self._gm_cols_spin.blockSignals(True)
+        self._gm_cols_spin.setValue(cols)
+        self._gm_cols_spin.blockSignals(False)
+        self._rebuild_grid_cc_editor(rows, cols)
+
+    def update_grid_cc_assignment(self, row: int, col: int, channel: int, cc: int):
+        """Store and display a new CC assignment for one cell."""
+        key = (row, col)
+        self._gm_cc_map[key] = {"channel": channel, "cc": cc}
+        if self._gm_learning_cell == key:
+            self._gm_learning_cell = None
+        btn = self._gm_buttons.get(key)
+        if btn:
+            self._apply_cell_style(btn, row, col)
+
+    def clear_grid_cc_assignment(self, row: int, col: int):
+        """Remove CC assignment for one cell and reset its display."""
+        key = (row, col)
+        self._gm_cc_map.pop(key, None)
+        btn = self._gm_buttons.get(key)
+        if btn:
+            self._apply_cell_style(btn, row, col)
+
+    def set_grid_cc_learning(self, row: int, col: int):
+        """Highlight a cell to show it is waiting for MIDI learn input."""
+        prev = self._gm_learning_cell
+        if prev and prev != (row, col):
+            pb = self._gm_buttons.get(prev)
+            if pb:
+                self._gm_learning_cell = None
+                self._apply_cell_style(pb, prev[0], prev[1])
+        self._gm_learning_cell = (row, col)
+        btn = self._gm_buttons.get((row, col))
+        if btn:
+            self._apply_cell_style(btn, row, col)
+
+    def clear_grid_cc_learning(self):
+        """Remove any active learning highlight."""
+        if self._gm_learning_cell:
+            r, c = self._gm_learning_cell
+            self._gm_learning_cell = None
+            btn = self._gm_buttons.get((r, c))
+            if btn:
+                self._apply_cell_style(btn, r, c)
+
+    def refresh_grid_cc_map(self, cc_map: dict):
+        """Reload all cell states from a serialised cc_map dict (key = 'r,c')."""
+        self._gm_cc_map.clear()
+        for key_str, val in cc_map.items():
+            try:
+                r_s, c_s = key_str.split(",", 1)
+                self._gm_cc_map[(int(r_s), int(c_s))] = val
+            except (ValueError, AttributeError):
+                pass
+        rows = self._gm_rows_spin.value()
+        cols = self._gm_cols_spin.value()
+        self._rebuild_grid_cc_editor(rows, cols)
+
     def _on_add_input(self):
         """Add a new MIDI input selector row."""
         row_layout = QHBoxLayout()
@@ -1445,11 +1830,11 @@ class MidiSetupPanel(QFrame):
         combo = QComboBox()
         combo.addItem("None")
         combo.addItems(self._available_inputs)
-        combo.setMinimumWidth(180)
+        bind_min_width(combo, 180)
         row_layout.addWidget(combo, stretch=1)
 
         remove_btn = QPushButton("✕")
-        remove_btn.setFixedSize(24, 22)
+        bind_fixed_size(remove_btn, 24, 22)
         remove_btn.setStyleSheet(
             "QPushButton { background: transparent; color: #cc4444; "
             "font-weight: bold; border: none; font-size: 11px; }"
@@ -1586,7 +1971,7 @@ class MidiSetupPanel(QFrame):
 
         # Delete button
         del_btn = QPushButton("✕")
-        del_btn.setFixedSize(24, 22)
+        bind_fixed_size(del_btn, 24, 22)
         del_btn.setStyleSheet(
             "QPushButton { background: transparent; color: #cc4444; "
             "font-weight: bold; border: none; font-size: 11px; }"
@@ -1807,6 +2192,9 @@ class SetupView(QWidget):
     control_row_enabled_changed = Signal(bool)
     control_row_setting_changed = Signal(str, object)   # key, value
     midi_control_row_learn_requested = Signal(str)      # param_path
+    midi_grid_cc_learn_requested = Signal(int, int)     # row, col
+    midi_grid_cc_cleared = Signal(int, int)             # row, col
+    midi_grid_cc_size_changed = Signal(int, int)        # rows, cols
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1850,9 +2238,18 @@ class SetupView(QWidget):
         self._midi_panel.tilt_range_changed.connect(self.midi_tilt_range_changed.emit)
         self._midi_panel.tilt_sensitivity_changed.connect(self.midi_tilt_sensitivity_changed.emit)
         self._midi_panel.control_row_learn_requested.connect(self.midi_control_row_learn_requested.emit)
+        self._midi_panel.grid_cc_learn_requested.connect(self.midi_grid_cc_learn_requested.emit)
+        self._midi_panel.grid_cc_cleared.connect(self.midi_grid_cc_cleared.emit)
+        self._midi_panel.grid_cc_size_changed.connect(self.midi_grid_cc_size_changed.emit)
         self._midi_panel.midi_input_added.connect(self.midi_input_added.emit)
         self._midi_panel.midi_input_removed.connect(self.midi_input_removed.emit)
-        tabs.addTab(self._midi_panel, "MIDI")
+        _midi_scroll = QScrollArea()
+        _midi_scroll.setWidget(self._midi_panel)
+        _midi_scroll.setWidgetResizable(True)
+        _midi_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _midi_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        _midi_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        tabs.addTab(_midi_scroll, "MIDI")
 
         self._osc_panel = OscSetupPanel()
         self._osc_panel.setting_changed.connect(self.osc_setting_changed.emit)

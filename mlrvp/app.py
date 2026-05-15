@@ -174,6 +174,10 @@ class AppController:
     def __init__(self):
         self.config = AppConfig()
 
+        # Re-entry guard for restart: prevents multi-spawn if the restart
+        # signal fires more than once before the current process exits.
+        self._restart_pending: bool = False
+
         # Load lightweight startup settings (monome_backend etc.) persisted from
         # last session.  Must happen before GridController is created so that
         # the correct backend is active when grid.connect() fires in init_grid().
@@ -498,6 +502,13 @@ class AppController:
         self.window.setup_view.midi_panel.set_control_row_actions(
             cr.num_group_stops, cr.num_patterns
         )
+        # Restore grid MIDI CC map editor state
+        rows = self.config.row_count
+        cols = self.config.grid_columns
+        self.window.setup_view.midi_panel.set_grid_cc_size(rows, cols)
+        self.window.setup_view.midi_panel.refresh_grid_cc_map(
+            self.config.grid_midi_cc_map
+        )
         # Restore control row grid settings to UI
         self.window.setup_view.grid_panel.set_control_row_config(
             cr.enabled, cr.monome_row, cr.assignments
@@ -745,7 +756,18 @@ class AppController:
             # Determine current step based on the channel's step division
             div_idx = max(0, min(len(SEQ_STEP_DIV_BEATS) - 1, ch.state.seq_step_div))
             beats_per_step = SEQ_STEP_DIV_BEATS[div_idx]
-            step_global = int(beat_position / beats_per_step)
+            # Per-channel swing (50 = straight, 75 = heavy swing).
+            # Applied at 1/8 note and finer subdivisions (div_idx >= 3).
+            swing_frac = max(0.5, min(0.75, self.config.channels[i].seq_swing / 100.0))
+            if swing_frac != 0.5 and div_idx >= 3:
+                pair_beats = beats_per_step * 2.0
+                pair_idx = int(beat_position / pair_beats)
+                beat_in_pair = beat_position - pair_idx * pair_beats
+                odd_fire_offset = swing_frac * pair_beats
+                step_in_pair = 0 if beat_in_pair < odd_fire_offset else 1
+                step_global = pair_idx * 2 + step_in_pair
+            else:
+                step_global = int(beat_position / beats_per_step)
             col = step_global % columns if columns > 0 else 0
             if col == ch._seq_column:
                 continue
@@ -864,6 +886,12 @@ class AppController:
         row = y
         column = x
         columns = self.config.grid_columns
+
+        # ── Grid MIDI CC output ──
+        cc_entry = self.config.grid_midi_cc_map.get(f"{row},{column}")
+        if cc_entry:
+            value = 127 if state == 1 else 0
+            self.midi.send_cc(cc_entry["channel"], cc_entry["cc"], value)
 
         # Song Recorder grid trigger: any button press while armed starts recording
         if state == 1 and self._song_recorder_armed and self.engine:
@@ -1923,7 +1951,10 @@ class AppController:
 
     def _on_control_button(self, x: int, state: int):
         """Handle control row button press/release dispatched by slot assignment."""
-        from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_ALL_STOP, CR_SLOT_GRID_MODE
+        from mlrvp.config import (
+            CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_ALL_STOP, CR_SLOT_GRID_MODE,
+            CR_SLOT_PRESET_PREV, CR_SLOT_PRESET_NEXT,
+        )
         assignments = self.config.control_row.assignments
         if x < 0 or x >= len(assignments):
             return
@@ -1948,6 +1979,14 @@ class AppController:
                 # thread (where this handler runs) causes unpredictable GIL
                 # stalls that drain the audio ring buffer.
                 QTimer.singleShot(0, self._gui_grid_mode_cycle)
+
+        elif slot_type == CR_SLOT_PRESET_PREV:
+            if state == 1:
+                QTimer.singleShot(0, self._gui_preset_prev)
+
+        elif slot_type == CR_SLOT_PRESET_NEXT:
+            if state == 1:
+                QTimer.singleShot(0, self._gui_preset_next)
 
         elif slot_type == CR_SLOT_PATTERN:
             idx = slot_val
@@ -2298,6 +2337,7 @@ class AppController:
         w.transport.group_stop_requested.connect(self._gui_group_stop)
         w.transport.stop_all_requested.connect(self._gui_stop_all)
         w.transport.grid_mode_cycle_requested.connect(self._gui_grid_mode_cycle)
+        w.transport.virtual_grid_toggle_requested.connect(self._gui_virtual_grid_toggle)
         w.setup_view.link_toggled.connect(self._gui_link_toggled)
 
         # --- Channel view ---
@@ -2450,6 +2490,9 @@ class AppController:
         w.setup_view.control_row_enabled_changed.connect(self._gui_control_row_enabled_changed)
         w.setup_view.control_row_setting_changed.connect(self._gui_control_row_setting_changed)
         w.setup_view.midi_control_row_learn_requested.connect(self._gui_control_row_learn_requested)
+        w.setup_view.midi_grid_cc_learn_requested.connect(self._gui_grid_cc_learn_requested)
+        w.setup_view.midi_grid_cc_cleared.connect(self._gui_grid_cc_cleared)
+        w.setup_view.midi_grid_cc_size_changed.connect(self._gui_grid_cc_size_changed)
         self.midi.learn_completed.connect(self._on_midi_learn_complete)
         self.midi.mapping_displaced.connect(self._on_midi_mapping_displaced)
 
@@ -2466,7 +2509,8 @@ class AppController:
         w.preset_file_save_requested.connect(self._gui_save_preset_file)
         w.stop_all_requested.connect(self._gui_stop_all)
         w.restart_requested.connect(self._gui_restart)
-        w.scale_change_requested.connect(lambda f: self._gui_restart())
+        # Live UI scale: applies the new factor without restarting the app.
+        w.scale_change_requested.connect(self._apply_ui_scale)
 
     # --- Transport handlers ---
 
@@ -3442,6 +3486,8 @@ class AppController:
                 self.engine.channels[row].state.seq_step_div = div_idx
                 # Reset the column so the next tick picks up the right position
                 self.engine.channels[row]._seq_column = -1
+        elif param == "seq_swing":
+            ch.seq_swing = max(50, min(75, int(value)))
         elif param == "mute":
             ch.mute = value
             self._apply_solo_mutes()
@@ -3607,6 +3653,13 @@ class AppController:
         except ValueError:
             idx = 0
         self._gui_grid_mode_set(GRID_MODES[(idx + 1) % len(GRID_MODES)])
+
+    def _gui_virtual_grid_toggle(self):
+        """Toggle visibility of the virtual grid window from the transport button."""
+        if self.window is None:
+            return
+        visible = self.window.virtual_grid.isVisible()
+        self.window.set_virtual_grid_visible(not visible)
 
     def _gui_grid_mode_set(self, mode: str):
         """Set the grid display mode and update transport bar button."""
@@ -3774,13 +3827,89 @@ class AppController:
                 gc.set_volume(new_gain)
 
     def _gui_restart(self):
-        """Restart the application by re-launching the process."""
+        """Restart the application by re-launching the process.
+
+        Re-entrant safe: if a restart is already in flight, subsequent calls
+        are ignored.  This prevents multi-spawn when the restart signal fires
+        more than once (e.g. rapid menu clicks).
+        """
+        if self._restart_pending:
+            log.debug("_gui_restart: already pending, ignoring re-entry")
+            return
+        self._restart_pending = True
         import subprocess
         # Stop audio/transport first
         self.stop()
         # Use -m to ensure the package is importable on restart
-        subprocess.Popen([sys.executable, "-m", "mlrvp"])
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        subprocess.Popen([sys.executable, "-m", "mlrvp"], creationflags=creationflags)
         QApplication.instance().quit()
+
+    def _apply_ui_scale(self, factor: float):
+        """Apply a new UI scale factor live (no restart).
+
+        All visual mutations happen atomically under a painting blackout:
+          1. Freeze painting on every visible top-level window.
+          2. Update _factor + persist (no signal yet).
+          3. Rebuild app font and stylesheet.
+          4. Fire scale_manager.changed so all bind_* slots resize widgets.
+          5. Proportionally resize every floating top-level window.
+          6. Unfreeze + one synchronous repaint per window.
+        """
+        from mlrvp.gui import scale as ui_scale
+        from mlrvp.gui.styles import get_stylesheet
+        from PySide6.QtGui import QFont
+        from PySide6.QtCore import Qt
+
+        old_factor = ui_scale.get_scale()
+        new_factor = max(0.5, min(3.0, float(factor)))
+        if abs(new_factor - old_factor) < 1e-4:
+            return
+
+        app = QApplication.instance()
+        if app is None:
+            return
+
+        # Step 1: freeze all visible top-level windows before ANY change.
+        # This must happen before apply_scale/set_scale_silent so that the
+        # bind_* callbacks that fire on changed() don't trigger repaints.
+        visible_windows = [w for w in app.topLevelWidgets() if w.isVisible()]
+        for w in visible_windows:
+            w.setUpdatesEnabled(False)
+
+        try:
+            # Step 2: update _factor + persist without emitting the signal.
+            ui_scale.set_scale_silent(new_factor)
+
+            # Step 3: font + stylesheet (re-polishes style data; no paint yet).
+            font = QFont("Helvetica Neue")
+            font.setPixelSize(ui_scale.sp(11))
+            app.setFont(font)
+            app.setStyleSheet(get_stylesheet(new_factor))
+
+            # Step 4: notify all bound widgets — all setFixed*/setMinimum*
+            # calls happen here while painting is still suppressed.
+            ui_scale.scale_manager.changed.emit(new_factor)
+
+            # Step 5: proportionally resize all floating windows.
+            ratio = new_factor / old_factor
+            for tlw in visible_windows:
+                state = tlw.windowState()
+                if state & (Qt.WindowMaximized | Qt.WindowFullScreen | Qt.WindowMinimized):
+                    continue
+                cur = tlw.size()
+                new_w = max(1, int(round(cur.width() * ratio)))
+                new_h = max(1, int(round(cur.height() * ratio)))
+                if new_w != cur.width() or new_h != cur.height():
+                    tlw.resize(new_w, new_h)
+
+        finally:
+            # Step 6: unfreeze + synchronous repaint.
+            # repaint() is synchronous — the window is fully drawn at the new
+            # size before control returns, eliminating the black-area flash.
+            for w in visible_windows:
+                w.setUpdatesEnabled(True)
+                w.repaint()
 
     def _gui_group_fx_route(self, group: int, route: int):
         """Set FX routing for a group: 0=OFF/M, 1=FX1, 2=FX2."""
@@ -5722,6 +5851,12 @@ class AppController:
         self._midi_map.register_control(
             w.transport._all_stop_btn, "transport.all_stop", "All Stop")
 
+        # Preset navigation buttons
+        self._midi_map.register_control(
+            w.transport._prev_btn, "transport.preset_prev", "Preset Prev")
+        self._midi_map.register_control(
+            w.transport._next_btn, "transport.preset_next", "Preset Next")
+
         # Pattern buttons (label button = cycle state)
         for pi in range(NUM_PATTERN_RECORDERS):
             pb = w.transport._pattern_btns[pi]
@@ -6156,6 +6291,25 @@ class AppController:
 
     def _on_midi_learn_complete(self, param_path: str, channel: int, cc: int):
         """MIDI learn completed — register the mapping callback."""
+        # ── Grid CC map: store assignment and update the panel cell ──
+        if param_path.startswith("grid.cc."):
+            parts = param_path.split(".")
+            if len(parts) == 4:
+                try:
+                    row, col = int(parts[2]), int(parts[3])
+                    key = f"{row},{col}"
+                    self.config.grid_midi_cc_map[key] = {"channel": channel, "cc": cc}
+                    self._mark_preset_dirty()
+                    if self.window:
+                        self.window.setup_view.midi_panel.update_grid_cc_assignment(
+                            row, col, channel, cc)
+                        self.window.set_status(
+                            f"Grid R{row + 1} C{col + 1} → CC{cc} Ch{channel + 1}"
+                        )
+                except (ValueError, IndexError):
+                    pass
+            return
+
         self._midi_map.on_learn_complete(param_path, channel, cc)
         self._register_midi_param_callback(param_path)
         self._mark_preset_dirty()
@@ -6346,6 +6500,37 @@ class AppController:
         if self.window:
             self.window.set_status(f"Waiting for MIDI input for: {param_path}")
 
+    def _gui_grid_cc_learn_requested(self, row: int, col: int):
+        """User clicked a grid cell in the CC map editor — start MIDI learn for it."""
+        param_path = f"grid.cc.{row}.{col}"
+        self.midi.start_learn(param_path)
+        if self.window:
+            self.window.setup_view.midi_panel.set_grid_cc_learning(row, col)
+            self.window.set_status(
+                f"Waiting for MIDI input — grid R{row + 1} C{col + 1}"
+            )
+
+    def _gui_grid_cc_cleared(self, row: int, col: int):
+        """User cleared the CC assignment for one grid cell."""
+        key = f"{row},{col}"
+        self.config.grid_midi_cc_map.pop(key, None)
+        param_path = f"grid.cc.{row}.{col}"
+        # Remove from MIDI handler if mapped
+        self.midi.remove_mapping(param_path)
+        if self.window:
+            self.window.setup_view.midi_panel.clear_grid_cc_assignment(row, col)
+        self._mark_preset_dirty()
+
+    def _gui_grid_cc_size_changed(self, rows: int, cols: int):
+        """User changed the row/col count in the grid CC map editor.
+
+        The CC editor size is independent from the main grid dimensions;
+        changing it here only resizes the visible button grid in the panel.
+        Assignments outside the current view are retained in config.
+        """
+        # No config mutation needed — the panel manages its own spinbox state
+        # and already rebuilt itself before emitting this signal.
+
     def _repopulate_control_row_assignments(self):
         """Update all control row assignment labels from current MIDI mappings."""
         if not self.window:
@@ -6355,7 +6540,7 @@ class AppController:
         paths = (
             [f"transport.group_stop.{i}" for i in range(cr.num_group_stops)]
             + [f"transport.pattern.{i}" for i in range(cr.num_patterns)]
-            + ["transport.grid_mode_cycle"]
+            + ["transport.grid_mode_cycle", "transport.preset_prev", "transport.preset_next"]
         )
         for path in paths:
             m = mappings.get(path)
@@ -6384,6 +6569,13 @@ class AppController:
         for m in mappings:
             m["label"] = label_map.get(m["param_path"], m["param_path"])
         self.window.setup_view.midi_panel.refresh_mappings(mappings)
+        # Refresh grid CC map display from current config
+        self.window.setup_view.midi_panel.set_grid_cc_size(
+            self.config.row_count, self.config.grid_columns
+        )
+        self.window.setup_view.midi_panel.refresh_grid_cc_map(
+            self.config.grid_midi_cc_map
+        )
 
     def _register_midi_param_callback(self, param_path: str):
         """Register a callback so incoming MIDI CC controls the parameter."""
@@ -6474,6 +6666,16 @@ class AppController:
             self.midi.set_param_callback(param_path,
                 lambda v: QTimer.singleShot(
                     0, self._gui_grid_mode_cycle
+                ) if v > 0.5 else None)
+        elif param_path == "transport.preset_prev":
+            self.midi.set_param_callback(param_path,
+                lambda v: QTimer.singleShot(
+                    0, self._gui_preset_prev
+                ) if v > 0.5 else None)
+        elif param_path == "transport.preset_next":
+            self.midi.set_param_callback(param_path,
+                lambda v: QTimer.singleShot(
+                    0, self._gui_preset_next
                 ) if v > 0.5 else None)
         elif parts[0] == "song_recorder" and len(parts) == 2:
             sub = parts[1]
@@ -6866,8 +7068,14 @@ class AppController:
                     if not attr.startswith('_'):
                         setattr(eng.state, attr, val)
 
-        # Sync stowaway (Foreign Exchange) plugin slots from config
+        # Sync stowaway (Foreign Exchange) plugin slots from config.
+        # Plugin loading is potentially slow (up to _LOAD_TIMEOUT seconds per
+        # slot).  StowawayProcessor.load() must run on the *main thread* so
+        # that show_editor() works afterwards.  We use processEvents() between
+        # each load so the GUI stays responsive rather than spawning background
+        # threads (which would break the native-editor thread affinity).
         if hasattr(self.config, "stowaway_slots"):
+            from PySide6.QtWidgets import QApplication
             _BUS_KEYS = ["fx_bus_1", "fx_bus_2", "fx_bus_m", "fx_bus_c", "fx_bus_d"]
             for bus_idx, bus_key in enumerate(_BUS_KEYS):
                 for si in range(4):
@@ -6878,11 +7086,19 @@ class AppController:
                     self.engine.set_plugin_slot_enabled(bus_key, si, st.enabled)
                     self.engine.set_plugin_slot_wet_dry(bus_key, si, st.wet_dry)
                     if st.plugin_path:
-                        self.engine.load_plugin_slot(
-                            bus_key, si, st.plugin_path, st.plugin_format)
-                        if st.plugin_state_b64:
-                            self.engine.set_plugin_slot_state_b64(
-                                bus_key, si, st.plugin_state_b64)
+                        self._update_stowaway_loading(bus_key, si)
+                        QApplication.processEvents()
+                        ok = self.engine.load_plugin_slot(bus_key, si, st.plugin_path,
+                                                          st.plugin_format)
+                        if ok:
+                            if st.plugin_state_b64:
+                                self.engine.set_plugin_slot_state_b64(
+                                    bus_key, si, st.plugin_state_b64)
+                            from pathlib import Path as _Path
+                            self._update_stowaway_gui(
+                                bus_key, si, _Path(st.plugin_path).stem, st.plugin_format)
+                        else:
+                            self._update_stowaway_error(bus_key, si)
                     else:
                         self.engine.unload_plugin_slot(bus_key, si)
 
@@ -7777,12 +7993,13 @@ def run_app(argv=None) -> int:
 
     qInstallMessageHandler(_qt_message_handler)
 
-    # Apply UI scale factor before QApplication init
-    from mlrvp.config import get_ui_scale
-    import os
-    scale = get_ui_scale()
-    if scale != 1.0:
-        os.environ["QT_SCALE_FACTOR"] = str(scale)
+    # Initialize the live UI scale factor.  Replaces the legacy
+    # QT_SCALE_FACTOR env-var approach, which required a process restart
+    # whenever the user changed scale.  The scale is now applied at runtime
+    # by ``AppController._apply_ui_scale`` via stylesheet regeneration plus
+    # per-widget ``_apply_sizes`` callbacks.
+    from mlrvp.gui import scale as ui_scale
+    ui_scale.init_scale()
 
     # On Windows, set an explicit App User Model ID *before* QApplication is
     # created.  Without this Windows groups the process under python.exe's
@@ -7834,11 +8051,14 @@ def run_app(argv=None) -> int:
     if _icon_path.exists():
         app.setWindowIcon(QIcon(str(_icon_path)))
 
-    # Set default application font to suppress QFont::setPointSize warnings
+    # Set default application font (uses scaled pixel size so all text
+    # participates in the live UI scale).
     from PySide6.QtGui import QFont
+    from mlrvp.gui.styles import get_stylesheet
     default_font = QFont("Helvetica Neue")
-    default_font.setPixelSize(11)
+    default_font.setPixelSize(ui_scale.sp(11))
     app.setFont(default_font)
+    app.setStyleSheet(get_stylesheet(ui_scale.get_scale()))
 
     controller = AppController()
 

@@ -6,6 +6,7 @@ from PySide6.QtGui import QPainter, QColor, QPen
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — riveted steel / industrial door / amber ─────────────────
 _FACE    = "#181816"   # dark steel
@@ -21,7 +22,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _CREAM) -> QVBoxLayout:
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -37,7 +38,7 @@ class _SteelDoorLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(22, 22)
+        bind_fixed_size(self, 22, 22)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -143,14 +144,14 @@ class GatedReverbModule(RackModuleBase):
         self._mode = QPushButton("GATE")
         self._mode.setCheckable(True)
         self._mode.setChecked(False)
-        self._mode.setFixedSize(42, 18)
+        bind_fixed_size(self._mode, 42, 18)
         self._mode.clicked.connect(self._on_mode)
         self._refresh_mode()
         mode_col = QVBoxLayout()
         mode_col.setSpacing(0)
         mode_col.setContentsMargins(0, 0, 0, 0)
         mode_lbl = QLabel("MODE")
-        mode_lbl.setFixedHeight(10)
+        bind_fixed_height(mode_lbl, 10)
         mode_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         mode_lbl.setStyleSheet(
             f"color: {_DIM}; font-size: 6px; font-weight: bold;"

@@ -6,6 +6,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QBrush
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — vinyl / cracked record ──────────────────────────────────
 _FACE    = "#121012"   # near-black
@@ -28,7 +29,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _CREAM) -> QVBoxLayout:
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -44,7 +45,7 @@ class _VinylLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(22, 22)
+        bind_fixed_size(self, 22, 22)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -158,14 +159,14 @@ class StutterModule(RackModuleBase):
         self._trigger = QPushButton("OFF")
         self._trigger.setCheckable(True)
         self._trigger.setChecked(False)
-        self._trigger.setFixedSize(42, 18)
+        bind_fixed_size(self._trigger, 42, 18)
         self._trigger.clicked.connect(self._on_trigger)
         self._refresh_trigger()
         trig_col = QVBoxLayout()
         trig_col.setSpacing(0)
         trig_col.setContentsMargins(0, 0, 0, 0)
         trig_lbl = QLabel("TRIG")
-        trig_lbl.setFixedHeight(10)
+        bind_fixed_height(trig_lbl, 10)
         trig_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         trig_lbl.setStyleSheet(
             f"color: {_DIM}; font-size: 6px; font-weight: bold;"

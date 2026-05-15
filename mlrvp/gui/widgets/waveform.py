@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QWidget, QSizePolicy
 from PySide6.QtCore import Qt, Signal, QRectF, QLine
 from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient, QMouseEvent, QPixmap
 
+from mlrvp.gui.scale import bind_min_height
 from mlrvp.gui.styles import (
     BG_BLACK, BG_PANEL, SEPARATOR, ACCENT_BLUE, TEXT_SECONDARY, GROUP_COLORS
 )
@@ -38,7 +39,7 @@ class WaveformWidget(QWidget):
         self._wave_cache: QPixmap | None = None  # cached waveform bars pixmap
         self._cached_y_tops: np.ndarray | None = None  # cached bar heights
 
-        self.setMinimumHeight(60)
+        bind_min_height(self, 60)
         self.setMouseTracking(True)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -103,14 +104,27 @@ class WaveformWidget(QWidget):
         self.update()
 
     def _rebuild_wave_cache(self, w: int, h: int):
-        """Build a QPixmap containing just the static waveform bars.
+        """Build QPixmaps containing the static waveform bars.
 
-        Selection overlay, dividers, and boundaries are drawn dynamically
-        in paintEvent to avoid full cache rebuilds during drag operations.
+        Two pixmaps are built:
+          _wave_cache       — dim bars (alpha 50) on black + border
+          _wave_cache_bright — bright bars (alpha 185) on transparent background
+
+        Using two pixmaps avoids creating a per-pixel list of QLine objects in
+        paintEvent on every repaint (the bright overlay is blitted with
+        setClipRect instead).
         """
+        # ---- dim cache ----
         pm = QPixmap(w, h)
         pm.fill(QColor(BG_BLACK))
         p = QPainter(pm)
+
+        # ---- bright cache (transparent background) ----
+        bright_pm = QPixmap(w, h)
+        bright_pm.fill(Qt.GlobalColor.transparent)
+        pb = QPainter(bright_pm)
+
+        self._cached_y_tops = None
 
         if self._waveform_data is not None and len(self._waveform_data) > 0:
             base_color = QColor(GROUP_COLORS[self._group_color_idx])
@@ -124,23 +138,29 @@ class WaveformWidget(QWidget):
                 np.abs(self._waveform_data[indices, 1]),
             )
             y_tops = (h - (peaks * (h * 0.95)).astype(int)).astype(int)
+            self._cached_y_tops = y_tops
 
-            # Draw all bars at dim alpha (selection brightening done in paintEvent)
+            # Draw dim bars into dim cache
             dim_color = QColor(base_color)
             dim_color.setAlpha(50)
             p.setPen(QPen(dim_color, 1))
             lines_dim = [QLine(px, int(y_tops[px]), px, h) for px in range(w)]
             p.drawLines(lines_dim)
 
-            # Store y_tops for paintEvent selection brightening
-            self._cached_y_tops = y_tops
+            # Draw bright bars into bright (transparent) cache
+            bright_color = QColor(base_color)
+            bright_color.setAlpha(185)
+            pb.setPen(QPen(bright_color, 1))
+            pb.drawLines(lines_dim)   # same geometry, different colour/alpha
 
-        # Border
+        # Border on dim cache only (border is never overwritten by bright blit)
         p.setPen(QPen(QColor(SEPARATOR), 1))
         p.drawRect(0, 0, w - 1, h - 1)
 
         p.end()
+        pb.end()
         self._wave_cache = pm
+        self._wave_cache_bright = bright_pm
         self._wave_cache_size = (w, h)
 
     def paintEvent(self, event):
@@ -163,19 +183,14 @@ class WaveformWidget(QWidget):
         sel_x2 = int(self._sel_end * w)
         sel_w = sel_x2 - sel_x1
 
-        # Draw selection-region bright waveform bars on top of dim cache
-        y_tops = getattr(self, '_cached_y_tops', None)
-        if y_tops is not None and sel_x1 < sel_x2:
-            base_color = QColor(GROUP_COLORS[self._group_color_idx])
-            bright_color = QColor(base_color)
-            bright_color.setAlpha(185)
-            painter.setPen(QPen(bright_color, 1))
+        # Draw selection-region bright waveform bars on top of dim cache.
+        # Blit the pre-built bright pixmap restricted to the selection clip —
+        # this replaces the O(sel_width) QLine list creation that used to
+        # run on every paintEvent at ~60 fps during playback.
+        bright_pm = getattr(self, '_wave_cache_bright', None)
+        if bright_pm is not None and sel_x1 < sel_x2:
             painter.setClipRect(sel_x1, 0, sel_x2 - sel_x1, h)
-            lines_bright = [
-                QLine(px, int(y_tops[px]), px, h)
-                for px in range(sel_x1, min(sel_x2, w))
-            ]
-            painter.drawLines(lines_bright)
+            painter.drawPixmap(0, 0, bright_pm)
             painter.setClipping(False)
 
         # SEQ mode: tint enabled (toggled-on) steps before dividers are drawn

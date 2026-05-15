@@ -25,6 +25,7 @@ from mlrvp.gui.styles import (
 )
 from mlrvp.gui.widgets.fader import VerticalFader
 from mlrvp.gui.widgets.vu_meter import VUMeter
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width, bind_min_width
 
 
 # ── Volume fader dB taper (matches channel gain fader curve) ──────────
@@ -74,7 +75,7 @@ class _ParallelogramLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(50, 30)
+        bind_fixed_size(self, 50, 30)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -106,7 +107,7 @@ class GroupChannel(QFrame):
     def __init__(self, group_idx: int, parent=None):
         super().__init__(parent)
         self._group = group_idx
-        self.setMinimumWidth(50)
+        bind_min_width(self, 50)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setStyleSheet(f"GroupChannel {{ background: {BG_BLACK}; }}")
 
@@ -117,7 +118,7 @@ class GroupChannel(QFrame):
 
         # ── Group icon header (fpic / group-mixer.png equivalent) ──
         icon_label = QLabel(f"G{group_idx + 1}")
-        icon_label.setFixedHeight(26)
+        bind_fixed_height(icon_label, 26)
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon_label.setStyleSheet(
             f"background: {color}; color: {BG_BLACK}; "
@@ -131,7 +132,7 @@ class GroupChannel(QFrame):
         fader_row.setContentsMargins(0, 0, 0, 0)
 
         self._vu = VUMeter(Qt.Orientation.Vertical)
-        self._vu.setFixedWidth(14)
+        bind_fixed_width(self._vu, 14)
         fader_row.addWidget(self._vu)
 
         self._vol_fader = VerticalFader(FADER_SLIDER, default_value=_UNITY_POS)
@@ -145,14 +146,14 @@ class GroupChannel(QFrame):
         fader_row.addWidget(self._vol_fader)
 
         self._vu_r = VUMeter(Qt.Orientation.Vertical)
-        self._vu_r.setFixedWidth(14)
+        bind_fixed_width(self._vu_r, 14)
         fader_row.addWidget(self._vu_r)
 
         layout.addLayout(fader_row, stretch=1)
 
         # ── VOL label for main fader ──
         vol_label = QLabel("VOL")
-        vol_label.setFixedHeight(11)
+        bind_fixed_height(vol_label, 11)
         vol_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         vol_label.setStyleSheet(
             f"color: {TEXT_SECONDARY}; font-size: 7px; font-weight: bold; border: none; padding: 0;"
@@ -166,7 +167,7 @@ class GroupChannel(QFrame):
         send_row.addStretch(1)
         self._send_fader = VerticalFader(SEND_FADER_COLOR)
         self._send_fader.set_value(0.0)
-        self._send_fader.setFixedHeight(52)
+        bind_fixed_height(self._send_fader, 52)
         self._send_fader.value_changed.connect(
             lambda v: self.send_changed.emit(self._group, v)
         )
@@ -178,7 +179,7 @@ class GroupChannel(QFrame):
         # ── FX route button (cycles OFF → FX1 → FX2 → FX3 → FX4) ──
         self._fx_route = 0  # 0=OFF, 1=FX1, 2=FX2, 3=FX3, 4=FX4
         self._fx_route_btn = QPushButton("OFF")
-        self._fx_route_btn.setFixedHeight(17)
+        bind_fixed_height(self._fx_route_btn, 17)
         self._fx_route_btn.setStyleSheet(
             f"QPushButton {{ background: rgba(0,0,0,64); color: {SEPARATOR}; "
             f"font-weight: bold; font-size: 9px; border: 1px solid {SEPARATOR}; "
@@ -198,7 +199,7 @@ class GroupChannel(QFrame):
         # ── Mute button (textbutton MUTE) ──
         self._mute_btn = QPushButton("MUTE")
         self._mute_btn.setCheckable(True)
-        self._mute_btn.setFixedHeight(20)
+        bind_fixed_height(self._mute_btn, 20)
         self._mute_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {SEPARATOR}; "
             f"font-weight: bold; font-size: 8px; border: 1px solid #333; "
@@ -308,13 +309,13 @@ class MixerView(QWidget):
 
         # ── Separator ──
         sep = QFrame()
-        sep.setFixedWidth(1)
+        bind_fixed_width(sep, 1)
         sep.setStyleSheet(f"background: {SEPARATOR};")
         strip_row.addWidget(sep)
 
         # ── AUX return (return.maxpat) ──
         aux_frame = QFrame()
-        aux_frame.setMinimumWidth(50)
+        bind_min_width(aux_frame, 50)
         aux_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         aux_frame.setStyleSheet(f"background: {BG_BLACK};")
         aux_layout = QVBoxLayout(aux_frame)
@@ -323,7 +324,7 @@ class MixerView(QWidget):
 
         # AUX icon (a-send-mixer.png equivalent)
         aux_icon = QLabel("AUX")
-        aux_icon.setFixedHeight(26)
+        bind_fixed_height(aux_icon, 26)
         aux_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         aux_icon.setStyleSheet(
             f"background: {AUX_COLOR}; color: white; "
@@ -336,7 +337,7 @@ class MixerView(QWidget):
         aux_fader_row.setContentsMargins(0, 0, 0, 0)
 
         self._aux_vu_l = VUMeter(Qt.Orientation.Vertical)
-        self._aux_vu_l.setFixedWidth(14)
+        bind_fixed_width(self._aux_vu_l, 14)
         aux_fader_row.addWidget(self._aux_vu_l)
 
         self._aux_fader = VerticalFader(FADER_SLIDER, default_value=_UNITY_POS)
@@ -350,14 +351,14 @@ class MixerView(QWidget):
         aux_fader_row.addWidget(self._aux_fader)
 
         self._aux_vu_r = VUMeter(Qt.Orientation.Vertical)
-        self._aux_vu_r.setFixedWidth(14)
+        bind_fixed_width(self._aux_vu_r, 14)
         aux_fader_row.addWidget(self._aux_vu_r)
 
         aux_layout.addLayout(aux_fader_row, stretch=1)
 
         # AUX VOL label
         aux_vol_label = QLabel("VOL")
-        aux_vol_label.setFixedHeight(11)
+        bind_fixed_height(aux_vol_label, 11)
         aux_vol_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         aux_vol_label.setStyleSheet(
             f"color: {TEXT_SECONDARY}; font-size: 7px; font-weight: bold; border: none; padding: 0;"
@@ -371,7 +372,7 @@ class MixerView(QWidget):
         aux_send_row.addStretch(1)
         self._aux_send_fader = VerticalFader(SEND_FADER_COLOR)
         self._aux_send_fader.set_value(0.0)
-        self._aux_send_fader.setFixedHeight(52)
+        bind_fixed_height(self._aux_send_fader, 52)
         self._aux_send_fader.value_changed.connect(self.aux_send_changed.emit)
         self._aux_send_fader.setToolTip("AUX send master — global send level to the delay return (blends with per-group sends)")
         aux_send_row.addWidget(self._aux_send_fader)
@@ -381,7 +382,7 @@ class MixerView(QWidget):
         # AUX FX route button (cycles OFF → FX1 → FX2 → FX3 → FX4)
         self._aux_fx_route = 0
         self._aux_fx_route_btn = QPushButton("OFF")
-        self._aux_fx_route_btn.setFixedHeight(17)
+        bind_fixed_height(self._aux_fx_route_btn, 17)
         self._aux_fx_route_btn.setStyleSheet(
             f"QPushButton {{ background: rgba(0,0,0,64); color: {SEPARATOR}; "
             f"font-weight: bold; font-size: 9px; border: 1px solid {SEPARATOR}; "
@@ -401,7 +402,7 @@ class MixerView(QWidget):
         # AUX mute button (default muted; checked = muted, unchecked = monitoring)
         self._aux_mute_btn = QPushButton("UNMUTE")
         self._aux_mute_btn.setCheckable(True)
-        self._aux_mute_btn.setFixedHeight(20)
+        bind_fixed_height(self._aux_mute_btn, 20)
         self._aux_mute_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {SEPARATOR}; "
             f"font-weight: bold; font-size: 8px; border: 1px solid #333; "
@@ -418,13 +419,13 @@ class MixerView(QWidget):
 
         # ── Separator ──
         sep2 = QFrame()
-        sep2.setFixedWidth(1)
+        bind_fixed_width(sep2, 1)
         sep2.setStyleSheet(f"background: {SEPARATOR};")
         strip_row.addWidget(sep2)
 
         # ── Master / DAC (dac.maxpat) ──
         master_frame = QFrame()
-        master_frame.setMinimumWidth(54)
+        bind_min_width(master_frame, 54)
         master_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         master_frame.setStyleSheet(f"background: {BG_BLACK};")
         master_layout = QVBoxLayout(master_frame)
@@ -433,7 +434,7 @@ class MixerView(QWidget):
 
         # Master icon (M-mixer.png equivalent)
         master_icon = QLabel("M")
-        master_icon.setFixedHeight(26)
+        bind_fixed_height(master_icon, 26)
         master_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         master_icon.setStyleSheet(
             f"background: white; color: {BG_BLACK}; "
@@ -446,7 +447,7 @@ class MixerView(QWidget):
         master_fader_row.setContentsMargins(0, 0, 0, 0)
 
         self._master_vu_l = VUMeter(Qt.Orientation.Vertical)
-        self._master_vu_l.setFixedWidth(14)
+        bind_fixed_width(self._master_vu_l, 14)
         master_fader_row.addWidget(self._master_vu_l)
 
         self._master_fader = VerticalFader(FADER_SLIDER, default_value=_UNITY_POS)
@@ -460,14 +461,14 @@ class MixerView(QWidget):
         master_fader_row.addWidget(self._master_fader)
 
         self._master_vu_r = VUMeter(Qt.Orientation.Vertical)
-        self._master_vu_r.setFixedWidth(14)
+        bind_fixed_width(self._master_vu_r, 14)
         master_fader_row.addWidget(self._master_vu_r)
 
         master_layout.addLayout(master_fader_row, stretch=1)
 
         # Master label
         master_route_label = QLabel("MSTR")
-        master_route_label.setFixedHeight(17)
+        bind_fixed_height(master_route_label, 17)
         master_route_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         master_route_label.setStyleSheet(
             "background: rgba(0,0,0,64); color: white; "
@@ -478,7 +479,7 @@ class MixerView(QWidget):
         # DAC (on/off) button
         self._dac_btn = QPushButton("DAC")
         self._dac_btn.setCheckable(True)
-        self._dac_btn.setFixedHeight(20)
+        bind_fixed_height(self._dac_btn, 20)
         self._dac_btn.setStyleSheet(
             "QPushButton { background: white; color: black; "
             "font-weight: bold; font-size: 9px; border: none; padding: 0px 2px; }"

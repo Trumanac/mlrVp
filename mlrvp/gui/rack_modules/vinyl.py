@@ -9,6 +9,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QFont
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import VinylState
+from mlrvp.gui.scale import bind_fixed_size
 
 _FACE = "#0e0e0e"
 _AMBER = "#dd8833"
@@ -20,7 +21,7 @@ class _VinylLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(26, 26)
+        bind_fixed_size(self, 26, 26)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -52,7 +53,7 @@ class _WearIndicator(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(32, 22)
+        bind_fixed_size(self, 32, 22)
         self._wear = 0.3
 
     def set_wear(self, v: float):

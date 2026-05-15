@@ -10,6 +10,7 @@ from PySide6.QtCore import QPointF
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import HallReverbState
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 _FACE = "#101018"
 _LCD_BG = "#1a2a1a"
@@ -24,7 +25,7 @@ class _EchoArcsLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(32, 28)
+        bind_fixed_size(self, 32, 28)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -45,7 +46,7 @@ class _RoomLCD(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(72, 40)
+        bind_fixed_size(self, 72, 40)
         self._room_type = 0  # 0=Hall, 1=Room, 2=Chamber
 
     def set_room_type(self, t: int):
@@ -111,7 +112,7 @@ class _JogWheel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(44, 44)
+        bind_fixed_size(self, 44, 44)
         self._value = 0.5
         self._dragging = False
         self._drag_start_y = 0.0
@@ -218,7 +219,7 @@ class HallReverbModule(RackModuleBase):
         # Room type selector
         self._room_combo = QComboBox()
         self._room_combo.addItems(ROOM_TYPES)
-        self._room_combo.setFixedHeight(18)
+        bind_fixed_height(self._room_combo, 18)
         self._room_combo.setStyleSheet(
             f"QComboBox {{ background: {_LCD_BG}; color: {_LCD_FG}; font-size: 9px;"
             "border: 1px solid #334433; }"

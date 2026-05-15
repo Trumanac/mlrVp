@@ -4,7 +4,8 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QTabWidget, QStatusBar, QMenuBar,
     QMenu, QMessageBox, QFileDialog, QDialog, QSizePolicy,
-    QTextBrowser, QPushButton, QButtonGroup, QLabel,
+    QTextBrowser, QPushButton, QButtonGroup, QLabel, QSlider,
+    QDialogButtonBox,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
@@ -20,6 +21,12 @@ from mlrvp.gui.widgets.virtual_grid import VirtualGridWidget
 from mlrvp.gui.widgets.fader import ControlDisplaySettings
 from mlrvp.gui.widgets.song_recorder_panel import SongRecorderPanel
 from mlrvp.gui.styles import get_stylesheet, BG_BLACK
+from mlrvp.gui.scale import (
+    sp,
+    bind_fixed_size, bind_fixed_height, bind_fixed_width,
+    bind_min_width, bind_min_height, bind_max_width, bind_min_size,
+    scale_manager,
+)
 
 
 def _load_howto_html() -> str:
@@ -35,6 +42,136 @@ def _load_howto_html() -> str:
         return f"<h2>Error loading help</h2><p>{exc}</p>"
 
 
+class ScaleDialog(QDialog):
+    """Slider-based UI scale picker with live preview.
+
+    Range: 75%-200% in 25% steps.  Emits :attr:`factor_changed` whenever the
+    slider value changes so the controller can apply the new factor live.
+    Clicking Cancel reverts to the factor in effect when the dialog opened.
+    """
+
+    MIN_PCT = 75
+    MAX_PCT = 200
+    STEP_PCT = 25
+
+    factor_changed = Signal(float)
+
+    def __init__(self, current_factor: float, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("UI Scale")
+        self.setModal(True)
+        self.setMinimumWidth(sp(360))
+
+        # Snap incoming factor to nearest valid step
+        current_pct = int(round(current_factor * 100 / self.STEP_PCT)) * self.STEP_PCT
+        current_pct = max(self.MIN_PCT, min(self.MAX_PCT, current_pct))
+        self._last_emitted_pct = current_pct
+
+        # Coalesce rapid slider changes into a single apply (avoids freeze
+        # when dragging across multiple snap stops).  While the user is
+        # actively dragging we do NOT apply yet — only the label updates
+        # live.  The actual scale is committed on slider release or after
+        # a short idle period for keyboard / wheel input.
+        self._emit_timer = QTimer(self)
+        self._emit_timer.setSingleShot(True)
+        self._emit_timer.setInterval(180)  # ms — idle window for non-drag input
+        self._emit_timer.timeout.connect(self._emit_pending)
+        self._pending_pct: int | None = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 12)
+        layout.setSpacing(10)
+
+        info = QLabel(
+            "Adjust the overall UI scale.\n"
+            "Changes preview live; click OK to keep them or Cancel to revert."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._value_label = QLabel(f"UI Scale: {current_pct}%")
+        self._value_label.setAlignment(Qt.AlignCenter)
+        f = self._value_label.font()
+        f.setBold(True)
+        self._value_label.setFont(f)
+        layout.addWidget(self._value_label)
+
+        self._slider = QSlider(Qt.Horizontal)
+        self._slider.setMinimum(self.MIN_PCT)
+        self._slider.setMaximum(self.MAX_PCT)
+        self._slider.setSingleStep(self.STEP_PCT)
+        self._slider.setPageStep(self.STEP_PCT)
+        self._slider.setTickInterval(self.STEP_PCT)
+        self._slider.setTickPosition(QSlider.TicksBelow)
+        self._slider.setValue(current_pct)
+        self._slider.valueChanged.connect(self._on_slider_changed)
+        # When the user releases the slider, flush any pending apply
+        # immediately so the final value lands without waiting for the
+        # debounce timer.
+        self._slider.sliderReleased.connect(self._emit_pending)
+        layout.addWidget(self._slider)
+
+        # Tick labels row (75 100 125 150 175 200)
+        ticks = QHBoxLayout()
+        ticks.setContentsMargins(2, 0, 2, 0)
+        for pct in range(self.MIN_PCT, self.MAX_PCT + 1, self.STEP_PCT):
+            lbl = QLabel(f"{pct}%")
+            lbl.setAlignment(Qt.AlignCenter)
+            ticks.addWidget(lbl, 1)
+        layout.addLayout(ticks)
+
+        # Buttons
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        reset_btn = btns.addButton("Reset to 100%", QDialogButtonBox.ResetRole)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        reset_btn.clicked.connect(lambda: self._slider.setValue(100))
+        layout.addWidget(btns)
+
+    def _on_slider_changed(self, value: int):
+        # Snap to nearest STEP_PCT
+        snapped = int(round(value / self.STEP_PCT)) * self.STEP_PCT
+        snapped = max(self.MIN_PCT, min(self.MAX_PCT, snapped))
+        if snapped != value:
+            self._slider.blockSignals(True)
+            self._slider.setValue(snapped)
+            self._slider.blockSignals(False)
+        self._value_label.setText(f"UI Scale: {snapped}%")
+        if snapped == self._last_emitted_pct:
+            self._pending_pct = None
+            self._emit_timer.stop()
+            return
+        self._pending_pct = snapped
+        # If the user is dragging the handle, wait for sliderReleased
+        # rather than running the heavy stylesheet rebuild mid-drag.
+        if self._slider.isSliderDown():
+            self._emit_timer.stop()
+            return
+        # Keyboard arrows / mouse wheel / clicks on the track: debounce
+        self._emit_timer.start()
+
+    def _emit_pending(self):
+        if self._pending_pct is None:
+            return
+        pct = self._pending_pct
+        self._pending_pct = None
+        if pct == self._last_emitted_pct:
+            return
+        self._last_emitted_pct = pct
+        self.factor_changed.emit(pct / 100.0)
+
+    def accept(self):
+        # Make sure the final value is committed even if the debounce timer
+        # hasn't fired yet.
+        if self._emit_timer.isActive():
+            self._emit_timer.stop()
+        self._emit_pending()
+        super().accept()
+
+    def selected_factor(self) -> float:
+        return self._slider.value() / 100.0
+
+
 class VirtualGridWindow(QDialog):
     """Pop-out window for the virtual grid controller."""
 
@@ -44,8 +181,9 @@ class VirtualGridWindow(QDialog):
 
     # Standard monome sizes: (label, rows, cols)
     _GRID_SIZES = [
-        ("64\n8×8",   8,  8),
-        ("128\n8×16", 8, 16),
+        ("64\n8×8",    8,  8),
+        ("128\n8×16",  8, 16),
+        ("128\n16×8", 16,  8),
         ("256\n16×16", 16, 16),
     ]
 
@@ -70,7 +208,7 @@ class VirtualGridWindow(QDialog):
         for i, (label, rows, cols) in enumerate(self._GRID_SIZES):
             btn = QPushButton(label)
             btn.setCheckable(True)
-            btn.setFixedHeight(32)
+            bind_fixed_height(btn, 32)
             btn.setStyleSheet(
                 "QPushButton { background: #1a1a1a; color: #888; border: 1px solid #333;"
                 "  font-size: 9px; padding: 0; }"
@@ -94,6 +232,10 @@ class VirtualGridWindow(QDialog):
 
         self._hardware_connected = False
         self._update_size()
+        # Re-fit when the global UI scale changes (the grid widget itself
+        # also re-applies its button size on this signal — connection order
+        # ensures it has already updated by the time we read button_size).
+        scale_manager.changed.connect(lambda _f: self._update_size())
 
     def _on_size_btn(self, rows: int, cols: int):
         """Size preset button clicked — emit only when no hardware grid."""
@@ -123,13 +265,25 @@ class VirtualGridWindow(QDialog):
             btn.setEnabled(not connected)
 
     def _update_size(self):
-        bs = self._grid.button_size
-        sp = self._grid.button_spacing
-        grid_w = self._grid.columns * (bs + sp) + sp + 8
-        grid_h = self._grid.rows * (bs + sp) + sp + 8
-        # Add room for the size-toggle row (32px buttons + spacing + top/bottom margins)
-        total_w = max(grid_w, 200)
-        total_h = grid_h + 32 + 4 + 8  # grid + btn row + spacing + margins
+        # Pull live-scaled button geometry directly from the grid widget.
+        # We read the *base* sizes and re-apply sp() ourselves so this works
+        # regardless of signal connection order with the grid's own slot.
+        bs = sp(self._grid._base_button_size)
+        spacing = sp(self._grid._base_button_spacing)
+        # Keep the grid widget in sync (idempotent if its own slot already ran)
+        self._grid.button_size = bs
+        self._grid.button_spacing = spacing
+        grid_w = self._grid.columns * (bs + spacing) + spacing + sp(8)
+        grid_h = self._grid.rows * (bs + spacing) + spacing + sp(8)
+        total_w = max(grid_w, sp(200))
+        # button row (32) + extra spacing (4) + outer margins (8)
+        total_h = grid_h + sp(32) + sp(4) + sp(8)
+        # Clear any prior fixed constraint before setting the new one so Qt
+        # always honours the new size (setFixedSize is no-op when the value
+        # is identical to the cached min/max — which it isn't here, but the
+        # explicit reset is defensive against odd states after style reload).
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
         self.setFixedSize(total_w, total_h)
 
     def closeEvent(self, event):
@@ -154,11 +308,12 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
 
         self.setWindowTitle("mlrVp")
-        self.setMinimumSize(1380, 600)
-        self.resize(1620, 700)  # initial size — wide enough that no controls are squished
+        bind_min_size(self, 1380, 600)
+        self.resize(sp(1620), sp(700))  # initial size — wide enough that no controls are squished
 
-        # Apply dark theme
-        self.setStyleSheet(get_stylesheet())
+        # Apply dark theme (regenerated whenever scale changes by the controller)
+        from mlrvp.gui import scale as _ui_scale
+        self.setStyleSheet(get_stylesheet(_ui_scale.get_scale()))
 
         # Virtual grid pop-out window (created but hidden)
         self._grid_window = VirtualGridWindow(self)
@@ -202,8 +357,8 @@ class MainWindow(QMainWindow):
         self._setup_view = SetupView()
         self._side_tabs.addTab(self._setup_view, "Setup")
 
-        self._side_tabs.setMinimumWidth(400)
-        self._side_tabs.setMaximumWidth(600)
+        bind_min_width(self._side_tabs, 400)
+        bind_max_width(self._side_tabs, 600)
 
         # Right panel: plain layout — tabs on top, master filter + mixer pinned at bottom
         right_panel = QWidget()
@@ -216,7 +371,7 @@ class MainWindow(QMainWindow):
 
         # Master filter + mixer pinned at bottom
         self._master_filter_view = MasterFilterView()
-        self._master_filter_view.setFixedHeight(52)
+        bind_fixed_height(self._master_filter_view, 52)
         right_layout.addWidget(self._master_filter_view)
 
         self._mixer_view = MixerView()
@@ -225,8 +380,8 @@ class MainWindow(QMainWindow):
         self._song_recorder_panel = SongRecorderPanel()
         right_layout.addWidget(self._song_recorder_panel)
 
-        right_panel.setMinimumWidth(400)
-        right_panel.setMaximumWidth(600)
+        bind_min_width(right_panel, 400)
+        bind_max_width(right_panel, 600)
         self._main_splitter.addWidget(right_panel)
 
         # Set splitter proportions (channels get more space)
@@ -242,14 +397,8 @@ class MainWindow(QMainWindow):
         self._auto_resize()
 
     def _auto_resize(self):
-        """Resize window to fit all 8 rows without scrolling."""
-        # Use the SAME formula as _auto_resize_for_rows so the initial size
-        # matches the connected-grid size — prevents the window from "shrinking"
-        # when the user disconnects/reconnects a grid or when no grid is found.
+        """Set initial window size to fit 8 rows comfortably."""
         self._auto_resize_for_rows(8)
-        # Also enforce a hard minimum so any later resize call cannot shrink
-        # the window below the 8-row layout (which would clip the channel view).
-        self.setMinimumHeight(1100)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -319,19 +468,10 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._toggle_grid_action)
 
         view_menu.addSeparator()
-        scale_menu = view_menu.addMenu("UI &Scale")
-        from PySide6.QtGui import QActionGroup
-        from mlrvp.config import get_ui_scale
-        current_scale = get_ui_scale()
-        scale_group = QActionGroup(self)
-        for pct in (50, 75, 100, 125, 150, 175, 200):
-            act = QAction(f"{pct}%", self)
-            act.setCheckable(True)
-            act.setChecked(abs(pct / 100.0 - current_scale) < 0.01)
-            factor = pct / 100.0
-            act.triggered.connect(lambda checked, f=factor: self._on_scale(f))
-            scale_group.addAction(act)
-            scale_menu.addAction(act)
+        scale_action = QAction("UI &Scale\u2026", self)
+        scale_action.setToolTip("Adjust the UI scale factor (live, no restart)")
+        scale_action.triggered.connect(self._on_open_scale_dialog)
+        view_menu.addAction(scale_action)
 
         view_menu.addSeparator()
 
@@ -404,9 +544,23 @@ class MainWindow(QMainWindow):
         self.restart_requested.emit()
 
     def _on_scale(self, factor: float):
-        from mlrvp.config import set_ui_scale
-        set_ui_scale(factor)
+        """Emit a scale change request.  The controller applies it live."""
         self.scale_change_requested.emit(factor)
+
+    def _on_open_scale_dialog(self):
+        """Open the live UI scale dialog.
+
+        Changes are applied live as the slider moves; clicking Cancel
+        restores the original factor.
+        """
+        from mlrvp.gui import scale as ui_scale
+        original = ui_scale.get_scale()
+        dlg = ScaleDialog(original, self)
+        # Live preview: every slider change applies the factor immediately
+        dlg.factor_changed.connect(self._on_scale)
+        if dlg.exec() != QDialog.Accepted:
+            # User cancelled — revert to the original factor
+            self._on_scale(original)
 
     def _on_about(self):
         from mlrvp import __version__ as _ver
@@ -414,7 +568,7 @@ class MainWindow(QMainWindow):
 
         dlg = QDialog(self)
         dlg.setWindowTitle("About mlrVp")
-        dlg.setFixedWidth(420)
+        dlg.setFixedWidth(sp(420))
 
         outer = QHBoxLayout(dlg)
         outer.setContentsMargins(20, 20, 20, 20)
@@ -457,7 +611,7 @@ class MainWindow(QMainWindow):
             return
         dlg = QDialog(self, Qt.WindowType.Window)
         dlg.setWindowTitle("mlrVp — How to Use")
-        dlg.resize(700, 580)
+        dlg.resize(sp(700), sp(580))
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dlg.destroyed.connect(lambda: setattr(self, '_howto_dialog', None))
         layout = QVBoxLayout(dlg)
@@ -529,6 +683,8 @@ class MainWindow(QMainWindow):
         self._toggle_grid_action.blockSignals(True)
         self._toggle_grid_action.setChecked(visible)
         self._toggle_grid_action.blockSignals(False)
+        # Sync the transport bar grid button
+        self._transport.set_virtual_grid_active(visible)
 
     def set_hardware_grid_connected(self, connected: bool):
         """Track whether a hardware grid is connected.
@@ -539,24 +695,26 @@ class MainWindow(QMainWindow):
             self.set_virtual_grid_visible(True)
 
     def set_grid_dimensions(self, rows: int, columns: int):
-        """Update virtual grid, channel view, and auto-resize for the row count."""
+        """Update virtual grid and channel view for the row count."""
         self._grid_window.set_grid_dimensions(rows, columns)
         self._channel_view.set_visible_rows(rows)
-        self._auto_resize_for_rows(rows)
 
     def _auto_resize_for_rows(self, row_count: int):
-        """Resize window height to fit the given number of rows + mixer."""
+        """Set the initial window height to comfortably show row_count rows.
+
+        Only called at startup (via _auto_resize).  Changing the grid size
+        after startup no longer resizes the window — the ChannelView's
+        internal QScrollArea handles overflow rows instead.
+        """
         row_height = 100
         transport_h = 52
         mixer_h = 220
         status_h = 26
         margins = 24
         needed_h = transport_h + (row_count * row_height) + mixer_h + status_h + margins
-        needed_h = max(needed_h, 1100)
-        # Cap at 2000 to accommodate 16-row (256) grids without scrolling
-        target_h = max(min(needed_h, 2000), self.height())
-        # Keep current width but ensure we don't go below 1620 (initial default)
-        target_w = max(self.width(), 1620)
+        needed_h = max(min(needed_h, 2000), 1100)
+        target_h = sp(needed_h)
+        target_w = max(self.width(), sp(1620))
         self.resize(target_w, target_h)
 
     def confirm_close(self):

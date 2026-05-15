@@ -38,6 +38,7 @@ from mlrvp.gui.styles import (
 )
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.gui.widgets.vu_meter import VUMeter
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width, bind_min_height
 
 
 # Tape-speed knob mapping: knob 0..1 ↔ tape_speed 0.25..4.0 (logarithmic, 1.0 at centre).
@@ -78,7 +79,7 @@ class _RecLed(QWidget):
         super().__init__(parent)
         self._active = False
         self._bright = False     # blink-bright phase
-        self.setFixedSize(10, 10)
+        bind_fixed_size(self, 10, 10)
 
     def set_active(self, active: bool) -> None:
         if active != self._active:
@@ -124,7 +125,7 @@ class _ScrollingWaveform(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(56)
+        bind_min_height(self, 56)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setStyleSheet(f"background: {BG_BLACK}; border: 1px solid {SEPARATOR};")
         self._peaks: Optional[np.ndarray] = None   # full recording, len = width*ZOOM
@@ -324,7 +325,7 @@ class SongRecorderPanel(QWidget):
 
     def _build_header(self, root: QVBoxLayout) -> None:
         self._header = QFrame()
-        self._header.setFixedHeight(24)
+        bind_fixed_height(self._header, 24)
         self._header.setStyleSheet(
             f"QFrame {{ background: {BG_PANEL}; "
             f"border-top: 1px solid {ACCENT_GOLD}; "
@@ -335,7 +336,7 @@ class SongRecorderPanel(QWidget):
         hdr.setSpacing(8)
 
         self._collapse_btn = QPushButton("▶")
-        self._collapse_btn.setFixedSize(18, 18)
+        bind_fixed_size(self._collapse_btn, 18, 18)
         self._collapse_btn.setCheckable(True)
         self._collapse_btn.setChecked(False)   # collapsed by default
         self._collapse_btn.setStyleSheet(
@@ -412,7 +413,7 @@ class SongRecorderPanel(QWidget):
 
         # Horizontal hairline
         hr = QFrame()
-        hr.setFixedHeight(1)
+        bind_fixed_height(hr, 1)
         hr.setStyleSheet(f"background: {SEPARATOR};")
         body_lay.addWidget(hr)
 
@@ -425,13 +426,13 @@ class SongRecorderPanel(QWidget):
 
     def _build_vsep(self) -> QFrame:
         sep = QFrame()
-        sep.setFixedWidth(1)
+        bind_fixed_width(sep, 1)
         sep.setStyleSheet(f"background: {ACCENT_GOLD};")
         return sep
 
     def _build_left_zone(self) -> QWidget:
         zone = QWidget()
-        zone.setFixedWidth(170)
+        bind_fixed_width(zone, 170)
         v = QVBoxLayout(zone)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(4)
@@ -442,7 +443,7 @@ class SongRecorderPanel(QWidget):
 
         self._arm_btn = QPushButton("ARM")
         self._arm_btn.setCheckable(True)
-        self._arm_btn.setFixedSize(54, 28)
+        bind_fixed_size(self._arm_btn, 54, 28)
         self._arm_btn.setToolTip(
             "ARM — recording starts on next grid trigger (any pad)"
         )
@@ -451,7 +452,7 @@ class SongRecorderPanel(QWidget):
         btn_row.addWidget(self._arm_btn)
 
         self._rec_btn = QPushButton("● REC")
-        self._rec_btn.setFixedSize(72, 28)
+        bind_fixed_size(self._rec_btn, 72, 28)
         self._rec_btn.setToolTip("REC — start recording immediately")
         self._apply_rec_style(False)
         self._rec_btn.clicked.connect(self.rec_clicked.emit)
@@ -482,7 +483,7 @@ class SongRecorderPanel(QWidget):
         knob_row.addWidget(self._tape_knob)
 
         self._tape_val_lbl = QLabel("1.00x")
-        self._tape_val_lbl.setFixedWidth(44)
+        bind_fixed_width(self._tape_val_lbl, 44)
         self._tape_val_lbl.setStyleSheet(
             f"color: {ACCENT_GOLD}; font-size: 10px; font-weight: bold; "
             f"background: {BG_BLACK}; border: 1px solid {SEPARATOR}; "
@@ -517,9 +518,9 @@ class SongRecorderPanel(QWidget):
         meters = QHBoxLayout()
         meters.setSpacing(2)
         self._vu_l = VUMeter(orientation=Qt.Orientation.Vertical)
-        self._vu_l.setFixedSize(8, 56)
+        bind_fixed_size(self._vu_l, 8, 56)
         self._vu_r = VUMeter(orientation=Qt.Orientation.Vertical)
-        self._vu_r.setFixedSize(8, 56)
+        bind_fixed_size(self._vu_r, 8, 56)
         meters.addWidget(self._vu_l)
         meters.addWidget(self._vu_r)
         vu_v.addLayout(meters)
@@ -550,7 +551,7 @@ class SongRecorderPanel(QWidget):
         )
 
         self._rw_btn = QPushButton("|<")
-        self._rw_btn.setFixedSize(30, BH)
+        bind_fixed_size(self._rw_btn, 30, BH)
         self._rw_btn.setToolTip("Hold to rewind — accelerates like tape")
         self._rw_btn.setStyleSheet(neutral_btn_style)
         self._rw_btn.pressed.connect(lambda: self._on_transport_press(-1))
@@ -558,7 +559,7 @@ class SongRecorderPanel(QWidget):
         row.addWidget(self._rw_btn)
 
         self._play_btn = QPushButton("\u25b6")
-        self._play_btn.setFixedSize(34, BH)
+        bind_fixed_size(self._play_btn, 34, BH)
         self._play_btn.setCheckable(True)
         self._play_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -571,7 +572,7 @@ class SongRecorderPanel(QWidget):
         row.addWidget(self._play_btn)
 
         self._ff_btn = QPushButton(">|")
-        self._ff_btn.setFixedSize(30, BH)
+        bind_fixed_size(self._ff_btn, 30, BH)
         self._ff_btn.setToolTip("Hold to fast-forward — accelerates like tape")
         self._ff_btn.setStyleSheet(neutral_btn_style)
         self._ff_btn.pressed.connect(lambda: self._on_transport_press(1))
@@ -579,7 +580,7 @@ class SongRecorderPanel(QWidget):
         row.addWidget(self._ff_btn)
 
         self._stop_btn = QPushButton("\u25a0")
-        self._stop_btn.setFixedSize(30, BH)
+        bind_fixed_size(self._stop_btn, 30, BH)
         self._stop_btn.setToolTip("Stop  |  Double-click = stop + rewind")
         self._stop_btn.setStyleSheet(neutral_btn_style)
         self._stop_btn._last_click_time = 0.0
@@ -587,7 +588,7 @@ class SongRecorderPanel(QWidget):
         row.addWidget(self._stop_btn)
 
         self._loop_btn = QPushButton("\u21ba")
-        self._loop_btn.setFixedSize(28, BH)
+        bind_fixed_size(self._loop_btn, 28, BH)
         self._loop_btn.setCheckable(True)
         self._loop_btn.setToolTip("Loop playback")
         self._loop_btn.setStyleSheet(
@@ -601,7 +602,7 @@ class SongRecorderPanel(QWidget):
 
         # Volume slider
         vol_lbl = QLabel("\U0001f50a")
-        vol_lbl.setFixedSize(14, BH)
+        bind_fixed_size(vol_lbl, 14, BH)
         vol_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         vol_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 10px;")
         vol_lbl.setToolTip("Playback volume")
@@ -609,7 +610,7 @@ class SongRecorderPanel(QWidget):
         self._vol_slider = QSlider(Qt.Orientation.Horizontal)
         self._vol_slider.setRange(0, 100)
         self._vol_slider.setValue(100)
-        self._vol_slider.setFixedSize(72, BH)
+        bind_fixed_size(self._vol_slider, 72, BH)
         self._vol_slider.setToolTip("Playback volume")
         self._vol_slider.setStyleSheet(
             f"QSlider::groove:horizontal {{ height: 4px; background: {SEPARATOR}; border-radius: 2px; }}"
@@ -623,13 +624,13 @@ class SongRecorderPanel(QWidget):
         row.addWidget(self._vol_slider)
 
         sp = QFrame()
-        sp.setFixedSize(1, BH)
+        bind_fixed_size(sp, 1, BH)
         sp.setStyleSheet(f"background: {SEPARATOR};")
         row.addWidget(sp)
 
         self._filename_edit = QLineEdit()
         self._filename_edit.setPlaceholderText("recording filename…")
-        self._filename_edit.setFixedHeight(BH)
+        bind_fixed_height(self._filename_edit, BH)
         self._filename_edit.setStyleSheet(
             f"QLineEdit {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"font-size: 10px; border: 1px solid {SEPARATOR}; padding: 1px 6px; "
@@ -639,7 +640,7 @@ class SongRecorderPanel(QWidget):
         row.addWidget(self._filename_edit, stretch=1)
 
         self._save_btn = QPushButton("Save")
-        self._save_btn.setFixedSize(48, BH)
+        bind_fixed_size(self._save_btn, 48, BH)
         self._save_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_GOLD}; "
             f"font-size: 9px; font-weight: bold; border: 1px solid {ACCENT_GOLD}; padding: 0; }}"
@@ -649,7 +650,7 @@ class SongRecorderPanel(QWidget):
         row.addWidget(self._save_btn)
 
         self._save_as_btn = QPushButton("Save As\u2026")
-        self._save_as_btn.setFixedSize(64, BH)
+        bind_fixed_size(self._save_as_btn, 64, BH)
         self._save_as_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"font-size: 9px; border: 1px solid {SEPARATOR}; padding: 0; }}"
@@ -659,7 +660,7 @@ class SongRecorderPanel(QWidget):
         row.addWidget(self._save_as_btn)
 
         self._clear_btn = QPushButton("New")
-        self._clear_btn.setFixedSize(44, BH)
+        bind_fixed_size(self._clear_btn, 44, BH)
         self._clear_btn.setToolTip("Discard recording and start fresh")
         self._clear_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "

@@ -19,6 +19,9 @@ import time
 from typing import Optional, Callable
 from dataclasses import dataclass, field
 
+# Suppress the brief console-window flash on Windows for every spawned process.
+_WIN_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
 from mlrvp.config import (
     MAX_ROWS,
     MAX_COLUMNS,
@@ -166,6 +169,7 @@ def _windows_service_hint() -> str:
         r = subprocess.run(
             ["sc", "query", "serialosc"],
             capture_output=True, text=True, timeout=2.0,
+            creationflags=_WIN_FLAGS,
         )
         if "STOPPED" in r.stdout:
             return (
@@ -199,6 +203,7 @@ def _windows_stuck_device_pids() -> list[int]:
             ["tasklist", "/FI", "IMAGENAME eq serialosc-device.exe",
              "/FO", "CSV", "/NH"],
             capture_output=True, text=True, timeout=3.0,
+            creationflags=_WIN_FLAGS,
         )
         import csv, io as _io
         pids: set[int] = set()
@@ -215,6 +220,7 @@ def _windows_stuck_device_pids() -> list[int]:
         r2 = subprocess.run(
             ["netstat", "-ano", "-p", "UDP"],
             capture_output=True, text=True, timeout=3.0,
+            creationflags=_WIN_FLAGS,
         )
         for line in r2.stdout.splitlines():
             parts = line.split()
@@ -251,6 +257,7 @@ def _windows_find_monome_com_port() -> str:
             ["wmic", "process", "where",
              "name='serialosc-device.exe'", "get", "CommandLine", "/VALUE"],
             capture_output=True, text=True, timeout=4.0,
+            creationflags=_WIN_FLAGS,
         )
         import re as _re
         for m in _re.finditer(r'(COM\d+)', r.stdout, _re.IGNORECASE):
@@ -265,6 +272,7 @@ def _windows_find_monome_com_port() -> str:
              "$_.FriendlyName -match 'COM'} | "
              "Select-Object -ExpandProperty FriendlyName"],
             capture_output=True, text=True, timeout=5.0,
+            creationflags=_WIN_FLAGS,
         )
         import re as _re
         for m in _re.finditer(r'COM(\d+)', r.stdout):
@@ -416,6 +424,7 @@ Log "=== done ==="
             ["powershell", "-NoProfile", "-NonInteractive",
              "-WindowStyle", "Hidden", "-Command", outer_cmd],
             capture_output=True, text=True, timeout=120.0,
+            creationflags=_WIN_FLAGS,
         )
         outer_out = (result.stdout or "").strip()
         if "OUTER_FAIL" in outer_out:
@@ -480,6 +489,7 @@ def _kill_serialosc_for_direct_mode(com_port: str) -> bool:
             r = subprocess.run(
                 ["sc", "queryex", "serialosc"],
                 capture_output=True, text=True, timeout=5.0,
+                creationflags=_WIN_FLAGS,
             )
             for line in r.stdout.splitlines():
                 if "PID" in line and ":" in line:
@@ -490,6 +500,7 @@ def _kill_serialosc_for_direct_mode(com_port: str) -> bool:
                         subprocess.run(
                             ["taskkill", "/F", "/PID", str(svc_pid)],
                             capture_output=True, timeout=4.0,
+                            creationflags=_WIN_FLAGS,
                         )
         except Exception as e:
             log.debug("Service PID lookup failed: %s", e)
@@ -498,7 +509,7 @@ def _kill_serialosc_for_direct_mode(com_port: str) -> bool:
         #    without full elevation when the user is in the Administrators group).
         for svc in ("serialosc", "serialosc-device"):
             try:
-                subprocess.run(["sc", "stop", svc], capture_output=True, timeout=6.0)
+                subprocess.run(["sc", "stop", svc], capture_output=True, timeout=6.0, creationflags=_WIN_FLAGS)
             except Exception:
                 pass
 
@@ -508,6 +519,7 @@ def _kill_serialosc_for_direct_mode(com_port: str) -> bool:
                 subprocess.run(
                     ["taskkill", "/F", "/IM", exe],
                     capture_output=True, timeout=4.0,
+                    creationflags=_WIN_FLAGS,
                 )
             except Exception:
                 pass
@@ -518,6 +530,7 @@ def _kill_serialosc_for_direct_mode(com_port: str) -> bool:
                 ["wmic", "process", "where", "name like 'serialosc%'",
                  "get", "Name,ProcessId,ExecutablePath", "/FORMAT:LIST"],
                 capture_output=True, text=True, timeout=5.0,
+                creationflags=_WIN_FLAGS,
             )
             visible = [l.strip() for l in r.stdout.splitlines() if l.strip()]
             if visible:
@@ -581,6 +594,7 @@ def _windows_kill_stuck_devices() -> int:
             r = subprocess.run(
                 ["taskkill", "/F", "/PID", str(pid)],
                 capture_output=True, text=True, timeout=3.0,
+                creationflags=_WIN_FLAGS,
             )
             # taskkill prints "SUCCESS: ..." on kill, or "ERROR: Access is denied"
             if "SUCCESS" in r.stdout or r.returncode == 0 and "denied" not in r.stdout.lower():
@@ -1025,7 +1039,7 @@ class GridController:
                     f"Start-Process powershell -Verb RunAs "
                     f"-ArgumentList '-WindowStyle','Hidden','-Command','{ps_script}'",
                 ],
-                creationflags=0x00000008,  # DETACHED_PROCESS
+                creationflags=subprocess.DETACHED_PROCESS | _WIN_FLAGS,
             )
             log.info(
                 "Elevated serialosc restart requested%s",

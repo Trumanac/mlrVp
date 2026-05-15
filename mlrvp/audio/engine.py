@@ -2250,6 +2250,9 @@ class AudioEngine:
         # Per-channel filters
         for cf in self.channel_filters:
             cf.reset()
+        # Snap mixer volume smoothing so the new preset's volumes take
+        # effect immediately rather than gliding from the old values.
+        self.mixer.reset_smooth_volumes()
 
     def set_channel_speed(self, row: int, tempo: float, sample=None):
         """Set channel playback speed based on tempo and sample length.

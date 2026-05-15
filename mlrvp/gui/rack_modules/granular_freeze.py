@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — frosted glass / ice-blue / snowflake ────────────────────
 _FACE    = "#0a1520"   # deep dark blue-black faceplate
@@ -23,7 +24,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _FROST) -> QVBoxLayout:
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -39,7 +40,7 @@ class _SnowGlobeLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(24, 24)
+        bind_fixed_size(self, 24, 24)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -150,14 +151,14 @@ class GranularFreezeModule(RackModuleBase):
         self._freeze = QPushButton("FREEZE")
         self._freeze.setCheckable(True)
         self._freeze.setChecked(False)
-        self._freeze.setFixedSize(42, 18)
+        bind_fixed_size(self._freeze, 42, 18)
         self._freeze.clicked.connect(self._on_freeze)
         self._refresh_freeze()
         freeze_col = QVBoxLayout()
         freeze_col.setSpacing(0)
         freeze_col.setContentsMargins(0, 0, 0, 0)
         freeze_lbl = QLabel("HOLD")
-        freeze_lbl.setFixedHeight(10)
+        bind_fixed_height(freeze_lbl, 10)
         freeze_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freeze_lbl.setStyleSheet(
             f"color: {_DIM}; font-size: 6px; font-weight: bold;"

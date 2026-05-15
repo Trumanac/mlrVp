@@ -16,6 +16,7 @@ from PySide6.QtGui import QPainter, QColor, QPen
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import TapeDelayState
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width
 
 # ── RE-201 colour palette ────────────────────────────────────────────────────
 _FACE       = "#111111"        # near-black body / leather texture base
@@ -52,7 +53,7 @@ class _ReelSpaceLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(36, 36)
+        bind_fixed_size(self, 36, 36)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -168,8 +169,8 @@ class TapeDelayModule(RackModuleBase):
         self._head_mode = QComboBox()
         self._head_mode.addItems(HEAD_MODE_NAMES)
         self._head_mode.setCurrentIndex(0)
-        self._head_mode.setFixedHeight(20)
-        self._head_mode.setFixedWidth(110)
+        bind_fixed_height(self._head_mode, 20)
+        bind_fixed_width(self._head_mode, 110)
         self._head_mode.setStyleSheet(
             f"QComboBox {{ background: #0f2a0f; color: {_GREEN_TEXT}; font-size: 9px;"
             f"  border: 1px solid {_GREEN_LITE}; border-radius: 2px; }}"
@@ -207,8 +208,8 @@ class TapeDelayModule(RackModuleBase):
         self._sync = QComboBox()
         self._sync.addItems(SYNC_NAMES)
         self._sync.setCurrentIndex(5)
-        self._sync.setFixedHeight(18)
-        self._sync.setFixedWidth(68)
+        bind_fixed_height(self._sync, 18)
+        bind_fixed_width(self._sync, 68)
         self._sync.setStyleSheet(
             f"QComboBox {{ background: #0f2a0f; color: {_GREEN_TEXT}; font-size: 9px;"
             f"  border: 1px solid {_GREEN_LITE}; border-radius: 2px; }}"

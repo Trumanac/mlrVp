@@ -10,6 +10,7 @@ from PySide6.QtGui import QPainter, QColor, QLinearGradient
 import weakref
 
 from mlrvp.gui.styles import BG_BLACK, BG_PANEL, VU_COLOR
+from mlrvp.gui.scale import bind_max_height, bind_max_width, bind_min_size
 
 
 # ── Shared decay timer for all VU meters ──────────────────────────────
@@ -59,11 +60,11 @@ class VUMeter(QWidget):
         self._orientation = orientation
 
         if orientation == Qt.Orientation.Vertical:
-            self.setMinimumSize(8, 40)
-            self.setMaximumWidth(14)
+            bind_min_size(self, 8, 40)
+            bind_max_width(self, 14)
         else:
-            self.setMinimumSize(40, 8)
-            self.setMaximumHeight(14)
+            bind_min_size(self, 40, 8)
+            bind_max_height(self, 14)
 
         # Cache gradients (created once on first paint when size is known)
         self._cached_gradient = None

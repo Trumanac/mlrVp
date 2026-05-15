@@ -6,6 +6,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_size
 
 # ── colour palette — dark industrial steel / Drawmer-inspired ────────────────
 _FACE    = "#0c0e12"   # near-black gunmetal faceplate
@@ -39,7 +40,7 @@ class _VelvetRopeLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(22, 20)
+        bind_fixed_size(self, 22, 20)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -69,7 +70,7 @@ class _GateLED(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(12, 12)
+        bind_fixed_size(self, 12, 12)
         self._color = _RED
 
     def set_color(self, color: str):
@@ -102,7 +103,7 @@ class _KeyFilterSelector(QWidget):
         lay.setSpacing(2)
         for i, label in enumerate(("OFF", "LP", "HP")):
             btn = QPushButton(label)
-            btn.setFixedSize(32, 16)
+            bind_fixed_size(btn, 32, 16)
             btn.setCheckable(True)
             btn.setChecked(i == 0)
             btn.clicked.connect(lambda checked, idx=i: self._select(idx))

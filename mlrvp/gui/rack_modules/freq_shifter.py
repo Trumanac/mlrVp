@@ -8,6 +8,7 @@ from PySide6.QtGui import (QPainter, QColor, QPen, QFont,
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import FreqShifterState
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — dark navy + cyan ────────────────────────────────────────
 _FACE    = "#0e1926"   # deep navy faceplate
@@ -23,7 +24,7 @@ class _HzBadge(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(28, 16)
+        bind_fixed_size(self, 28, 16)
 
     def paintEvent(self, event):
         import math
@@ -62,7 +63,7 @@ class _GlassDisplay(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(76, 22)
+        bind_fixed_size(self, 76, 22)
         self._text = "+0.0 Hz"
         self._font = QFont("Consolas", 9, QFont.Weight.Bold)
         # Fallback if Consolas missing
@@ -135,7 +136,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _WHITE) -> QVBoxLayout:
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"

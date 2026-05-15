@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QColor
+from mlrvp.gui.scale import bind_fixed_width, bind_min_size
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class PluginBrowserDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Plugin Browser — Foreign Exchange")
-        self.setMinimumSize(600, 400)
+        bind_min_size(self, 600, 400)
         self.resize(720, 500)
         self.setStyleSheet(_SS)
 
@@ -142,7 +143,7 @@ class PluginBrowserDialog(QDialog):
         bot = QHBoxLayout()
         bot.addStretch()
         self._load_btn = QPushButton("Load")
-        self._load_btn.setFixedWidth(100)
+        bind_fixed_width(self._load_btn, 100)
         self._load_btn.clicked.connect(self._on_load_clicked)
         bot.addWidget(self._load_btn)
         root.addLayout(bot)
@@ -338,7 +339,7 @@ class _ScanPathsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Plugin Scan Paths")
-        self.setMinimumSize(500, 300)
+        bind_min_size(self, 500, 300)
         self.resize(560, 340)
         self.setStyleSheet(_SP_SS)
 

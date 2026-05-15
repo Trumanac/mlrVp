@@ -7,6 +7,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QFont
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import TransientShaperState
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — off-white / green SPL style ────────────────────────────
 _FACE  = "#f0ece4"   # warm off-white faceplate
@@ -22,7 +23,7 @@ class _PunchCardLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(24, 16)
+        bind_fixed_size(self, 24, 16)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -49,7 +50,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _DARK) -> QVBoxLayout:
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -131,7 +132,7 @@ class TransientShaperModule(RackModuleBase):
         self._link_btn = QPushButton("LINK")
         self._link_btn.setCheckable(True)
         self._link_btn.setChecked(True)
-        self._link_btn.setFixedSize(36, 16)
+        bind_fixed_size(self._link_btn, 36, 16)
         self._link_btn.setStyleSheet(
             f"QPushButton {{ background: {_DIM}; color: {_WHITE};"
             "  font-size: 7px; font-weight: bold; border-radius: 3px;"

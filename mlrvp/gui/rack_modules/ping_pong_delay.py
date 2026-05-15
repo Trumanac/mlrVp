@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — sporty green / white table-tennis look ──────────────────
 _FACE   = "#0a1a12"   # dark green faceplate
@@ -23,7 +24,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _WHITE) -> QVBoxLayout:
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -39,7 +40,7 @@ class _PingPongLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(28, 20)
+        bind_fixed_size(self, 28, 20)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -116,7 +117,7 @@ class PingPongDelayModule(RackModuleBase):
 
         # LINK button — locks PING/PONG to master TIME
         self._link_btn = QPushButton("LINK")
-        self._link_btn.setFixedSize(28, 14)
+        bind_fixed_size(self._link_btn, 28, 14)
         self._link_btn.setCheckable(True)
         self._link_btn.setChecked(True)
         self._linked = True

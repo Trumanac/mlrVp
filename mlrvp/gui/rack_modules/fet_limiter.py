@@ -10,6 +10,7 @@ from PySide6.QtGui import (
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — 1176LN blackface: black anodized + silver silk-screen ───
 _FACE    = "#0a0a0a"   # solid black anodized faceplate
@@ -28,7 +29,7 @@ class _BoltLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(16, 24)
+        bind_fixed_size(self, 16, 24)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -58,7 +59,7 @@ class _VUNeedleMeter(QWidget):
         super().__init__(parent)
         self._FONT_SCALE = QFont("Arial", 5)
         self._FONT_GR = QFont("Arial", 6, QFont.Weight.Bold)
-        self.setFixedSize(130, 80)
+        bind_fixed_size(self, 130, 80)
         self._gr_db = 0.0  # 0 = no reduction
 
     def set_gr(self, gr_db: float):
@@ -214,7 +215,7 @@ class _RatioButtons(QWidget):
         super().__init__(parent)
         self._selected = 3  # display position (default = "4" which is pos 3)
         self._callback = None
-        self.setFixedSize(self._W, self._CELL_H * len(self._LABELS))
+        bind_fixed_size(self, self._W, self._CELL_H * len(self._LABELS))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _select(self, pos: int):
@@ -276,7 +277,7 @@ class _SteppedKnob(QWidget):
         self._idx = default
         self._callback = None
         self._color = color
-        self.setFixedSize(28, 28)
+        bind_fixed_size(self, 28, 28)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def set_index(self, idx: int):
@@ -356,7 +357,7 @@ class FETLimiterModule(RackModuleBase):
         col.setSpacing(0)
         col.setContentsMargins(0, 0, 0, 0)
         lbl = QLabel(label)
-        lbl.setFixedHeight(10)
+        bind_fixed_height(lbl, 10)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl.setStyleSheet(
             f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -412,7 +413,7 @@ class FETLimiterModule(RackModuleBase):
         )
         self._attack.setToolTip("Attack time (7 steps): 1=fastest ~20µs → 7=slowest ~800µs")
         atk_lbl = QLabel("ATTACK")
-        atk_lbl.setFixedHeight(9)
+        bind_fixed_height(atk_lbl, 9)
         atk_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         atk_lbl.setStyleSheet(
             f"color: {_DIM}; font-size: 6px; font-weight: bold;"
@@ -429,7 +430,7 @@ class FETLimiterModule(RackModuleBase):
         self._release.setToolTip("Release time (5 steps): 1=50ms → 5=1.1s")
         ar_col.addWidget(self._release, alignment=Qt.AlignmentFlag.AlignCenter)
         rel_lbl = QLabel("RELEASE")
-        rel_lbl.setFixedHeight(9)
+        bind_fixed_height(rel_lbl, 9)
         rel_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         rel_lbl.setStyleSheet(
             f"color: {_DIM}; font-size: 6px; font-weight: bold;"
@@ -445,7 +446,7 @@ class FETLimiterModule(RackModuleBase):
         ratio_outer.setSpacing(0)
         ratio_outer.setContentsMargins(0, 0, 0, 0)
         ratio_lbl = QLabel("RATIO")
-        ratio_lbl.setFixedHeight(8)
+        bind_fixed_height(ratio_lbl, 8)
         ratio_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ratio_lbl.setStyleSheet(
             f"color: {_DIM}; font-size: 6px; font-weight: bold;"

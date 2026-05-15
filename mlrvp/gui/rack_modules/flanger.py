@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_size
 
 _FACE = "#1a0808"     # Dark red-black faceplate
 _RED = "#ff3333"
@@ -20,7 +21,7 @@ class _JetLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(26, 26)
+        bind_fixed_size(self, 26, 26)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -50,7 +51,7 @@ class _ToggleSwitch(QPushButton):
     def __init__(self, label: str, parent=None):
         super().__init__(label, parent)
         self.setCheckable(True)
-        self.setFixedSize(40, 18)
+        bind_fixed_size(self, 40, 18)
         self._update_style()
         self.toggled.connect(lambda: self._update_style())
 

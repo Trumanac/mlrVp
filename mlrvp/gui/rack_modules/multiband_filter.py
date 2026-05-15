@@ -13,6 +13,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import FilterState
+from mlrvp.gui.scale import bind_fixed_size, bind_fixed_width
 
 # ── SSL 4000 / SSQ inspired palette ──
 _FACE = "#2a2a30"        # Charcoal steel
@@ -30,7 +31,7 @@ class _SSPBadge(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(30, 30)
+        bind_fixed_size(self, 30, 30)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -70,7 +71,7 @@ def _lbl(text, color, size=6, bold=True):
 def _sep():
     """Thin vertical channel divider."""
     s = QFrame()
-    s.setFixedWidth(1)
+    bind_fixed_width(s, 1)
     s.setStyleSheet("background: #444;")
     return s
 

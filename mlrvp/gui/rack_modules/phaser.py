@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_size
 
 _FACE = "#2a1040"   # Deep purple faceplate
 _ACCENT = "#cc66ff"  # Bright purple accent
@@ -19,7 +20,7 @@ class _SnakeLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(26, 26)
+        bind_fixed_size(self, 26, 26)
 
     def paintEvent(self, event):
         p = QPainter(self)

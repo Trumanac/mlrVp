@@ -7,6 +7,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QFont
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import BitCrusherState
+from mlrvp.gui.scale import bind_fixed_size
 
 _FACE = "#0c0c0c"
 _GREEN = "#33ff33"
@@ -18,7 +19,7 @@ class _BinaryLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(22, 22)
+        bind_fixed_size(self, 22, 22)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -37,7 +38,7 @@ class _PixelScreen(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(52, 28)
+        bind_fixed_size(self, 52, 28)
         self._text = "12bit"
 
     def set_text(self, t: str):

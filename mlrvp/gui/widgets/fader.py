@@ -8,7 +8,7 @@ All corners sharp (no border-radius), black backgrounds.
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, Signal, QTimer, QRectF
 from PySide6.QtGui import QPainter, QColor, QPen, QMouseEvent, QFont
-
+from mlrvp.gui.scale import bind_fixed_size, bind_max_height, bind_max_width, bind_min_size
 from mlrvp.gui.styles import (
     BG_BLACK, BG_PANEL, SEPARATOR, FADER_SLIDER, FADER_BORDER, GROUP_COLORS,
     ACCENT_BLUE, ACCENT_GOLD
@@ -111,8 +111,8 @@ class VerticalFader(_ValueDisplayMixin, QWidget):
         self._color = QColor(color)
         self._midi_highlight: int = 0  # 0=off, 1=highlight, 2=learning
         self._ref_mark: float | None = None  # optional reference line (0-1 position)
-        self.setMinimumSize(20, 80)
-        self.setMaximumWidth(36)
+        bind_min_size(self, 20, 80)
+        bind_max_width(self, 36)
         self._init_value_display()
 
     def set_reference_mark(self, pos: float | None):
@@ -238,8 +238,8 @@ class HorizontalFader(_ValueDisplayMixin, QWidget):
         self._dragging: bool = False
         self._color = QColor(color)
         self._midi_highlight: int = 0  # 0=off, 1=highlight, 2=learning
-        self.setMinimumSize(60, 18)
-        self.setMaximumHeight(24)
+        bind_min_size(self, 60, 18)
+        bind_max_height(self, 24)
         self._init_value_display()
 
     @property
@@ -355,7 +355,7 @@ class RotaryKnob(_ValueDisplayMixin, QWidget):
         self._inverted = inverted
         self._drag_inverted = drag_inverted
         self._midi_highlight: int = 0  # 0=off, 1=highlight, 2=learning
-        self.setFixedSize(32, 32)
+        bind_fixed_size(self, 32, 32)
         self._init_value_display()
 
     @property

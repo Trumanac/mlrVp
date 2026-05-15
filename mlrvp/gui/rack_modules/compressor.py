@@ -12,6 +12,7 @@ from PySide6.QtGui import (
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import CompressorState
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width
 
 # ── colour palette — near-black panel, API 2500 blue/white accent scheme ─────
 _FACE     = "#0a0a0a"   # near-black panel
@@ -36,7 +37,7 @@ class _ThrustLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(32, 26)
+        bind_fixed_size(self, 32, 26)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -76,7 +77,7 @@ class _APIVUMeter(QWidget):
         super().__init__(parent)
         self._FONT_FOOTER = QFont("Arial", 5, QFont.Weight.Bold)
         self._FONT_SCALE = QFont("Arial", 4)
-        self.setFixedSize(64, 62)
+        bind_fixed_size(self, 64, 62)
         self._level = 0.0
         self._label = label
         self._is_gr = is_gr
@@ -150,7 +151,7 @@ class _ThrustButton(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._FONT_LABEL = QFont("Arial", 7, QFont.Weight.Bold)
-        self.setFixedSize(60, 28)
+        bind_fixed_size(self, 60, 28)
         self._active = True
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -231,7 +232,7 @@ class CompressorModule(RackModuleBase):
         top.addWidget(sc_lbl)
         self._sc_source = QComboBox()
         self._sc_source.addItems(SC_SOURCES)
-        self._sc_source.setFixedHeight(18)
+        bind_fixed_height(self._sc_source, 18)
         self._sc_source.setStyleSheet(
             f"QComboBox {{ background: #0a1420; color: {_WHITE}; font-size: 8px;"
             f" border: 1px solid {_BLU_DIM}; }}"
@@ -267,7 +268,7 @@ class CompressorModule(RackModuleBase):
         bot.addLayout(vu_col)
 
         # Vertical separator
-        sep = QWidget(); sep.setFixedWidth(1)
+        sep = QWidget(); bind_fixed_width(sep, 1)
         sep.setStyleSheet(f"background: {_BLU_DIM};")
         bot.addWidget(sep)
 
@@ -323,7 +324,7 @@ class CompressorModule(RackModuleBase):
         bot.addLayout(comp_col)
 
         # Vertical separator
-        sep2 = QWidget(); sep2.setFixedWidth(1)
+        sep2 = QWidget(); bind_fixed_width(sep2, 1)
         sep2.setStyleSheet(f"background: {_BLU_DIM};")
         bot.addWidget(sep2)
 

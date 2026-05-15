@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from mlrvp.config import NUM_SETLIST_SLOTS
+from mlrvp.gui.scale import bind_fixed_width, bind_min_size, bind_min_width
 from mlrvp.gui.styles import (
     ACCENT_GOLD, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY
 )
@@ -76,7 +77,7 @@ class SetlistEditorDialog(QDialog):
         super().__init__(parent)
         self._pm = preset_manager
         self.setWindowTitle("Setlist Editor")
-        self.setMinimumSize(580, 480)
+        bind_min_size(self, 580, 480)
         self.setStyleSheet(
             f"QDialog {{ background: {BG_PANEL}; color: {TEXT_PRIMARY}; }}"
         )
@@ -96,22 +97,22 @@ class SetlistEditorDialog(QDialog):
         sl_row.addWidget(sl_label)
 
         self._sl_combo = QComboBox()
-        self._sl_combo.setMinimumWidth(140)
+        bind_min_width(self._sl_combo, 140)
         self._sl_combo.currentTextChanged.connect(self._on_setlist_selected)
         sl_row.addWidget(self._sl_combo, stretch=1)
 
         self._new_btn = QPushButton("New")
-        self._new_btn.setFixedWidth(50)
+        bind_fixed_width(self._new_btn, 50)
         self._new_btn.clicked.connect(self._on_new_setlist)
         sl_row.addWidget(self._new_btn)
 
         self._rename_sl_btn = QPushButton("Rename")
-        self._rename_sl_btn.setFixedWidth(60)
+        bind_fixed_width(self._rename_sl_btn, 60)
         self._rename_sl_btn.clicked.connect(self._on_rename_setlist)
         sl_row.addWidget(self._rename_sl_btn)
 
         self._del_sl_btn = QPushButton("Delete")
-        self._del_sl_btn.setFixedWidth(56)
+        bind_fixed_width(self._del_sl_btn, 56)
         self._del_sl_btn.clicked.connect(self._on_delete_setlist)
         sl_row.addWidget(self._del_sl_btn)
 
@@ -164,7 +165,7 @@ class SetlistEditorDialog(QDialog):
         center.setSpacing(4)
         center.addStretch()
         self._add_btn = QPushButton("\u25C0 Add")
-        self._add_btn.setFixedWidth(60)
+        bind_fixed_width(self._add_btn, 60)
         self._add_btn.setToolTip("Add selected library preset to setlist")
         self._add_btn.clicked.connect(self._on_add_to_setlist)
         center.addWidget(self._add_btn)
@@ -211,7 +212,7 @@ class SetlistEditorDialog(QDialog):
         bot_row.addWidget(self._save_btn)
 
         self._close_btn = QPushButton("Close")
-        self._close_btn.setFixedWidth(60)
+        bind_fixed_width(self._close_btn, 60)
         self._close_btn.clicked.connect(self.accept)
         bot_row.addWidget(self._close_btn)
 

@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — warm gold/cream Pultec look ────────────────────────────
 _FACE   = "#1c1810"   # dark warm cream faceplate
@@ -23,7 +24,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _SILVER) -> QVBoxLayout
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -39,7 +40,7 @@ class _EQCurveLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(30, 20)
+        bind_fixed_size(self, 30, 20)
 
     def paintEvent(self, event):
         p = QPainter(self)

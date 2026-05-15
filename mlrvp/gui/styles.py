@@ -91,12 +91,17 @@ FADER_BORDER = "#636363"      # bordercolor [0.388235, 0.388235, 0.388235, 1.0]
 SEND_FADER_COLOR = "#888888"  # send fader: grey to match aux theme
 
 
-def get_stylesheet() -> str:
-    """Build the complete application stylesheet."""
-    return STYLESHEET
+def get_stylesheet(scale: float = 1.0) -> str:
+    """Build the complete application stylesheet at the given UI scale.
 
+    All pixel-valued sizes (font-size, padding, min-height, slider handle
+    dimensions, scrollbar widths, etc.) are multiplied by ``scale`` so the
+    stylesheet itself participates in live UI scaling.
+    """
+    def s(n: float) -> int:
+        return max(1, int(round(n * scale)))
 
-STYLESHEET = f"""
+    return f"""
 QMainWindow {{
     background-color: {BG_MAIN};
 }}
@@ -105,17 +110,17 @@ QWidget {{
     background-color: {BG_MAIN};
     color: {TEXT_PRIMARY};
     font-family: "Helvetica Neue", "Segoe UI", "SF Pro", sans-serif;
-    font-size: 11px;
+    font-size: {s(11)}px;
 }}
 
 QLabel {{
     background: transparent;
     color: {TEXT_PRIMARY};
-    padding: 1px;
+    padding: {s(1)}px;
 }}
 
 QLabel[class="header"] {{
-    font-size: 13px;
+    font-size: {s(13)}px;
     font-weight: bold;
     color: {ACCENT_BLUE};
 }}
@@ -129,11 +134,11 @@ QPushButton {{
     color: {TEXT_PRIMARY};
     border: 1px solid {SEPARATOR};
     border-radius: 0px;
-    padding: 4px 10px;
-    min-height: 20px;
+    padding: {s(4)}px {s(10)}px;
+    min-height: {s(20)}px;
     font-family: "Helvetica Neue", "Segoe UI", sans-serif;
     font-weight: bold;
-    font-size: 9px;
+    font-size: {s(9)}px;
 }}
 
 QPushButton:hover {{
@@ -168,7 +173,7 @@ QPushButton[class="group3"] {{ border-left: 3px solid {GROUP_COLORS[3]}; }}
 
 QSlider::groove:horizontal {{
     border: 1px solid {SEPARATOR};
-    height: 6px;
+    height: {s(6)}px;
     background: {BG_PANEL};
     border-radius: 0px;
 }}
@@ -176,14 +181,14 @@ QSlider::groove:horizontal {{
 QSlider::handle:horizontal {{
     background: {FADER_SLIDER};
     border: 1px solid {FADER_BORDER};
-    width: 14px;
-    margin: -4px 0;
+    width: {s(14)}px;
+    margin: -{s(4)}px 0;
     border-radius: 0px;
 }}
 
 QSlider::groove:vertical {{
     border: 1px solid {SEPARATOR};
-    width: 6px;
+    width: {s(6)}px;
     background: {BG_PANEL};
     border-radius: 0px;
 }}
@@ -191,8 +196,8 @@ QSlider::groove:vertical {{
 QSlider::handle:vertical {{
     background: {FADER_SLIDER};
     border: 1px solid {FADER_BORDER};
-    height: 14px;
-    margin: 0 -4px;
+    height: {s(14)}px;
+    margin: 0 -{s(4)}px;
     border-radius: 0px;
 }}
 
@@ -201,10 +206,10 @@ QComboBox {{
     color: {TEXT_PRIMARY};
     border: none;
     border-radius: 0px;
-    padding: 3px 8px;
-    min-height: 17px;
+    padding: {s(3)}px {s(8)}px;
+    min-height: {s(17)}px;
     font-weight: bold;
-    font-size: 9px;
+    font-size: {s(9)}px;
 }}
 
 QComboBox::drop-down {{
@@ -225,12 +230,12 @@ QSpinBox, QDoubleSpinBox {{
     color: {TEXT_PRIMARY};
     border: 1px solid {SEPARATOR};
     border-radius: 0px;
-    padding: 2px 6px;
-    min-height: 20px;
+    padding: {s(2)}px {s(6)}px;
+    min-height: {s(20)}px;
 }}
 
 QSpinBox::up-button, QDoubleSpinBox::up-button {{
-    width: 16px;
+    width: {s(16)}px;
     background: {BG_LIGHT};
     border: none;
     border-left: 1px solid {SEPARATOR};
@@ -239,7 +244,7 @@ QSpinBox::up-button, QDoubleSpinBox::up-button {{
 }}
 
 QSpinBox::down-button, QDoubleSpinBox::down-button {{
-    width: 16px;
+    width: {s(16)}px;
     background: {BG_LIGHT};
     border: none;
     border-left: 1px solid {SEPARATOR};
@@ -249,14 +254,14 @@ QSpinBox::down-button, QDoubleSpinBox::down-button {{
 
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
     image: url({_ARROW_UP});
-    width: 8px;
-    height: 5px;
+    width: {s(8)}px;
+    height: {s(5)}px;
 }}
 
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
     image: url({_ARROW_DOWN});
-    width: 8px;
-    height: 5px;
+    width: {s(8)}px;
+    height: {s(5)}px;
 }}
 
 QLineEdit {{
@@ -264,22 +269,22 @@ QLineEdit {{
     color: {TEXT_PRIMARY};
     border: 1px solid {SEPARATOR};
     border-radius: 0px;
-    padding: 2px 6px;
-    min-height: 20px;
+    padding: {s(2)}px {s(6)}px;
+    min-height: {s(20)}px;
 }}
 
 QGroupBox {{
     border: 1px solid {SEPARATOR};
     border-radius: 0px;
-    margin-top: 8px;
-    padding-top: 14px;
+    margin-top: {s(8)}px;
+    padding-top: {s(14)}px;
     font-weight: bold;
 }}
 
 QGroupBox::title {{
     subcontrol-origin: margin;
-    left: 8px;
-    padding: 0 4px;
+    left: {s(8)}px;
+    padding: 0 {s(4)}px;
     color: {ACCENT_BLUE};
 }}
 
@@ -294,8 +299,8 @@ QTabBar::tab {{
     color: {TEXT_SECONDARY};
     border: 1px solid #444444;
     border-bottom: none;
-    padding: 5px 16px;
-    margin-right: 2px;
+    padding: {s(5)}px {s(16)}px;
+    margin-right: {s(2)}px;
     border-top-left-radius: 3px;
     border-top-right-radius: 3px;
     font-weight: bold;
@@ -315,18 +320,6 @@ QScrollArea {{
     border: none;
 }}
 
-QScrollBar:vertical {{
-    background: {BG_PANEL};
-    width: 8px;
-    border: none;
-}}
-
-QScrollBar::handle:vertical {{
-    background: {SEPARATOR};
-    min-height: 20px;
-    border-radius: 0px;
-}}
-
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
 }}
@@ -335,7 +328,7 @@ QStatusBar {{
     background: {BG_PANEL};
     color: {TEXT_SECONDARY};
     border-top: 1px solid {SEPARATOR};
-    font-size: 10px;
+    font-size: {s(10)}px;
 }}
 
 QTabBar::tab:hover {{
@@ -345,14 +338,14 @@ QTabBar::tab:hover {{
 
 QScrollBar:vertical {{
     background: {BG_MEDIUM};
-    width: 10px;
+    width: {s(10)}px;
     border: none;
 }}
 
 QScrollBar::handle:vertical {{
     background: {BG_HIGHLIGHT};
-    min-height: 20px;
-    border-radius: 5px;
+    min-height: {s(20)}px;
+    border-radius: {s(5)}px;
 }}
 
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
@@ -361,14 +354,14 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
 
 QScrollBar:horizontal {{
     background: {BG_MEDIUM};
-    height: 10px;
+    height: {s(10)}px;
     border: none;
 }}
 
 QScrollBar::handle:horizontal {{
     background: {BG_HIGHLIGHT};
-    min-width: 20px;
-    border-radius: 5px;
+    min-width: {s(20)}px;
+    border-radius: {s(5)}px;
 }}
 
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
@@ -379,12 +372,12 @@ QMenuBar {{
     background: {BG_MEDIUM};
     color: {TEXT_PRIMARY};
     border-bottom: 1px solid {BG_HIGHLIGHT};
-    padding: 2px 0px;
-    font-size: 12px;
+    padding: {s(2)}px 0px;
+    font-size: {s(12)}px;
 }}
 
 QMenuBar::item {{
-    padding: 4px 10px;
+    padding: {s(4)}px {s(10)}px;
 }}
 
 QMenuBar::item:selected {{
@@ -396,11 +389,11 @@ QMenu {{
     background: {BG_MEDIUM};
     color: {TEXT_PRIMARY};
     border: 1px solid {BG_HIGHLIGHT};
-    padding: 4px 0px;
+    padding: {s(4)}px 0px;
 }}
 
 QMenu::item {{
-    padding: 6px 24px 6px 12px;
+    padding: {s(6)}px {s(24)}px {s(6)}px {s(12)}px;
 }}
 
 QMenu::item:selected {{
@@ -418,7 +411,7 @@ QProgressBar {{
 
 QProgressBar::chunk {{
     background: {ACCENT};
-    border-radius: 2px;
+    border-radius: {s(2)}px;
 }}
 
 QStatusBar {{
@@ -431,6 +424,6 @@ QToolTip {{
     background-color: {BG_MEDIUM};
     color: {TEXT_PRIMARY};
     border: 1px solid {ACCENT};
-    padding: 4px;
+    padding: {s(4)}px;
 }}
 """

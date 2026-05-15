@@ -9,6 +9,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath, QFont
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import StowawayState
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── Colour palette — dark forest / mint accent ──────────────────────────────
 _FACE = "#091510"
@@ -27,7 +28,7 @@ class _GlobePinLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(28, 28)
+        bind_fixed_size(self, 28, 28)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -74,7 +75,7 @@ class _PluginNameDisplay(QLabel):
     def __init__(self, text: str = "— NO PLUGIN —", parent=None):
         super().__init__(text, parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setFixedHeight(20)
+        bind_fixed_height(self, 20)
         self.setStyleSheet(
             f"background: {_LED_BG}; color: {_ACCENT}; font-family: 'Consolas';"
             "font-size: 11px; font-weight: bold; border: 1px solid #1a3a2a;"
@@ -86,7 +87,7 @@ class _PluginNameDisplay(QLabel):
 
 def _make_btn(text: str, color: str = _ACCENT) -> QPushButton:
     btn = QPushButton(text)
-    btn.setFixedHeight(20)
+    bind_fixed_height(btn, 20)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.setStyleSheet(
         f"QPushButton {{ background: {_BTN_BG}; color: {color}; font-size: 9px;"
@@ -109,7 +110,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _ACCENT) -> QVBoxLayout
         f"color: {color}; font-size: 7px; font-weight: bold;"
         "background: transparent;"
     )
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     col.addWidget(lbl, alignment=Qt.AlignmentFlag.AlignCenter)
     return col, lbl
 

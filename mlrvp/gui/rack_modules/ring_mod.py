@@ -7,6 +7,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QFont, QConicalGradient
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import RingModState
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width
 
 # ── colour palette — dark metallic copper/bronze ─────────────────────────────
 _FACE   = "#1a0f0a"   # dark bronze faceplate
@@ -21,7 +22,7 @@ class _RingLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(28, 28)
+        bind_fixed_size(self, 28, 28)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -63,8 +64,8 @@ class _ShapeSelector(QWidget):
         self._buttons = []
         for i, name in enumerate(_SHAPE_NAMES):
             btn = QPushButton(name)
-            btn.setFixedHeight(16)
-            btn.setFixedWidth(32)
+            bind_fixed_height(btn, 16)
+            bind_fixed_width(btn, 32)
             btn.clicked.connect(lambda checked, idx=i: self._select(idx))
             layout.addWidget(btn)
             self._buttons.append(btn)
@@ -108,7 +109,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _DIM) -> QVBoxLayout:
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"

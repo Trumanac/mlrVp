@@ -9,6 +9,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath, QFont
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import VHSState
+from mlrvp.gui.scale import bind_fixed_size
 
 _FACE = "#0a0a12"
 _CYAN = "#00ccdd"
@@ -21,7 +22,7 @@ class _VHSLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(28, 22)
+        bind_fixed_size(self, 28, 22)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -49,7 +50,7 @@ class _TrackingMeter(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(36, 22)
+        bind_fixed_size(self, 36, 22)
         self._level = 0.3
 
     def set_level(self, v: float):

@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — midnight blue with pendulum swing accent ────────────────
 _FACE    = "#0c0e18"   # dark navy faceplate
@@ -23,7 +24,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _SILVER) -> QVBoxLayout
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -39,7 +40,7 @@ class _PendulumLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(32, 22)
+        bind_fixed_size(self, 32, 22)
         self._position = 0.0  # -1 to +1
 
     def set_position(self, v: float):
@@ -90,7 +91,7 @@ class _ShapeGroup(QWidget):
         self._btns = []
         for i, label in enumerate(["SIN", "TRI", "SQ"]):
             btn = QPushButton(label)
-            btn.setFixedSize(28, 14)
+            bind_fixed_size(btn, 28, 14)
             btn.setCheckable(True)
             btn.setChecked(i == 0)
             btn.clicked.connect(lambda checked, idx=i: self._select(idx))
@@ -202,7 +203,7 @@ class AutoPanModule(RackModuleBase):
         shape_col.setSpacing(0)
         shape_col.setContentsMargins(0, 0, 0, 0)
         shape_lbl = QLabel("SHAPE")
-        shape_lbl.setFixedHeight(10)
+        bind_fixed_height(shape_lbl, 10)
         shape_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         shape_lbl.setStyleSheet(
             f"color: {_DIM}; font-size: 6px; font-weight: bold;"

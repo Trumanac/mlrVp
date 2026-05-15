@@ -538,7 +538,7 @@ class RecorderPanel(QFrame):
         meter_row.addWidget(meter_label)
 
         self._vu = VUMeter(orientation=Qt.Orientation.Horizontal)
-        self._vu.setMinimumWidth(120)
+        bind_min_width(self._vu, 120)
         self._vu.setToolTip("Real-time input level — peak hold (gain-stage before recording)")
         meter_row.addWidget(self._vu, 1)
 
@@ -564,14 +564,14 @@ class RecorderPanel(QFrame):
         self._progress.setRange(0, 1000)
         self._progress.setValue(0)
         self._progress.setTextVisible(False)
-        self._progress.setFixedHeight(6)
+        bind_fixed_height(self._progress, 6)
         self._progress.setToolTip("Recording progress (0–100%)")
         layout.addWidget(self._progress)
 
         # ---- Record button --------------------------------------------
         self._rec_btn = QPushButton("ARM")
         self._rec_btn.setCheckable(True)
-        self._rec_btn.setFixedHeight(34)
+        bind_fixed_height(self._rec_btn, 34)
         self._rec_btn.setStyleSheet(f"""
             QPushButton {{ background: {BG_BLACK}; border: 1px solid {SEPARATOR}; border-radius: 0px;
                           font-size: 12px; font-weight: bold; color: {TEXT_SECONDARY}; }}
@@ -819,11 +819,11 @@ class RecorderPanel(QFrame):
             lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 10px;")
             rl.addWidget(lbl, 1)
             play_btn = QPushButton("▶")
-            play_btn.setFixedWidth(28)
+            bind_fixed_width(play_btn, 28)
             play_btn.clicked.connect(lambda _=False, i=idx: self.play_take.emit(i))
             rl.addWidget(play_btn)
             use_btn = QPushButton("Use")
-            use_btn.setFixedWidth(40)
+            bind_fixed_width(use_btn, 40)
             use_btn.clicked.connect(lambda _=False, i=idx: self.use_take.emit(i))
             rl.addWidget(use_btn)
             self._takes_list_lay.addWidget(row)
@@ -837,8 +837,8 @@ class FilterCurveWidget(QWidget):
 
     def __init__(self, accent_color: str = ACCENT_GOLD, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(40)
-        self.setMaximumHeight(60)
+        bind_min_height(self, 40)
+        bind_max_height(self, 60)
         self._accent = accent_color
         self._lp_freq = 8000.0
         self._hp_freq = 200.0
@@ -1138,8 +1138,8 @@ class MoogCurveWidget(QWidget):
 
     def __init__(self, accent_color: str = FX2_COLOR, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(40)
-        self.setMaximumHeight(60)
+        bind_min_height(self, 40)
+        bind_max_height(self, 60)
         self._accent = accent_color
         self._cutoff = 8000.0
         self._resonance = 0.3
@@ -1530,6 +1530,7 @@ from mlrvp.gui.rack_modules.fuzz import FuzzModule
 from mlrvp.gui.rack_modules.transient_shaper import TransientShaperModule
 # Ensure registry is populated
 import mlrvp.gui.rack_modules  # noqa: F401
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_width, bind_max_height, bind_min_height, bind_min_width
 
 # Total effects across all FX groups must stay under this cap.
 # Budget: 512 samples @ 44100 Hz → 11.6ms callback, ~10.1ms for FX (after ~1.5ms routing overhead).
@@ -1548,7 +1549,7 @@ class _GroupTabButton(QPushButton):
         super().__init__(text, parent)
         self.setCheckable(True)
         self.setChecked(active)
-        self.setFixedHeight(26)
+        bind_fixed_height(self, 26)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._update_style()
         self.toggled.connect(lambda: self._update_style())
@@ -1677,8 +1678,8 @@ class EffectsView(QWidget):
         # MIDI map toggle
         self._midi_map_btn = QPushButton("MIDI MAP")
         self._midi_map_btn.setCheckable(True)
-        self._midi_map_btn.setFixedWidth(80)
-        self._midi_map_btn.setFixedHeight(26)
+        bind_fixed_width(self._midi_map_btn, 80)
+        bind_fixed_height(self._midi_map_btn, 26)
         self._midi_map_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_PANEL}; border: 1px solid #444444; border-bottom: none;"
             f"border-top-left-radius: 3px; border-top-right-radius: 3px; color: {TEXT_SECONDARY}; font-size: 9px; font-weight: bold; letter-spacing: 1px; }}"
@@ -1701,8 +1702,8 @@ class EffectsView(QWidget):
             f"QPushButton:pressed {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; }}"
         )
         self._rack_load_btn = QPushButton("LOAD")
-        self._rack_load_btn.setFixedWidth(54)
-        self._rack_load_btn.setFixedHeight(26)
+        bind_fixed_width(self._rack_load_btn, 54)
+        bind_fixed_height(self._rack_load_btn, 26)
         self._rack_load_btn.setStyleSheet(rack_btn_qss)
         self._rack_load_btn.setToolTip(
             "Load a saved RACK profile into the currently selected rack tab"
@@ -1710,8 +1711,8 @@ class EffectsView(QWidget):
         self._rack_load_btn.clicked.connect(self._on_rack_load_clicked)
 
         self._rack_save_btn = QPushButton("SAVE")
-        self._rack_save_btn.setFixedWidth(54)
-        self._rack_save_btn.setFixedHeight(26)
+        bind_fixed_width(self._rack_save_btn, 54)
+        bind_fixed_height(self._rack_save_btn, 26)
         self._rack_save_btn.setStyleSheet(rack_btn_qss)
         self._rack_save_btn.setToolTip(
             "Save the currently selected rack tab as a named RACK profile"

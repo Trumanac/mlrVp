@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QLinearGradient, QDrag, QPixmap, QPe
 from typing import Callable, Optional
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase, RACK_EAR_WIDTH
+from mlrvp.gui.scale import bind_fixed_height
 
 
 # Registry populated by rack_modules package
@@ -114,7 +115,7 @@ class RackContainer(QScrollArea):
 
         # Add-effect placeholder
         self._add_btn = QPushButton("＋  ADD EFFECT")
-        self._add_btn.setFixedHeight(32)
+        bind_fixed_height(self._add_btn, 32)
         self._add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_btn.setStyleSheet(
             "QPushButton {"

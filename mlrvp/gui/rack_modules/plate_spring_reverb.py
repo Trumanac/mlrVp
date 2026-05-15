@@ -9,6 +9,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient, QFont, QPaint
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import PlateReverbState
+from mlrvp.gui.scale import bind_fixed_size
 
 _FACE = "#b0b0b0"   # Silver brushed
 _DARK = "#222222"
@@ -20,7 +21,7 @@ class _SpringLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(24, 20)
+        bind_fixed_size(self, 24, 20)
 
     def paintEvent(self, event):
         p = QPainter(self)

@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath, QLinearGradient
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width
 
 # ── colour palette — deep-space teal, vaporwave aesthetic ────────────────────
 _FACE    = "#080e1c"   # near-black midnight teal faceplate
@@ -29,7 +30,7 @@ class _DriftLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(32, 44)
+        bind_fixed_size(self, 32, 44)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -110,17 +111,17 @@ class _RouteSelector(QWidget):
         )
 
         self._btn_up = QPushButton("RISE↑")
-        self._btn_up.setFixedHeight(16)
+        bind_fixed_height(self._btn_up, 16)
         self._btn_up.clicked.connect(lambda: self._select(1))
         self._btn_up.setToolTip("RISE: trigger only on pitch going up")
 
         self._btn_both = QPushButton("BOTH")
-        self._btn_both.setFixedHeight(16)
+        bind_fixed_height(self._btn_both, 16)
         self._btn_both.clicked.connect(lambda: self._select(0))
         self._btn_both.setToolTip("BOTH: trigger on any pitch direction")
 
         self._btn_down = QPushButton("FALL↓")
-        self._btn_down.setFixedHeight(16)
+        bind_fixed_height(self._btn_down, 16)
         self._btn_down.clicked.connect(lambda: self._select(2))
         self._btn_down.setToolTip("FALL: trigger only on pitch going down")
 
@@ -270,7 +271,7 @@ class EtherDriftModule(RackModuleBase):
 
         # ── Separator line ────────────────────────────────────────────────────
         sep = QWidget()
-        sep.setFixedHeight(1)
+        bind_fixed_height(sep, 1)
         sep.setStyleSheet(f"background: {_SEP};")
         self._faceplate_layout.addWidget(sep)
 
@@ -283,8 +284,8 @@ class EtherDriftModule(RackModuleBase):
         self._sync_btn = QPushButton("⬡  SYNC")
         self._sync_btn.setCheckable(True)
         self._sync_btn.setChecked(True)
-        self._sync_btn.setFixedHeight(20)
-        self._sync_btn.setFixedWidth(64)
+        bind_fixed_height(self._sync_btn, 20)
+        bind_fixed_width(self._sync_btn, 64)
         self._sync_btn.toggled.connect(self._on_sync_toggled)
         self._update_sync_style(True)
         self._sync_btn.setToolTip("Sync the LFO rate to the current project BPM")

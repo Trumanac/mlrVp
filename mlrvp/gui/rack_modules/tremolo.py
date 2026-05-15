@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — warm orange/amber Demeter look ─────────────────────────
 _FACE    = "#12100c"   # near-black warm brown faceplate
@@ -23,7 +24,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _SILVER) -> QVBoxLayout
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -39,7 +40,7 @@ class _HeartbeatLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(26, 18)
+        bind_fixed_size(self, 26, 18)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -72,7 +73,7 @@ class _ButtonGroup(QWidget):
         lay.setSpacing(2)
         for i, label in enumerate(labels):
             btn = QPushButton(label)
-            btn.setFixedSize(36, 15)
+            bind_fixed_size(btn, 36, 15)
             btn.setCheckable(True)
             btn.setChecked(i == 0)
             btn.clicked.connect(lambda checked, idx=i: self._select(idx))
@@ -119,7 +120,7 @@ class _PulseLED(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(10, 10)
+        bind_fixed_size(self, 10, 10)
         self._brightness = 1.0
 
     def set_brightness(self, v: float):
@@ -215,7 +216,7 @@ class TremoloModule(RackModuleBase):
         shape_col.setSpacing(0)
         shape_col.setContentsMargins(0, 0, 0, 0)
         shape_lbl = QLabel("SHAPE")
-        shape_lbl.setFixedHeight(10)
+        bind_fixed_height(shape_lbl, 10)
         shape_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         shape_lbl.setStyleSheet(
             f"color: {_DIM}; font-size: 6px; font-weight: bold;"
@@ -232,7 +233,7 @@ class TremoloModule(RackModuleBase):
         stereo_col.setSpacing(0)
         stereo_col.setContentsMargins(0, 0, 0, 0)
         stereo_lbl = QLabel("STEREO")
-        stereo_lbl.setFixedHeight(10)
+        bind_fixed_height(stereo_lbl, 10)
         stereo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         stereo_lbl.setStyleSheet(
             f"color: {_DIM}; font-size: 6px; font-weight: bold;"

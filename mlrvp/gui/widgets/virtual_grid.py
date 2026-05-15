@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, Signal, QRect
 from PySide6.QtGui import QPainter, QColor, QMouseEvent
 
 from mlrvp.config import MAX_ROWS, MAX_COLUMNS, LED_OFF, LED_BRIGHT
+from mlrvp.gui.scale import sp, scale_manager
 from mlrvp.gui.styles import (
     GRID_LED_ON, GRID_LED_DIM, GRID_LED_OFF, GRID_BUTTON_BG, GROUP_COLORS,
     BG_BLACK
@@ -32,13 +33,18 @@ class VirtualGridWidget(QWidget):
         self._col_colors: list | None = None  # per-column color override (mix mode)
         self._pressed = set()  # currently pressed buttons
 
-        self.button_size = 36
-        self.button_spacing = 3
+        # Base sizes (un-scaled).  Effective values come through sp().
+        self._base_button_size = 36
+        self._base_button_spacing = 3
+        self.button_size = sp(self._base_button_size)
+        self.button_spacing = sp(self._base_button_spacing)
         self.setMinimumSize(
             self.columns * (self.button_size + self.button_spacing) + self.button_spacing,
             self.rows * (self.button_size + self.button_spacing) + self.button_spacing,
         )
         self.setMouseTracking(False)
+        # Re-apply sizes when the global UI scale changes
+        scale_manager.changed.connect(self._on_scale_changed)
 
         # Pre-cache QColor objects per (group_index, tier).  Without this,
         # paintEvent allocated up to 5 QColors per lit cell in mix mode
@@ -60,7 +66,9 @@ class VirtualGridWidget(QWidget):
             ))
         self._off_color = QColor(GRID_BUTTON_BG)
         self._press_overlay = QColor(255, 255, 255, 60)
+        self._armed_overlay = QColor(255, 160, 0, 110)  # amber — armed/pending state
         self._bg_color = QColor(BG_BLACK)
+        self._armed: set[tuple[int, int]] = set()  # buttons queued for simultaneous fire
         # Pre-built rect grid (rebuilt on resize / dimension change)
         self._rect_cache: list[list[QRect]] = []
         self._build_rect_cache()
@@ -78,6 +86,17 @@ class VirtualGridWidget(QWidget):
     def set_dimensions(self, rows: int, columns: int):
         self.rows = rows
         self.columns = columns
+        self.setMinimumSize(
+            self.columns * (self.button_size + self.button_spacing) + self.button_spacing,
+            self.rows * (self.button_size + self.button_spacing) + self.button_spacing,
+        )
+        self._build_rect_cache()
+        self.update()
+
+    def _on_scale_changed(self, _factor: float):
+        """Re-apply scaled button sizes when the global UI scale changes."""
+        self.button_size = sp(self._base_button_size)
+        self.button_spacing = sp(self._base_button_spacing)
         self.setMinimumSize(
             self.columns * (self.button_size + self.button_spacing) + self.button_spacing,
             self.rows * (self.button_size + self.button_spacing) + self.button_spacing,
@@ -134,6 +153,7 @@ class VirtualGridWidget(QWidget):
         led_state = self._led_state
         led_rows = len(led_state)
         pressed = self._pressed
+        armed = self._armed
         n_groups = len(self._color_tiers)
         cols = self.columns
         rows = self.rows
@@ -144,6 +164,7 @@ class VirtualGridWidget(QWidget):
         color_tiers = self._color_tiers
         off_color = self._off_color
         press_overlay = self._press_overlay
+        armed_overlay = self._armed_overlay
         rect_cache = self._rect_cache
 
         for y in range(rows):
@@ -186,22 +207,46 @@ class VirtualGridWidget(QWidget):
                 if (x, y) in pressed:
                     set_brush(press_overlay)
                     draw_rect(rect)
+                elif (x, y) in armed:
+                    set_brush(armed_overlay)
+                    draw_rect(rect)
 
         painter.end()
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             x, y = self._xy_from_pos(event.position())
+            # Fire all armed buttons simultaneously with the clicked button.
+            # Avoid double-firing if the clicked button itself was armed.
+            armed_snapshot = list(self._armed)
+            self._armed.clear()
+            for ax, ay in armed_snapshot:
+                if (ax, ay) != (x, y):
+                    self._pressed.add((ax, ay))
+                    self.button_pressed.emit(ax, ay, 1)
             self._pressed.add((x, y))
             self.button_pressed.emit(x, y, 1)
+            self.update()
+        elif event.button() == Qt.MouseButton.RightButton:
+            x, y = self._xy_from_pos(event.position())
+            # Toggle armed state on right-click (right-click again to disarm).
+            if (x, y) in self._armed:
+                self._armed.discard((x, y))
+            else:
+                self._armed.add((x, y))
             self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            x, y = self._xy_from_pos(event.position())
-            self._pressed.discard((x, y))
-            self.button_pressed.emit(x, y, 0)
+            # Release all co-fired buttons at once.
+            for bx, by in list(self._pressed):
+                self.button_pressed.emit(bx, by, 0)
+            self._pressed.clear()
             self.update()
+
+    def contextMenuEvent(self, event):
+        # Suppress the default right-click context menu so arming works cleanly.
+        event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent):
         # Support drag across buttons

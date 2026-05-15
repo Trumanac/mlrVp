@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QMimeData, QPoint
 from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient, QDrag, QPixmap
+from mlrvp.gui.scale import bind_min_width, bind_fixed_height, bind_fixed_width
 
 
 # Rack dimensions
@@ -43,8 +44,8 @@ class RackModuleBase(QFrame):
         self._midi_highlight = False
 
         h = RACK_1U_HEIGHT if unit_height == 1 else RACK_2U_HEIGHT
-        self.setFixedHeight(h)
-        self.setMinimumWidth(250)
+        bind_fixed_height(self, h)
+        bind_min_width(self, 250)
 
         # Main horizontal: left-ear | faceplate | right-ear
         outer = QHBoxLayout(self)
@@ -53,7 +54,7 @@ class RackModuleBase(QFrame):
 
         # Left rack ear
         self._left_ear = _RackEar(side="left", module=self)
-        self._left_ear.setFixedWidth(RACK_EAR_WIDTH)
+        bind_fixed_width(self._left_ear, RACK_EAR_WIDTH)
         outer.addWidget(self._left_ear)
 
         # Faceplate area — subclasses populate this
@@ -66,7 +67,7 @@ class RackModuleBase(QFrame):
 
         # Right rack ear
         self._right_ear = _RackEar(side="right", module=self)
-        self._right_ear.setFixedWidth(RACK_EAR_WIDTH)
+        bind_fixed_width(self._right_ear, RACK_EAR_WIDTH)
         outer.addWidget(self._right_ear)
 
     # ------------------------------------------------------------------

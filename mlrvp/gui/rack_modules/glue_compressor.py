@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QFont, QBrush
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import GlueCompressorState
+from mlrvp.gui.scale import bind_fixed_size
 
 # ── colours — SSL XLogic G-Bus aluminum panel ────────────────────────────────
 _FACE       = "#b8bfc6"   # SSL aluminum gray panel (light!)
@@ -32,7 +33,7 @@ class _HugLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(28, 24)
+        bind_fixed_size(self, 28, 24)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -58,7 +59,7 @@ class _SSLVUMeter(QWidget):
         super().__init__(parent)
         self._FONT_FOOTER = QFont("Arial", 5, QFont.Weight.Bold)
         self._FONT_SCALE = QFont("Arial", 4)
-        self.setFixedSize(80, 62)
+        bind_fixed_size(self, 80, 62)
         self._gr_db = 0.0
 
     def set_gr(self, gr_db: float):
@@ -127,7 +128,7 @@ class _StepLabel(QWidget):
         self._options = list(options)
         self._idx = 0
         self._label = label
-        self.setFixedSize(38, 38)
+        bind_fixed_size(self, 38, 38)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def set_index(self, idx: int):
@@ -214,18 +215,18 @@ class GlueCompressorModule(RackModuleBase):
 
         # Separator
         sep = QWidget()
-        sep.setFixedSize(1, 44)
+        bind_fixed_size(sep, 1, 44)
         sep.setStyleSheet(f"background: {_SEP};")
         row.addWidget(sep)
 
         # VU meter (resized to fit 1U height)
         self._gr_meter = _SSLVUMeter()
-        self._gr_meter.setFixedSize(60, 50)
+        bind_fixed_size(self._gr_meter, 60, 50)
         row.addWidget(self._gr_meter)
 
         # Separator
         sep2 = QWidget()
-        sep2.setFixedSize(1, 44)
+        bind_fixed_size(sep2, 1, 44)
         sep2.setStyleSheet(f"background: {_SEP};")
         row.addWidget(sep2)
 
@@ -294,7 +295,7 @@ class GlueCompressorModule(RackModuleBase):
 
         # Separator
         sep3 = QWidget()
-        sep3.setFixedSize(1, 44)
+        bind_fixed_size(sep3, 1, 44)
         sep3.setStyleSheet(f"background: {_SEP};")
         row.addWidget(sep3)
 

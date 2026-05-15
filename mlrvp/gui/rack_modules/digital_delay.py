@@ -11,6 +11,7 @@ from PySide6.QtGui import QPainter, QColor, QFont, QPen, QPainterPath
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import DelayState
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width, bind_min_width
 
 SYNC_NAMES = [
     "1/32", "1/16t", "1/16", "1/8t", "1/8",
@@ -29,7 +30,7 @@ class _InfinityLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(26, 20)
+        bind_fixed_size(self, 26, 20)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -56,7 +57,7 @@ class _LEDDisplay(QLabel):
     def __init__(self, text: str = "250ms", parent=None):
         super().__init__(text, parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setFixedSize(72, 20)
+        bind_fixed_size(self, 72, 20)
         self.setStyleSheet(
             f"background: {_LED_BG}; color: {_ACCENT}; font-family: 'Consolas';"
             "font-size: 12px; font-weight: bold; border: 1px solid #1a1a44;"
@@ -70,7 +71,7 @@ class _TactSwitch(QComboBox):
     def __init__(self, items: list[str], parent=None):
         super().__init__(parent)
         self.addItems(items)
-        self.setFixedHeight(18)
+        bind_fixed_height(self, 18)
         self.setStyleSheet(
             "QComboBox { background: #1a1a2e; color: #88bbff; font-size: 9px;"
             "border: 1px solid #333366; border-radius: 2px; padding: 0 2px; }"
@@ -122,7 +123,7 @@ class DigitalDelayModule(RackModuleBase):
             f"color: {_ACCENT}; font-size: 10px; font-weight: bold;"
             " font-family: 'Consolas'; letter-spacing: 1px;"
         )
-        lbl.setMinimumWidth(62)
+        bind_min_width(lbl, 62)
         logo_row.addWidget(lbl)
         title_col.addLayout(logo_row)
 
@@ -142,7 +143,7 @@ class DigitalDelayModule(RackModuleBase):
 
         # ── SYNC / MS mode toggle ─────────────────────────────────────────
         self._mode = _TactSwitch(["SYNC", "MS"])
-        self._mode.setFixedWidth(52)
+        bind_fixed_width(self._mode, 52)
         self._mode.currentIndexChanged.connect(self._on_mode_changed)
         self._mode.setToolTip(
             "SYNC: lock delay time to BPM grid divisions\n"

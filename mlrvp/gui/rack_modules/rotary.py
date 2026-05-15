@@ -9,6 +9,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QFont
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import RotaryState
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — dark walnut / cream Leslie cabinet ──────────────────────
 _FACE   = "#1a1209"   # dark walnut faceplate
@@ -33,7 +34,7 @@ class _SpeedSelector(QWidget):
         self._selected = 0
         self._callback = callback
         self._btn_w, self._btn_h = 28, 13
-        self.setFixedSize(self._btn_w * 3 + 4, self._btn_h)
+        bind_fixed_size(self, self._btn_w * 3 + 4, self._btn_h)
 
     def set_index(self, idx: int):
         self._selected = max(0, min(2, idx))
@@ -77,7 +78,7 @@ class _RotorAnim(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(32, 32)
+        bind_fixed_size(self, 32, 32)
         self._angle = 0.0
         self._speed_hz = 0.0
         self._timer = QTimer(self)
@@ -141,7 +142,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _SILVER) -> QVBoxLayout
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"

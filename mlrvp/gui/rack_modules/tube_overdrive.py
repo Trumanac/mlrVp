@@ -9,6 +9,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QRadialGradient, QPainterPath
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import TubeOverdriveState
+from mlrvp.gui.scale import bind_fixed_size
 
 _FACE = "#0a0a0a"
 _YELLOW = "#ccff00"
@@ -20,7 +21,7 @@ class _GlowWormLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(20, 26)
+        bind_fixed_size(self, 20, 26)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -75,7 +76,7 @@ class _TubeVent(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(36, 36)
+        bind_fixed_size(self, 36, 36)
         self._glow = 0.5
 
     def set_glow(self, v: float):

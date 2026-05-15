@@ -156,6 +156,7 @@ class ChannelState:
     pitch_root: int = 0      # semitone offset for PITCH mode base note (-24 to +24)
     pitch_loop: bool = False  # True = loop in PITCH mode, False = one-shot
     seq_step_div: int = SEQ_STEP_DIV_DEFAULT  # index into SEQ_STEP_DIV_BEATS (default=1/4)
+    seq_swing: int = 50   # SEQ swing %: 50 = straight, 67 ≈ triplet, 75 = heavy swing
     playing: bool = False
     playback_pos: float = 0.0
     # LIVE mode — live looper state (only used when mode == PlaybackMode.LIVE)
@@ -779,6 +780,8 @@ CR_SLOT_GROUP_STOP = "group_stop"   # value: group index (0-based)
 CR_SLOT_PATTERN = "pattern"         # value: pattern index (0-based)
 CR_SLOT_ALL_STOP = "all_stop"       # stops all groups
 CR_SLOT_GRID_MODE = "grid_mode"     # cycles through grid display modes
+CR_SLOT_PRESET_PREV = "preset_prev" # navigate to previous preset in setlist
+CR_SLOT_PRESET_NEXT = "preset_next" # navigate to next preset in setlist
 
 # Grid display modes — append new entries here to extend the cycle; order matters
 GRID_MODE_GRID = "grid"   # normal playback/trigger mode
@@ -883,6 +886,37 @@ CR_PRESETS = [
         {"type": CR_SLOT_EMPTY,      "value": 0},
         {"type": CR_SLOT_EMPTY,      "value": 0},
         {"type": CR_SLOT_EMPTY,      "value": 0},
+    ]),
+    # ── Preset navigation layouts ────────────────────────────────────────
+    ("4 Stops + 2 Patterns + Prev/Next", [
+        {"type": CR_SLOT_GROUP_STOP,   "value": 0},
+        {"type": CR_SLOT_GROUP_STOP,   "value": 1},
+        {"type": CR_SLOT_GROUP_STOP,   "value": 2},
+        {"type": CR_SLOT_GROUP_STOP,   "value": 3},
+        {"type": CR_SLOT_PATTERN,      "value": 0},
+        {"type": CR_SLOT_PATTERN,      "value": 1},
+        {"type": CR_SLOT_PRESET_PREV,  "value": 0},
+        {"type": CR_SLOT_PRESET_NEXT,  "value": 0},
+    ]),
+    ("6 Stops + Prev/Next", [
+        {"type": CR_SLOT_GROUP_STOP,   "value": 0},
+        {"type": CR_SLOT_GROUP_STOP,   "value": 1},
+        {"type": CR_SLOT_GROUP_STOP,   "value": 2},
+        {"type": CR_SLOT_GROUP_STOP,   "value": 3},
+        {"type": CR_SLOT_GROUP_STOP,   "value": 4},
+        {"type": CR_SLOT_GROUP_STOP,   "value": 5},
+        {"type": CR_SLOT_PRESET_PREV,  "value": 0},
+        {"type": CR_SLOT_PRESET_NEXT,  "value": 0},
+    ]),
+    ("All Stop + Prev/Next", [
+        {"type": CR_SLOT_ALL_STOP,     "value": 0},
+        {"type": CR_SLOT_EMPTY,        "value": 0},
+        {"type": CR_SLOT_EMPTY,        "value": 0},
+        {"type": CR_SLOT_EMPTY,        "value": 0},
+        {"type": CR_SLOT_EMPTY,        "value": 0},
+        {"type": CR_SLOT_EMPTY,        "value": 0},
+        {"type": CR_SLOT_PRESET_PREV,  "value": 0},
+        {"type": CR_SLOT_PRESET_NEXT,  "value": 0},
     ]),
 ]
 
@@ -1240,6 +1274,9 @@ class AppConfig:
 
     # Control row
     control_row: ControlRowConfig = field(default_factory=ControlRowConfig)
+
+    # Grid MIDI CC output map: key = "row,col" (str), value = {"channel": int, "cc": int}
+    grid_midi_cc_map: dict = field(default_factory=dict)
 
     # UI
     group_colors: list = field(default_factory=lambda: list(DEFAULT_GROUP_COLORS))

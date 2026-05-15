@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QLinearGradient, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
+from mlrvp.gui.scale import bind_fixed_size
 
 _FACE = "#0e0e0e"
 _NEEDLE = "#cc2222"
@@ -21,7 +22,7 @@ class _PeaksLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(32, 24)
+        bind_fixed_size(self, 32, 24)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -48,7 +49,7 @@ class _AnalogMeter(QWidget):
         super().__init__(parent)
         self._FONT_SCALE = QFont("Arial", 5)
         self._FONT_LABEL = QFont("Arial", 7, QFont.Weight.Bold)
-        self.setFixedSize(110, 52)
+        bind_fixed_size(self, 110, 52)
         self._level = 0.0    # 0..1
         self._peak = 0.0
         self._label = label
@@ -190,7 +191,7 @@ class DualVUMeterModule(RackModuleBase):
         # Mode selector
         self._mode_combo = QComboBox()
         self._mode_combo.addItems(_MODES)
-        self._mode_combo.setFixedSize(48, 18)
+        bind_fixed_size(self._mode_combo, 48, 18)
         self._mode_combo.setStyleSheet(
             "QComboBox { background: #1a1a1a; color: #ccaa44; font-size: 8px;"
             "border: 1px solid #444; border-radius: 2px; }"

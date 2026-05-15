@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, QTimer, QSettings
 from PySide6.QtGui import QFont
 
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_width, bind_min_size
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ class PluginEditorWindow(QMainWindow):
 
         self.setWindowTitle(f"FOREIGN EXCHANGE — {plugin_name}")
         self.setWindowFlags(Qt.WindowType.Window)
-        self.setMinimumSize(400, 300)
+        bind_min_size(self, 400, 300)
         self.setStyleSheet(_SS)
 
         self._build_ui()
@@ -98,7 +99,7 @@ class PluginEditorWindow(QMainWindow):
         native_layout.addSpacing(8)
 
         open_btn = QPushButton("Open Native Editor")
-        open_btn.setFixedWidth(200)
+        bind_fixed_width(open_btn, 200)
         open_btn.setStyleSheet(
             f"QPushButton {{ background: #1a3a2a; color: {_ACCENT}; border: 1px solid {_ACCENT}; }}"
             f"QPushButton:hover {{ background: #255040; }}"

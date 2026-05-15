@@ -185,6 +185,15 @@ class Mixer:
         r[2] = fx1_bus; r[3] = fx2_bus; r[4] = fx3_bus; r[5] = fx4_bus
         return r
 
+    def reset_smooth_volumes(self) -> None:
+        """Snap volume smoothing to current group volumes (no glide on next block).
+
+        Call this after a preset recall so the ramp starts from the correct
+        value instead of gliding from the previous preset's volumes.
+        """
+        for i, grp in enumerate(self.groups):
+            self._smooth_volumes[i] = grp.volume
+
     def apply_master(self, main_bus: np.ndarray, aux_return: np.ndarray) -> np.ndarray:
         """Apply master volume and sum in aux return.
 

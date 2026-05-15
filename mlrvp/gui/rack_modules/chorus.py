@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_size
 
 _FACE = "#0a2a2a"    # Dark teal faceplate
 _ACCENT = "#40cccc"   # Bright teal accent
@@ -21,7 +22,7 @@ class _ChorusLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(28, 28)
+        bind_fixed_size(self, 28, 28)
 
     def paintEvent(self, event):
         p = QPainter(self)

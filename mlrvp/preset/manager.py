@@ -573,6 +573,10 @@ class PresetManager:
                     ch.seq_step_div = max(0, min(6, int(ch_data.get("seq_step_div", ch.seq_step_div))))
                 except (ValueError, TypeError):
                     pass
+                try:
+                    ch.seq_swing = max(50, min(75, int(ch_data.get("seq_swing", ch.seq_swing))))
+                except (ValueError, TypeError):
+                    pass
 
                 # LIVE looper state
                 live_data = ch_data.get("live")
@@ -870,6 +874,14 @@ class PresetManager:
                     [{"type": CR_SLOT_EMPTY,      "value": 0}] * max(0, 8 - n_grp - n_pat)
                 )
 
+        # Grid MIDI CC output map
+        gm_data = cfg_data.get("grid_midi_cc_map")
+        if isinstance(gm_data, dict):
+            config.grid_midi_cc_map = {
+                k: v for k, v in gm_data.items()
+                if isinstance(k, str) and isinstance(v, dict)
+            }
+
         return config
 
     def _serialize_config(self, config: AppConfig) -> dict:
@@ -911,6 +923,7 @@ class PresetManager:
                     "pitch_root": ch.pitch_root,
                     "pitch_loop": ch.pitch_loop,
                     "seq_step_div": ch.seq_step_div,
+                    "seq_swing": ch.seq_swing,
                     "live": {
                         "bars": ch.live.bars,
                         "quantize": ch.live.quantize,
@@ -1780,5 +1793,7 @@ class PresetManager:
             "monome_row": config.control_row.monome_row,
             "assignments": config.control_row.assignments,
         }
+
+        result["grid_midi_cc_map"] = dict(config.grid_midi_cc_map)
 
         return result

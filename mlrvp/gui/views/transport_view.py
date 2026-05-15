@@ -8,10 +8,11 @@ from PySide6.QtCore import Qt, Signal, QTimer, QPoint
 from PySide6.QtGui import QPainter, QColor, QPolygon
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
-    QDoubleSpinBox, QComboBox, QFrame, QSpinBox
+    QDoubleSpinBox, QComboBox, QFrame, QScrollArea
 )
 
 from mlrvp.config import QuantizeMode, NUM_PATTERN_RECORDERS, NUM_PRESETS, NUM_SETLIST_SLOTS, NUM_GROUPS
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width
 from mlrvp.gui.styles import (
     ACCENT_GOLD, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY,
     GROUP_COLORS, LOGO_MAGENTA
@@ -23,7 +24,7 @@ class _TransportLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(50, 30)
+        bind_fixed_size(self, 50, 30)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -68,7 +69,7 @@ class PatternButton(QWidget):
 
         # Down arrow
         self._down_btn = QPushButton("-")
-        self._down_btn.setFixedSize(16, 36)
+        bind_fixed_size(self._down_btn, 16, 36)
         self._down_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"border: 1px solid {SEPARATOR}; font-size: 12px; font-weight: bold; padding: 0; }}"
@@ -79,14 +80,14 @@ class PatternButton(QWidget):
 
         # Main label button
         self._label_btn = QPushButton(f"P{idx+1}:{length}")
-        self._label_btn.setFixedSize(44, 36)
+        bind_fixed_size(self._label_btn, 44, 36)
         self._label_btn.setCheckable(False)
         self._label_btn.clicked.connect(self._cycle_state)
         layout.addWidget(self._label_btn)
 
         # Up arrow
         self._up_btn = QPushButton("+")
-        self._up_btn.setFixedSize(16, 36)
+        bind_fixed_size(self._up_btn, 16, 36)
         self._up_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"border: 1px solid {SEPARATOR}; font-size: 12px; font-weight: bold; padding: 0; }}"
@@ -188,6 +189,50 @@ class _ClickableCombo(QComboBox):
         return super().eventFilter(obj, event)
 
 
+class _GridIconButton(QPushButton):
+    """Square button painted as a 2\u00d72 grid of cells (like a window with a cross).
+
+    Yellow when checked (grid visible), dim when unchecked.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFlat(True)
+        self._update_style()
+
+    def _update_style(self):
+        if self.isChecked():
+            bg = "#3a3000"
+            border = ACCENT_GOLD
+        else:
+            bg = BG_BLACK
+            border = SEPARATOR
+        self.setStyleSheet(
+            f"QPushButton {{ background: {bg}; border: 1px solid {border}; padding: 0; }}"
+            f"QPushButton:hover {{ border: 1px solid {ACCENT_GOLD}; }}"
+        )
+
+    def nextCheckState(self):
+        self.setChecked(not self.isChecked())
+        self._update_style()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        color = QColor(ACCENT_GOLD) if self.isChecked() else QColor(TEXT_SECONDARY)
+        p.setPen(color)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        # Outer rect (inset 5px)
+        m = 5
+        w, h = self.width(), self.height()
+        p.drawRect(m, m, w - m * 2 - 1, h - m * 2 - 1)
+        # Cross through the middle — 4 cells like a window pane
+        cx, cy = w // 2, h // 2
+        p.drawLine(cx, m, cx, h - m - 1)   # vertical divider
+        p.drawLine(m, cy, w - m - 1, cy)   # horizontal divider
+        p.end()
+
 
 class TransportView(QWidget):
     """Transport bar with tempo, quantize, pattern recorders, and preset selector."""
@@ -210,12 +255,36 @@ class TransportView(QWidget):
     group_stop_requested = Signal(int)  # group index
     stop_all_requested = Signal()
     grid_mode_cycle_requested = Signal()   # user clicked the grid mode button
+    virtual_grid_toggle_requested = Signal()  # user clicked the virtual grid button
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"TransportView {{ background: {BG_PANEL}; }}")
 
-        layout = QHBoxLayout(self)
+        # Wrap content in a horizontal scroll area so controls aren't clipped
+        # on narrower windows (e.g. when many sections are visible).
+        _outer = QVBoxLayout(self)
+        _outer.setContentsMargins(0, 0, 0, 0)
+        _outer.setSpacing(0)
+
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        _scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _scroll.setStyleSheet(
+            f"QScrollArea {{ background: {BG_PANEL}; border: none; }}"
+            f"QScrollBar:horizontal {{ height: 6px; background: {BG_PANEL}; }}"
+            f"QScrollBar::handle:horizontal {{ background: #555; border-radius: 3px; min-width: 20px; }}"
+            f"QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}"
+        )
+        _outer.addWidget(_scroll)
+
+        _content = QWidget()
+        _content.setStyleSheet(f"QWidget {{ background: {BG_PANEL}; }}")
+        _scroll.setWidget(_content)
+
+        layout = QHBoxLayout(_content)
         layout.setContentsMargins(6, 3, 6, 3)
         layout.setSpacing(8)
 
@@ -234,7 +303,7 @@ class TransportView(QWidget):
         tempo_spin_row.setSpacing(2)
 
         self._tempo_down_btn = QPushButton("-")
-        self._tempo_down_btn.setFixedSize(20, 22)
+        bind_fixed_size(self._tempo_down_btn, 20, 22)
         self._tempo_down_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"border: 1px solid {SEPARATOR}; font-size: 14px; font-weight: bold; padding: 0; }}"
@@ -249,8 +318,8 @@ class TransportView(QWidget):
         self._tempo_spin.setValue(120.0)
         self._tempo_spin.setDecimals(1)
         self._tempo_spin.setSingleStep(0.5)
-        self._tempo_spin.setFixedWidth(62)
-        self._tempo_spin.setFixedHeight(22)
+        bind_fixed_width(self._tempo_spin, 62)
+        bind_fixed_height(self._tempo_spin, 22)
         self._tempo_spin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
         self._tempo_spin.setStyleSheet(
             f"font-size: 12px; font-weight: bold; background: {BG_BLACK}; "
@@ -260,7 +329,7 @@ class TransportView(QWidget):
         tempo_spin_row.addWidget(self._tempo_spin)
 
         self._tempo_up_btn = QPushButton("+")
-        self._tempo_up_btn.setFixedSize(20, 22)
+        bind_fixed_size(self._tempo_up_btn, 20, 22)
         self._tempo_up_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"border: 1px solid {SEPARATOR}; font-size: 14px; font-weight: bold; padding: 0; }}"
@@ -280,11 +349,11 @@ class TransportView(QWidget):
         sync_vl.setContentsMargins(0, 0, 0, 0)
         sync_vl.setSpacing(1)
         _sync_spacer_lbl = QLabel(" ")
-        _sync_spacer_lbl.setFixedHeight(10)
+        bind_fixed_height(_sync_spacer_lbl, 10)
         _sync_spacer_lbl.setStyleSheet("color: transparent; background: transparent;")
         sync_vl.addWidget(_sync_spacer_lbl)
         self._sync_btn = QPushButton("SYNC")
-        self._sync_btn.setFixedSize(36, 36)
+        bind_fixed_size(self._sync_btn, 36, 36)
         self._sync_btn.setToolTip("Auto-detect BPM from loaded samples")
         self._sync_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -302,7 +371,7 @@ class TransportView(QWidget):
         tap_vl.setContentsMargins(0, 0, 0, 0)
         tap_vl.setSpacing(1)
         _tap_label = QLabel("TAP")
-        _tap_label.setFixedHeight(10)
+        bind_fixed_height(_tap_label, 10)
         _tap_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         _tap_label.setStyleSheet(
             f"font-size: 7px; color: {TEXT_SECONDARY}; font-weight: bold; background: transparent;"
@@ -310,7 +379,7 @@ class TransportView(QWidget):
         tap_vl.addWidget(_tap_label)
         # Dual function: shows beat position normally, tap to set BPM
         self._tap_btn = QPushButton("1.1")
-        self._tap_btn.setFixedSize(44, 36)
+        bind_fixed_size(self._tap_btn, 44, 36)
         self._tap_btn.setToolTip("TAP: Click to tap tempo\nShows beat position when idle")
         self._tap_btn.setStyleSheet(
             f"QPushButton {{ font-size: 14px; font-weight: bold; color: {TEXT_PRIMARY}; "
@@ -347,7 +416,7 @@ class TransportView(QWidget):
         self._quant_combo = QComboBox()
         self._quant_combo.addItems(["Off", "1/4", "1/8", "1/16", "Bar"])
         self._quant_combo.setCurrentIndex(3)
-        self._quant_combo.setFixedWidth(54)
+        bind_fixed_width(self._quant_combo, 54)
         self._quant_combo.currentIndexChanged.connect(self.quantize_changed.emit)
         quant_layout.addWidget(self._quant_combo)
 
@@ -365,7 +434,7 @@ class TransportView(QWidget):
         grid_mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         grid_mode_vl.addWidget(grid_mode_label)
         self._grid_mode_btn = QPushButton("GRID")
-        self._grid_mode_btn.setFixedSize(50, 36)
+        bind_fixed_size(self._grid_mode_btn, 50, 36)
         self._grid_mode_btn.setToolTip(
             "Click to cycle grid mode (GRID → MIX → …)\n"
             "GRID: normal playback / trigger mode\n"
@@ -383,9 +452,9 @@ class TransportView(QWidget):
 
         # Separator
         sep = QFrame()
-        sep.setFixedWidth(1)
+        bind_fixed_width(sep, 1)
         sep.setStyleSheet(f"background: {SEPARATOR};")
-        sep.setFixedHeight(36)
+        bind_fixed_height(sep, 36)
         layout.addWidget(sep)
 
         # --- Group stop buttons (G1–G4 + ALL) ---
@@ -419,7 +488,7 @@ class TransportView(QWidget):
         for gi in range(NUM_GROUPS):
             gc = GROUP_COLORS[gi]
             btn = QPushButton(f"G{gi+1}")
-            btn.setFixedSize(36, 36)
+            bind_fixed_size(btn, 36, 36)
             btn.setToolTip(f"Stop group {gi+1}")
             idle_style = (
                 f"QPushButton {{ background: {BG_BLACK}; color: {gc}; "
@@ -451,7 +520,7 @@ class TransportView(QWidget):
             f"padding: 0px; }}"
         )
         self._all_stop_btn = QPushButton("ALL")
-        self._all_stop_btn.setFixedSize(36, 36)
+        bind_fixed_size(self._all_stop_btn, 36, 36)
         self._all_stop_btn.setToolTip("Stop all groups")
         self._all_stop_btn.setStyleSheet(_all_idle)
         _all_timer = QTimer(self)
@@ -471,9 +540,9 @@ class TransportView(QWidget):
 
         # Separator
         sep_g = QFrame()
-        sep_g.setFixedWidth(1)
+        bind_fixed_width(sep_g, 1)
         sep_g.setStyleSheet(f"background: {SEPARATOR};")
-        sep_g.setFixedHeight(36)
+        bind_fixed_height(sep_g, 36)
         layout.addWidget(sep_g)
 
         # --- Pattern Recorders ---
@@ -502,9 +571,9 @@ class TransportView(QWidget):
 
         # Separator
         sep2 = QFrame()
-        sep2.setFixedWidth(1)
+        bind_fixed_width(sep2, 1)
         sep2.setStyleSheet(f"background: {SEPARATOR};")
-        sep2.setFixedHeight(36)
+        bind_fixed_height(sep2, 36)
         layout.addWidget(sep2)
 
         # --- Setlist / Preset navigation ---
@@ -526,8 +595,8 @@ class TransportView(QWidget):
         self._setlist_combo.setEditable(True)
         self._setlist_combo.lineEdit().setReadOnly(True)
         self._setlist_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._setlist_combo.setFixedWidth(90)
-        self._setlist_combo.setFixedHeight(22)
+        bind_fixed_width(self._setlist_combo, 90)
+        bind_fixed_height(self._setlist_combo, 22)
         self._setlist_combo.currentTextChanged.connect(
             lambda txt: self.setlist_changed.emit(txt) if txt and txt != "<new>" else None
         )
@@ -535,7 +604,7 @@ class TransportView(QWidget):
 
         # Edit button (opens setlist editor) — placed left of setlist dropdown
         self._edit_btn = QPushButton("+")
-        self._edit_btn.setFixedSize(22, 22)
+        bind_fixed_size(self._edit_btn, 22, 22)
         self._edit_btn.setToolTip("Open setlist editor")
         self._edit_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -549,7 +618,7 @@ class TransportView(QWidget):
 
         # Prev button
         self._prev_btn = QPushButton("\u25C0")
-        self._prev_btn.setFixedSize(22, 22)
+        bind_fixed_size(self._prev_btn, 22, 22)
         self._prev_btn.setToolTip("Previous preset")
         self._prev_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -570,8 +639,8 @@ class TransportView(QWidget):
 
         self._preset_combo = _ClickableCombo()
         self._preset_combo.setEditable(True)
-        self._preset_combo.setFixedWidth(130)
-        self._preset_combo.setFixedHeight(22)
+        bind_fixed_width(self._preset_combo, 130)
+        bind_fixed_height(self._preset_combo, 22)
         self._preset_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self._preset_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preset_combo.lineEdit().setReadOnly(True)
@@ -581,7 +650,7 @@ class TransportView(QWidget):
 
         # Next button
         self._next_btn = QPushButton("\u25B6")
-        self._next_btn.setFixedSize(22, 22)
+        bind_fixed_size(self._next_btn, 22, 22)
         self._next_btn.setToolTip("Next preset")
         self._next_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -593,7 +662,7 @@ class TransportView(QWidget):
 
         # Reload button — reload current preset
         self._reload_btn = QPushButton("\u21BB")
-        self._reload_btn.setFixedSize(22, 22)
+        bind_fixed_size(self._reload_btn, 22, 22)
         self._reload_btn.setToolTip("Reload current preset")
         self._reload_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -605,7 +674,7 @@ class TransportView(QWidget):
 
         # Save button — saves current state as the named preset + adds to setlist
         self._save_btn = QPushButton("SAVE")
-        self._save_btn.setFixedSize(40, 22)
+        bind_fixed_size(self._save_btn, 40, 22)
         self._save_btn.setToolTip("Save current state as this preset and add to setlist")
         self._save_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {ACCENT_GOLD}; "
@@ -617,7 +686,7 @@ class TransportView(QWidget):
 
         # New button — clears all channels, resets to defaults
         self._new_btn = QPushButton("NEW")
-        self._new_btn.setFixedSize(34, 22)
+        bind_fixed_size(self._new_btn, 34, 22)
         self._new_btn.setToolTip("Clear all channels — start a fresh preset")
         self._new_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
@@ -630,6 +699,30 @@ class TransportView(QWidget):
         layout.addWidget(setlist_frame)
 
         layout.addStretch()
+
+        # ── Virtual Grid toggle — pinned far right ────────────────────────
+        # Custom painted button: 2×2 grid of squares (window-with-cross look).
+        vg_frame = QFrame()
+        vg_vl = QVBoxLayout(vg_frame)
+        vg_vl.setContentsMargins(0, 0, 0, 0)
+        vg_vl.setSpacing(1)
+        vg_label = QLabel("GRID")
+        vg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bind_fixed_height(vg_label, 10)
+        vg_label.setStyleSheet(
+            f"font-size: 7px; color: {TEXT_SECONDARY}; font-weight: bold; background: transparent;"
+        )
+        vg_vl.addWidget(vg_label)
+
+        self._vg_btn = _GridIconButton(parent=vg_frame)
+        bind_fixed_size(self._vg_btn, 36, 36)
+        self._vg_btn.setCheckable(True)
+        self._vg_btn.setChecked(False)
+        self._vg_btn.setToolTip("Show / hide the virtual on-screen grid controller")
+        self._vg_btn.clicked.connect(self.virtual_grid_toggle_requested.emit)
+        vg_vl.addWidget(self._vg_btn)
+
+        layout.addWidget(vg_frame)
 
         self._midi_map_active = False  # suppresses set_group_active style updates during MIDI map mode
 
@@ -648,6 +741,14 @@ class TransportView(QWidget):
     def _on_save_clicked(self):
         """User clicked SAVE — emit signal to trigger the save flow."""
         self.preset_save_requested.emit(self._preset_combo.currentText().strip())
+
+    def set_virtual_grid_active(self, active: bool):
+        """Sync the grid toggle button's visual state with grid visibility."""
+        self._vg_btn.blockSignals(True)
+        self._vg_btn.setChecked(active)
+        self._vg_btn.blockSignals(False)
+        self._vg_btn._update_style()
+        self._vg_btn.update()
 
     def flash_save_button(self):
         """Briefly flash the SAVE button green to confirm a save."""

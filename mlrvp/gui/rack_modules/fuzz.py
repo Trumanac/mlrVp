@@ -8,6 +8,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── colour palette — Big Muff Pi (classic NYC red/black) ─────────────────────
 _FACE    = "#0d0d0d"   # near-black faceplate
@@ -24,7 +25,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _WHITE) -> QVBoxLayout:
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -40,7 +41,7 @@ class _BuzzSawLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(28, 22)
+        bind_fixed_size(self, 28, 22)
 
     def paintEvent(self, event):
         p = QPainter(self)

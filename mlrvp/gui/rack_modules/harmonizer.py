@@ -7,6 +7,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QFont
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import HarmonizerState
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width
 
 # ── colour palette — Eventide green/black ────────────────────────────────────
 _FACE   = "#0a0f0a"   # near-black green faceplate
@@ -24,7 +25,7 @@ class _HLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(24, 32)
+        bind_fixed_size(self, 24, 32)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -73,8 +74,8 @@ class _AlgoSelector(QWidget):
         self._buttons = []
         for i, name in enumerate(_ALGO_SHORT):
             btn = QPushButton(name)
-            btn.setFixedHeight(16)
-            btn.setFixedWidth(36)
+            bind_fixed_height(btn, 16)
+            bind_fixed_width(btn, 36)
             btn.clicked.connect(lambda checked, idx=i: self._select(idx))
             layout.addWidget(btn)
             self._buttons.append(btn)
@@ -118,7 +119,7 @@ def _knob_col(label: str, knob: RotaryKnob, color: str = _DIM) -> QVBoxLayout:
     col.setSpacing(0)
     col.setContentsMargins(0, 0, 0, 0)
     lbl = QLabel(label)
-    lbl.setFixedHeight(10)
+    bind_fixed_height(lbl, 10)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setStyleSheet(
         f"color: {color}; font-size: 7px; font-weight: bold;"
@@ -172,7 +173,7 @@ class HarmonizerModule(RackModuleBase):
 
         # LCD display
         self._lcd = QLabel("DUAL DETUNE")
-        self._lcd.setFixedSize(90, 20)
+        bind_fixed_size(self._lcd, 90, 20)
         self._lcd.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._lcd.setStyleSheet(
             f"background: {_LCD}; color: {_LCD_FG}; font-size: 9px;"
@@ -192,7 +193,7 @@ class HarmonizerModule(RackModuleBase):
 
         # ── Separator ─────────────────────────────────────────────────────────
         sep = QWidget()
-        sep.setFixedHeight(1)
+        bind_fixed_height(sep, 1)
         sep.setStyleSheet(f"background: {_SEP};")
         self._faceplate_layout.addWidget(sep)
 
@@ -207,7 +208,7 @@ class HarmonizerModule(RackModuleBase):
             f"color: {_GREEN}; font-size: 7px; font-weight: bold;"
             "font-family: 'Arial'; letter-spacing: 2px;"
         )
-        va_lbl.setFixedHeight(10)
+        bind_fixed_height(va_lbl, 10)
         row2.addWidget(va_lbl, alignment=Qt.AlignmentFlag.AlignBottom)
 
         self._semi_a = RotaryKnob(color=_KNOB)
@@ -245,7 +246,7 @@ class HarmonizerModule(RackModuleBase):
             f"color: {_KNOB_B}; font-size: 7px; font-weight: bold;"
             "font-family: 'Arial'; letter-spacing: 2px;"
         )
-        vb_lbl.setFixedHeight(10)
+        bind_fixed_height(vb_lbl, 10)
         row2.addWidget(vb_lbl, alignment=Qt.AlignmentFlag.AlignBottom)
 
         self._semi_b = RotaryKnob(color=_KNOB_B)

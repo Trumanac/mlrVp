@@ -7,6 +7,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
 from mlrvp.gui.styles import BG_PANEL, BG_BLACK, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY
 from mlrvp.gui.widgets.fader import RotaryKnob
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_width, bind_min_height, bind_min_width
 
 
 class _MasterFilterCurve(QWidget):
@@ -16,8 +17,8 @@ class _MasterFilterCurve(QWidget):
         super().__init__(parent)
         self._hp_freq = 20.0
         self._lp_freq = 20000.0
-        self.setMinimumHeight(40)
-        self.setMinimumWidth(80)
+        bind_min_height(self, 40)
+        bind_min_width(self, 80)
 
     def set_params(self, hp_freq: float, lp_freq: float):
         self._hp_freq = hp_freq
@@ -111,7 +112,7 @@ class MasterFilterView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"MasterFilterView {{ background: {BG_PANEL}; }}")
-        self.setFixedHeight(56)
+        bind_fixed_height(self, 56)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 3, 6, 3)
@@ -127,8 +128,8 @@ class MasterFilterView(QWidget):
 
         # Separator
         sep = QFrame()
-        sep.setFixedWidth(1)
-        sep.setFixedHeight(40)
+        bind_fixed_width(sep, 1)
+        bind_fixed_height(sep, 40)
         sep.setStyleSheet(f"background: {SEPARATOR};")
         layout.addWidget(sep)
 

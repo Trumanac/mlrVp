@@ -9,6 +9,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath, QFont
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.config import ReelToReelState
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 _FACE = "#1c1c1c"
 _SILVER = "#c0c0c0"
@@ -23,7 +24,7 @@ class _ReelLogo(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(26, 26)
+        bind_fixed_size(self, 26, 26)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -91,7 +92,7 @@ class ReelToReelModule(RackModuleBase):
         self._speed = QComboBox()
         self._speed.addItems(TAPE_SPEEDS)
         self._speed.setCurrentIndex(2)  # 15 ips default
-        self._speed.setFixedHeight(18)
+        bind_fixed_height(self._speed, 18)
         self._speed.setStyleSheet(
             "QComboBox { background: #2a2a2a; color: #c0c0c0; font-size: 9px;"
             "border: 1px solid #555; border-radius: 2px; }"
