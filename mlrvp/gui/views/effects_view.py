@@ -6,6 +6,7 @@ labels in TEXT_SECONDARY, ACCENT_GOLD active states.
 """
 
 import math
+import numpy as np
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,

@@ -1158,6 +1158,7 @@ class ChannelStrip(QFrame):
     def _on_mode_changed(self, idx: int):
         """Handle mode combo change — show/hide mode-specific controls."""
         _, mode = self._mode_map[idx]
+        was_shot = self._rev_btn.isVisible()  # only visible in SHOT mode
         is_pitch = mode == PlaybackMode.PITCH
         is_seq = mode == PlaybackMode.SEQ
         is_shot = mode == PlaybackMode.ONESHOT
@@ -1195,8 +1196,11 @@ class ChannelStrip(QFrame):
             self._hold_btn.blockSignals(True)
             self._hold_btn.setChecked(False)
             self._hold_btn.blockSignals(False)
-            self.param_changed.emit(self._row, "reverse", False)
-            self.param_changed.emit(self._row, "shot_hold", False)
+            # Only notify the engine when actually leaving SHOT mode, not on every
+            # mode change — avoids spurious reverse/shot_hold resets mid-session
+            if was_shot:
+                self.param_changed.emit(self._row, "reverse", False)
+                self.param_changed.emit(self._row, "shot_hold", False)
         self.param_changed.emit(self._row, "mode", mode)
 
     def _on_reverse_toggled(self, checked: bool):
@@ -1348,6 +1352,22 @@ class ChannelStrip(QFrame):
         self._seq_swing_spin.blockSignals(False)
         self._seq_swing_section.setVisible(is_seq)
 
+        # PITCH mode controls — sync scale/root/loop and update section visibility
+        self._scale_section.setVisible(is_pitch)
+        self._pitch_mode_root.setVisible(is_pitch)
+        self._pitch_section.setVisible(not is_pitch)
+        self._pitch_scale_combo.blockSignals(True)
+        self._pitch_scale_combo.setCurrentIndex(
+            max(0, min(self._pitch_scale_combo.count() - 1, int(state.pitch_scale)))
+        )
+        self._pitch_scale_combo.blockSignals(False)
+        self._pitch_root_spin.blockSignals(True)
+        self._pitch_root_spin.setValue(int(state.pitch_root))
+        self._pitch_root_spin.blockSignals(False)
+        self._pitch_loop_btn.blockSignals(True)
+        self._pitch_loop_btn.setChecked(bool(state.pitch_loop))
+        self._pitch_loop_btn.blockSignals(False)
+
         # LIVE mode controls — sync from state.live
         is_live = state.mode == PlaybackMode.LIVE
         if hasattr(self, "_live_section"):
@@ -1442,7 +1462,7 @@ class ChannelStrip(QFrame):
             self._waveform, self._pitch_scale_combo, self._pitch_root_spin,
             self._pitch_loop_btn, self._rev_btn, self._hold_btn,
             self._ch_hp_knob, self._ch_lp_knob, self._pan_knob, self._solo_btn,
-            self._seq_div_combo,
+            self._seq_div_combo, self._seq_swing_spin,
         ):
             w.setEnabled(enabled)
         for btn in self._group_btns:

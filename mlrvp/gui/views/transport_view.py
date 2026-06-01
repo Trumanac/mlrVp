@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
     QDoubleSpinBox, QComboBox, QFrame, QScrollArea
 )
+import time
 
 from mlrvp.config import QuantizeMode, NUM_PATTERN_RECORDERS, NUM_PRESETS, NUM_SETLIST_SLOTS, NUM_GROUPS
 from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width
@@ -316,6 +317,7 @@ class TransportView(QWidget):
             f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
         )
         self._tempo_down_btn.setAutoRepeat(True)
+        self._tempo_down_btn.setToolTip("Decrease BPM")
         self._tempo_down_btn.clicked.connect(lambda: self._tempo_spin.stepDown())
         tempo_spin_row.addWidget(self._tempo_down_btn)
 
@@ -342,6 +344,7 @@ class TransportView(QWidget):
             f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
         )
         self._tempo_up_btn.setAutoRepeat(True)
+        self._tempo_up_btn.setToolTip("Increase BPM")
         self._tempo_up_btn.clicked.connect(lambda: self._tempo_spin.stepUp())
         tempo_spin_row.addWidget(self._tempo_up_btn)
 
@@ -762,7 +765,6 @@ class TransportView(QWidget):
             f"QPushButton {{ background: #4CAF50; color: {BG_BLACK}; "
             f"font-size: 9px; font-weight: bold; border: 1px solid #4CAF50; padding: 0; }}"
         )
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(600, self._reset_save_style)
 
     def _reset_save_style(self):
@@ -865,7 +867,6 @@ class TransportView(QWidget):
 
     def _on_tap(self):
         """Record a tap and compute BPM from inter-tap intervals."""
-        import time
         now = time.perf_counter()
         self._tap_active = True
         self._tap_timeout.start()  # restart 2s idle timeout
