@@ -7,8 +7,6 @@ labels in TEXT_SECONDARY, ACCENT_GOLD active states.
 
 import math
 
-import numpy as np
-
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QFrame, QComboBox, QSpinBox, QDoubleSpinBox,
@@ -25,6 +23,7 @@ from mlrvp.gui.styles import (
 )
 from mlrvp.gui.widgets.fader import RotaryKnob, HorizontalFader
 from mlrvp.gui.widgets.vu_meter import VUMeter
+from mlrvp.gui.scale import bind_fixed_height, bind_fixed_width, bind_max_height, bind_min_height, bind_min_width
 
 
 # Delay sync division names matching mlrV2
@@ -73,6 +72,7 @@ class DelayPanel(QFrame):
         self._time_mode.currentIndexChanged.connect(
             lambda v: self.param_changed.emit("time_mode", v)
         )
+        self._time_mode.currentIndexChanged.connect(self._update_time_mode_enabled)
         time_layout.addWidget(QLabel("Mode:"), 0, 0)
         time_layout.addWidget(self._time_mode, 0, 1)
         self._time_mode.setToolTip(
@@ -102,6 +102,8 @@ class DelayPanel(QFrame):
         time_layout.addWidget(QLabel("Time:"), 2, 0)
         time_layout.addWidget(self._ms_spin, 2, 1)
         self._ms_spin.setToolTip("Delay time in milliseconds (Manual mode only)")
+        # Initial enabled state: Sync mode active by default
+        self._ms_spin.setEnabled(False)
 
         layout.addWidget(time_group)
 
@@ -238,6 +240,12 @@ class DelayPanel(QFrame):
 
         self._lp_freq.set_value(max(0.0, min(1.0, (state.filter_freq_lp - 100.0) / 10000.0)))
         self._hp_freq.set_value(max(0.0, min(1.0, (state.filter_freq_hp - 20.0) / 5000.0)))
+        self._update_time_mode_enabled(state.time_mode)
+
+    def _update_time_mode_enabled(self, mode: int):
+        """Enable only the relevant delay-time control for the selected mode."""
+        self._sync_combo.setEnabled(mode == 0)
+        self._ms_spin.setEnabled(mode == 1)
 
 
 class TapeDelayPanel(QFrame):
@@ -276,6 +284,7 @@ class TapeDelayPanel(QFrame):
         self._time_mode.addItems(["Sync", "Manual (ms)"])
         self._time_mode.currentIndexChanged.connect(
             lambda v: self.param_changed.emit("time_mode", v))
+        self._time_mode.currentIndexChanged.connect(self._update_time_mode_enabled)
         time_layout.addWidget(QLabel("Mode:"), 0, 0)
         time_layout.addWidget(self._time_mode, 0, 1)
         self._time_mode.setToolTip(
@@ -301,6 +310,8 @@ class TapeDelayPanel(QFrame):
         time_layout.addWidget(QLabel("Time:"), 2, 0)
         time_layout.addWidget(self._ms_spin, 2, 1)
         self._ms_spin.setToolTip("Delay time in milliseconds (Manual mode only)")
+        # Initial enabled state: Sync mode active by default
+        self._ms_spin.setEnabled(False)
 
         layout.addWidget(time_group)
 
@@ -374,6 +385,12 @@ class TapeDelayPanel(QFrame):
         self._saturation.set_value(state.saturation)
         self._tone.set_value(state.tone)
         self._gain.set_value(state.gain)
+        self._update_time_mode_enabled(state.time_mode)
+
+    def _update_time_mode_enabled(self, mode: int):
+        """Enable only the relevant delay-time control for the selected mode."""
+        self._sync_combo.setEnabled(mode == 0)
+        self._ms_spin.setEnabled(mode == 1)
 
 
 class RecorderPanel(QFrame):
@@ -1530,7 +1547,6 @@ from mlrvp.gui.rack_modules.fuzz import FuzzModule
 from mlrvp.gui.rack_modules.transient_shaper import TransientShaperModule
 # Ensure registry is populated
 import mlrvp.gui.rack_modules  # noqa: F401
-from mlrvp.gui.scale import bind_fixed_height, bind_fixed_width, bind_max_height, bind_min_height, bind_min_width
 
 # Total effects across all FX groups must stay under this cap.
 # Budget: 512 samples @ 44100 Hz → 11.6ms callback, ~10.1ms for FX (after ~1.5ms routing overhead).

@@ -76,6 +76,7 @@ class PatternButton(QWidget):
             f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
         )
         self._down_btn.clicked.connect(self._dec_length)
+        self._down_btn.setToolTip("Decrease bar count")
         layout.addWidget(self._down_btn)
 
         # Main label button
@@ -98,6 +99,7 @@ class PatternButton(QWidget):
             f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
         )
         self._up_btn.clicked.connect(self._inc_length)
+        self._up_btn.setToolTip("Increase bar count")
         layout.addWidget(self._up_btn)
 
         self._update_style()

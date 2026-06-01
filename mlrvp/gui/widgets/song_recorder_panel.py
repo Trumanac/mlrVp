@@ -320,6 +320,7 @@ class SongRecorderPanel(QWidget):
         self._armed = False
         self._recording = False
         self._playing = False
+        self._last_stop_click_time: float = 0.0
 
     # ------------------------------------------------------------------ header
 
@@ -339,6 +340,7 @@ class SongRecorderPanel(QWidget):
         bind_fixed_size(self._collapse_btn, 18, 18)
         self._collapse_btn.setCheckable(True)
         self._collapse_btn.setChecked(False)   # collapsed by default
+        self._collapse_btn.setToolTip("Show / hide Song Recorder")
         self._collapse_btn.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {TEXT_SECONDARY}; "
             f"font-size: 9px; border: none; padding: 0; }}"
@@ -561,6 +563,7 @@ class SongRecorderPanel(QWidget):
         self._play_btn = QPushButton("\u25b6")
         bind_fixed_size(self._play_btn, 34, BH)
         self._play_btn.setCheckable(True)
+        self._play_btn.setToolTip("Play / Pause")
         self._play_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"font-size: 11px; border: 1px solid {SEPARATOR}; padding: 0; }}"
@@ -583,7 +586,6 @@ class SongRecorderPanel(QWidget):
         bind_fixed_size(self._stop_btn, 30, BH)
         self._stop_btn.setToolTip("Stop  |  Double-click = stop + rewind")
         self._stop_btn.setStyleSheet(neutral_btn_style)
-        self._stop_btn._last_click_time = 0.0
         self._stop_btn.clicked.connect(self._on_stop_clicked)
         row.addWidget(self._stop_btn)
 
@@ -735,8 +737,8 @@ class SongRecorderPanel(QWidget):
     def _on_stop_clicked(self) -> None:
         """Single click = stop at position; double-click = stop + rewind."""
         now = time.monotonic()
-        last = getattr(self._stop_btn, '_last_click_time', 0.0)
-        self._stop_btn._last_click_time = now
+        last = self._last_stop_click_time
+        self._last_stop_click_time = now
         if now - last < 0.4:
             # Double-click
             self.stop_rewind_clicked.emit()

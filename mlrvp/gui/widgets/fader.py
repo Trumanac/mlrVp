@@ -377,8 +377,6 @@ class RotaryKnob(_ValueDisplayMixin, QWidget):
         cy = h / 2
         r = min(w, h) / 2 - 3
 
-        import math
-
         # Outer ring / arc background
         start_angle = 225
         span_angle = -270

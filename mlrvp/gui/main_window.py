@@ -8,7 +8,10 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QIcon, QPixmap
+import logging
+
+_log = logging.getLogger(__name__)
 
 from mlrvp.gui.views.channel_view import ChannelView
 from mlrvp.gui.views.mixer_view import MixerView
@@ -421,8 +424,8 @@ class MainWindow(QMainWindow):
                 # relayout which can re-fire resizeEvent -> _sync_mixer_height.
                 if self._mixer_view.maximumHeight() != target:
                     self._mixer_view.setFixedHeight(target)
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("_sync_mixer_height: %s", e)
 
     def _build_menu_bar(self):
         menubar = self.menuBar()
@@ -491,6 +494,16 @@ class MainWindow(QMainWindow):
             "Never show value overlays on knobs and faders")
         self._disable_displays_action.toggled.connect(self._on_disable_displays)
         view_menu.addAction(self._disable_displays_action)
+
+        # Lock and Disable are mutually exclusive: checking one unchecks the other
+        _disp_group = QActionGroup(self)
+        _disp_group.setExclusive(False)  # manual mutual exclusion (allow both unchecked)
+        _disp_group.addAction(self._lock_displays_action)
+        _disp_group.addAction(self._disable_displays_action)
+        self._lock_displays_action.toggled.connect(
+            lambda on: self._disable_displays_action.setChecked(False) if on else None)
+        self._disable_displays_action.toggled.connect(
+            lambda on: self._lock_displays_action.setChecked(False) if on else None)
 
         # Help menu
         help_menu = menubar.addMenu("&Help")

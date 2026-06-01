@@ -472,8 +472,8 @@ class GridSetupPanel(QFrame):
             preset_row.addWidget(btn)
             self._grid_preset_btns.append(btn)
 
-        # Mark 8×8 as default
-        self._grid_preset_btns[0].setChecked(True)
+        # Sync preset buttons to the actual default spin/combo values
+        self._sync_preset_btns(self._rows_spin.value(), int(self._cols_combo.currentText()))
 
         layout.addLayout(preset_row)
 

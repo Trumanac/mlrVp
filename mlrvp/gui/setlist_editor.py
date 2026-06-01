@@ -182,6 +182,7 @@ class SetlistEditorDialog(QDialog):
         self._library_list = _ExclusiveList(lambda: self._setlist_list)
         self._library_list.setStyleSheet(_list_style)
         self._library_list.customContextMenuRequested.connect(self._library_context_menu)
+        self._library_list.itemDoubleClicked.connect(lambda _: self._on_add_to_setlist())
         right.addWidget(self._library_list, stretch=1)
 
         lib_btns = QHBoxLayout()
