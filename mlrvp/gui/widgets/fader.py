@@ -8,6 +8,7 @@ All corners sharp (no border-radius), black backgrounds.
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, Signal, QTimer, QRectF
 from PySide6.QtGui import QPainter, QColor, QPen, QMouseEvent, QFont
+import math
 from mlrvp.gui.scale import bind_fixed_size, bind_max_height, bind_max_width, bind_min_size
 from mlrvp.gui.styles import (
     BG_BLACK, BG_PANEL, SEPARATOR, FADER_SLIDER, FADER_BORDER, GROUP_COLORS,

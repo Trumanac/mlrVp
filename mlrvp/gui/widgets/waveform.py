@@ -37,7 +37,6 @@ class WaveformWidget(QWidget):
         self._active_column: int = -1  # currently playing column index
         self._seq_steps: frozenset[int] = frozenset()  # SEQ-mode enabled steps
         self._wave_cache: QPixmap | None = None  # cached waveform bars pixmap
-        self._cached_y_tops: np.ndarray | None = None  # cached bar heights
 
         bind_min_height(self, 60)
         self.setMouseTracking(True)
@@ -49,7 +48,6 @@ class WaveformWidget(QWidget):
         self._waveform_data = data
         self._filename = filename
         self._wave_cache = None
-        self._cached_y_tops = None
         self.update()
 
     def set_playback_position(self, pos: float):
@@ -124,8 +122,6 @@ class WaveformWidget(QWidget):
         bright_pm.fill(Qt.GlobalColor.transparent)
         pb = QPainter(bright_pm)
 
-        self._cached_y_tops = None
-
         if self._waveform_data is not None and len(self._waveform_data) > 0:
             base_color = QColor(GROUP_COLORS[self._group_color_idx])
             num_points = len(self._waveform_data)
@@ -138,7 +134,6 @@ class WaveformWidget(QWidget):
                 np.abs(self._waveform_data[indices, 1]),
             )
             y_tops = (h - (peaks * (h * 0.95)).astype(int)).astype(int)
-            self._cached_y_tops = y_tops
 
             # Draw dim bars into dim cache
             dim_color = QColor(base_color)
