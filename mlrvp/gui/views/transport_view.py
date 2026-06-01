@@ -82,6 +82,10 @@ class PatternButton(QWidget):
         self._label_btn = QPushButton(f"P{idx+1}:{length}")
         bind_fixed_size(self._label_btn, 44, 36)
         self._label_btn.setCheckable(False)
+        self._label_btn.setToolTip(
+            "Click to cycle: idle → recording → playing\n"
+            "Hold 3 seconds to clear the pattern"
+        )
         self._label_btn.clicked.connect(self._cycle_state)
         layout.addWidget(self._label_btn)
 

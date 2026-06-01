@@ -772,8 +772,30 @@ class WelcomeDialog(QDialog):
 
 
 def maybe_show_welcome(parent, startup_settings_path: str) -> None:
-    """Show WelcomeDialog on first run (startup_settings.json not yet written)."""
+    """Show WelcomeDialog on first run.
+
+    Uses a ``welcome_shown`` flag inside startup_settings.json so the dialog
+    doesn't re-appear after the user has seen it — even when the file ships
+    pre-populated as a default.
+    """
+    import json
     import os
-    if not os.path.exists(startup_settings_path):
-        dlg = WelcomeDialog(parent)
-        dlg.exec()
+    path = startup_settings_path
+    # Read existing settings (if any) and check the welcome_shown flag.
+    data: dict = {}
+    if os.path.exists(path):
+        try:
+            data = json.loads(open(path, encoding="utf-8").read())
+        except Exception:
+            pass
+    if data.get("welcome_shown"):
+        return
+    dlg = WelcomeDialog(parent)
+    dlg.exec()
+    # Persist the flag so the dialog doesn't appear again.
+    data["welcome_shown"] = True
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+    except Exception:
+        pass

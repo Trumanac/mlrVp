@@ -7437,7 +7437,7 @@ class AppController:
                 if self.window:
                     strip = self.window.channel_view.get_strip(row)
                     import os
-                    strip.set_waveform_data(overview, os.path.basename(filepath))
+                    strip.set_waveform_data(overview, os.path.basename(filepath), filepath=str(filepath))
                     strip._waveform.set_grid_columns(self.config.grid_columns)
 
                 # Restore preset speed instead of auto-calculating
@@ -7467,7 +7467,7 @@ class AppController:
             if self.window:
                 import os
                 strip = self.window.channel_view.get_strip(row)
-                strip.set_waveform_data(overview, os.path.basename(filepath))
+                strip.set_waveform_data(overview, os.path.basename(filepath), filepath=str(filepath))
                 strip._waveform.set_grid_columns(self.config.grid_columns)
         except Exception as e:
             log.error("Failed to load waveform display: %s", e)
@@ -7575,7 +7575,7 @@ class AppController:
             if self.window:
                 strip = self.window.channel_view.get_strip(row)
                 import os
-                strip.set_waveform_data(overview, os.path.basename(filepath))
+                strip.set_waveform_data(overview, os.path.basename(filepath), filepath=str(filepath))
                 strip._waveform.set_grid_columns(self.config.grid_columns)
 
             self.engine.channels[row].state.speed = saved_speed
@@ -7608,7 +7608,7 @@ class AppController:
             if self.window:
                 strip = self.window.channel_view.get_strip(row)
                 import os
-                strip.set_waveform_data(overview, os.path.basename(filepath))
+                strip.set_waveform_data(overview, os.path.basename(filepath), filepath=str(filepath))
                 strip._waveform.set_grid_columns(self.config.grid_columns)
 
             self.engine.set_channel_speed(row, self.config.tempo, sample)

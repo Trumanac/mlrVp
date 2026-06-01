@@ -214,14 +214,14 @@ class ChannelStrip(QFrame):
             ("PTCH", PlaybackMode.PITCH),
             ("RVRS", PlaybackMode.REVERSE),
             ("SHOT", PlaybackMode.ONESHOT),
-            ("SLCE", PlaybackMode.SLICE),
-            ("SQNC", PlaybackMode.SEQ),
+            ("SLC",  PlaybackMode.SLICE),
+            ("SEQ",  PlaybackMode.SEQ),
             ("STEP", PlaybackMode.STEP),
         ]
         self._mode_combo = QComboBox()
         self._mode_combo.addItems([label for label, _ in self._mode_map])
         bind_fixed_height(self._mode_combo, 20)
-        bind_max_width(self._mode_combo, 48)
+        bind_max_width(self._mode_combo, 54)
         self._mode_combo.setStyleSheet(
             f"QComboBox {{ font-size: 10px; padding: 2px 4px; color: {TEXT_PRIMARY}; }}"
             f"QComboBox QAbstractItemView {{ min-width: 56px; }}"
@@ -573,6 +573,7 @@ class ChannelStrip(QFrame):
         self._mute_btn = QPushButton("MUTE")
         bind_fixed_size(self._mute_btn, 44, 20)
         self._mute_btn.setCheckable(True)
+        self._mute_btn.setToolTip("Mute this channel — silences output without stopping playback")
         self._mute_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {SEPARATOR}; "
             f"border: 1px solid {SEPARATOR}; font-size: 8px; font-weight: bold; "
@@ -880,9 +881,9 @@ class ChannelStrip(QFrame):
         bind_fixed_height(self._live_countin_spin, 20)
         self._live_countin_spin.setToolTip("Count-in bars before recording starts (0 = none)")
         self._live_countin_spin.setStyleSheet(self._live_bars_spin.styleSheet())
-        # CNTI is stored as bool (count_in) in LiveLoopState; treat any value > 0 as True.
+        # count_in is an int (0 = off, 1-8 = bar count before recording starts).
         self._live_countin_spin.valueChanged.connect(
-            lambda v: self.live_param_changed.emit(self._row, "count_in", bool(v))
+            lambda v: self.live_param_changed.emit(self._row, "count_in", v)
         )
         self._live_norm_cb = QCheckBox("NORM")
         self._live_norm_cb.setStyleSheet(
@@ -1420,10 +1421,11 @@ class ChannelStrip(QFrame):
         self._waveform.set_playing(state.playing)
         self._on_group_changed(state.group)
 
-    def set_waveform_data(self, data, filename=""):
+    def set_waveform_data(self, data, filename="", filepath=""):
         self._waveform.set_waveform(data, filename)
         self._sample_name.setText(filename)
-        self._sample_name.setToolTip(filename or "Click to select from loaded samples")
+        tip = filepath if filepath else (filename or "Click to select from loaded samples")
+        self._sample_name.setToolTip(tip)
 
     def set_playback_position(self, pos: float):
         self._waveform.set_playback_position(pos)

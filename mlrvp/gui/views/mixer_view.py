@@ -186,13 +186,16 @@ class GroupChannel(QFrame):
             f"border-radius: 0px; padding: 0px; }}"
         )
         self._fx_route_btn.clicked.connect(self._cycle_fx_route)
+        self._fx_route_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._fx_route_btn.customContextMenuRequested.connect(self._reset_fx_route)
         self._fx_route_btn.setToolTip(
             "FX routing for this group:\n"
             "OFF — no FX send\n"
             "FX1 — route through FX Group A\n"
             "FX2 — route through FX Group B\n"
             "FX3 — route through FX Group C\n"
-            "FX4 — route through FX Group D"
+            "FX4 — route through FX Group D\n"
+            "(Right-click to reset to OFF)"
         )
         layout.addWidget(self._fx_route_btn)
 
@@ -221,6 +224,12 @@ class GroupChannel(QFrame):
         self._fx_route = (self._fx_route + 1) % 5
         self._update_fx_route_display()
         self.fx_route_changed.emit(self._group, self._fx_route)
+
+    def _reset_fx_route(self):
+        """Reset FX routing to OFF (right-click handler)."""
+        self._fx_route = 0
+        self._update_fx_route_display()
+        self.fx_route_changed.emit(self._group, 0)
 
     def _update_fx_route_display(self):
         _FX_LABELS = ["OFF", "FX1", "FX2", "FX3", "FX4"]
