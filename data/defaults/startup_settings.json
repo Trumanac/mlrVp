@@ -1,5 +1,5 @@
 {
-  "monome_backend": "40h-direct",
+  "monome_backend": "auto",
   "grid_mode": "grid",
   "active_groups": 8,
   "link_enabled": false,

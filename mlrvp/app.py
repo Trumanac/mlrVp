@@ -537,6 +537,14 @@ class AppController:
         self.window.show()
         self.window.set_status("mlrVp — Ready")
         log.info("GUI initialized")
+        # First-run onboarding: show welcome dialog if this is a fresh install
+        from mlrvp.gui.main_window import maybe_show_welcome
+        from mlrvp.config import get_defaults_dir
+        _settings_path = get_defaults_dir() / "startup_settings.json"
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(
+            300, lambda: maybe_show_welcome(self.window, str(_settings_path))
+        )
 
     # ------------------------------------------------------------------ #
     #  Startup / Shutdown                                                 #
@@ -8015,7 +8023,8 @@ def run_app(argv=None) -> int:
 
     app = QApplication(argv or sys.argv)
     app.setApplicationName("mlrVp")
-    app.setApplicationVersion("0.6.9.20")
+    import mlrvp
+    app.setApplicationVersion(mlrvp.__version__)
 
     # Delay tooltips so they only appear after hovering intentionally.
     from PySide6.QtWidgets import QProxyStyle, QStyle

@@ -730,3 +730,50 @@ class MainWindow(QMainWindow):
         else:
             self.close_requested.emit()
             event.ignore()
+
+
+# ---------------------------------------------------------------------------
+# First-run welcome dialog
+# ---------------------------------------------------------------------------
+
+class WelcomeDialog(QDialog):
+    """Shown once on a fresh install to orient new users."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Welcome to mlrVp")
+        self.setMinimumWidth(480)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        text = QLabel(
+            "<h2>Welcome to mlrVp!</h2>"
+            "<p>mlrVp is a grid-based live sampler. Here's how to get started:</p>"
+            "<ol>"
+            "<li><b>Setup → Audio</b> — choose your audio output device and click "
+            "<b>Start Engine</b>.</li>"
+            "<li><b>Drag a WAV/AIFF/FLAC file</b> onto any channel row's waveform "
+            "area to load a sample.</li>"
+            "<li>Click a cell on the <b>virtual grid</b> (or a hardware button) to "
+            "trigger playback.</li>"
+            "<li>Open <b>Help → How to Use</b> for the full user guide.</li>"
+            "</ol>"
+            "<p>No grid controller? The on-screen virtual grid works standalone — "
+            "open it from <b>View → Show Virtual Grid</b>.</p>"
+        )
+        text.setWordWrap(True)
+        text.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(text)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+
+def maybe_show_welcome(parent, startup_settings_path: str) -> None:
+    """Show WelcomeDialog on first run (startup_settings.json not yet written)."""
+    import os
+    if not os.path.exists(startup_settings_path):
+        dlg = WelcomeDialog(parent)
+        dlg.exec()

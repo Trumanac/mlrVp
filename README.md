@@ -289,6 +289,8 @@ python generate_icon.py
 | scipy | Signal processing (filters) |
 | librosa | Time-stretch-free pitch shifting |
 | numba | JIT-compiled DSP kernels for real-time audio processing |
+| pedalboard | VST3/AU plugin hosting (optional, required for Stowaway module) |
+| aalink | Ableton Link tempo sync (optional — disables Link button if absent) |
 ---
 
 ## Monome Hardware Support
@@ -564,7 +566,7 @@ When a sample is loaded, mlrVp calculates a playback speed so the sample fits th
 
 This feature ensures loops align cleanly to the grid. To enable snapping (round the calculated speed to the nearest ½×/2× step), check **Snap Speed to Rate (½x / 2x)** in Setup → Grid.
 
-The **-½** and **+2×** buttons on each channel strip halve or double the current speed, letting you quickly find the right loop length reguardless if snap is enabled or not.
+The **-½** and **+2×** buttons on each channel strip halve or double the current speed, letting you quickly find the right loop length regardless of whether snap is enabled or not.
 
 ### Waveform and Selection
 

@@ -1,0 +1,40 @@
+version: 2
+updates:
+  # Keep GitHub Actions up to date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+
+  # Keep Python dependencies up to date
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+    # Only open PRs for direct dependencies, not transitive ones
+    allow:
+      - dependency-type: "direct"
+    # Group all minor/patch bumps into a single PR to reduce noise
+    groups:
+      audio-stack:
+        patterns:
+          - "sounddevice"
+          - "soundfile"
+          - "resampy"
+          - "librosa"
+          - "numba"
+          - "scipy"
+          - "numpy"
+      gui:
+        patterns:
+          - "PySide6"
+      midi-osc:
+        patterns:
+          - "python-rtmidi"
+          - "python-osc"
+          - "pymonome"
+          - "pyserial"

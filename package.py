@@ -18,8 +18,14 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-VERSION = "0.6.9.13"
 RELEASE_DIR = ROOT / "release"
+
+# Read the canonical version from the package itself (single source of truth)
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location("mlrvp", ROOT / "mlrvp" / "__init__.py")
+_mod = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+VERSION = _mod.__version__
 
 # Files/dirs to include in the source package
 SOURCE_INCLUDE = [
@@ -28,6 +34,9 @@ SOURCE_INCLUDE = [
     "requirements.txt",
     "pyproject.toml",
     "README.md",
+    "LICENSE",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
     "run.bat",
     "run.sh",
     "run.command",
@@ -36,13 +45,14 @@ SOURCE_INCLUDE = [
     "mlrvp.spec",
 ]
 
-# Patterns to exclude from source package
-SOURCE_EXCLUDE = {
+# Patterns/names to exclude from source package (never bundle user-data dirs)
+SOURCE_EXCLUDE_NAMES = {
     "__pycache__",
-    ".pyc",
-    ".pyo",
     ".egg-info",
 }
+SOURCE_EXCLUDE_EXTS = {".pyc", ".pyo"}
+# data/ subdirs that contain user-specific files should be shipped empty
+DATA_EXCLUDE_SUBDIRS = {"presets", "setlists", "slices", "songs"}
 
 
 def make_source_zip():
@@ -55,16 +65,30 @@ def make_source_zip():
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for item in SOURCE_INCLUDE:
             item_path = ROOT / item
+            if not item_path.exists():
+                print(f"  Skipping (not found): {item}")
+                continue
             if item_path.is_file():
                 zf.write(item_path, f"mlrVp-{VERSION}/{item}")
             elif item_path.is_dir():
                 for root, dirs, files in os.walk(item_path):
-                    # Skip excluded directories
-                    dirs[:] = [d for d in dirs if d not in SOURCE_EXCLUDE]
-                    for f in files:
-                        if any(f.endswith(ext) for ext in SOURCE_EXCLUDE):
+                    root_path = Path(root)
+                    # Skip cache / build artifact dirs
+                    dirs[:] = [
+                        d for d in dirs
+                        if not any(d == ex or d.endswith(ex) for ex in SOURCE_EXCLUDE_NAMES)
+                    ]
+                    # Skip user-data subdirs of data/ to avoid leaking personal paths
+                    if item == "data":
+                        rel_root = root_path.relative_to(ROOT / "data")
+                        parts = rel_root.parts
+                        if parts and parts[0] in DATA_EXCLUDE_SUBDIRS:
+                            dirs.clear()
                             continue
-                        full = Path(root) / f
+                    for f in files:
+                        if Path(f).suffix in SOURCE_EXCLUDE_EXTS:
+                            continue
+                        full = root_path / f
                         rel = full.relative_to(ROOT)
                         zf.write(full, f"mlrVp-{VERSION}/{rel}")
 

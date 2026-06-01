@@ -36,6 +36,10 @@ installer.iss
 # Audio samples / slices (user data)
 data/slices/*.wav
 data/slices/*.json
+data/slices/*/
+
+# Runtime-generated user-specific data (personal paths/favorites)
+data/defaults/sample_favorites.json
 
 # Runtime-generated user config
 data/ui_scale.txt
@@ -74,6 +78,9 @@ diagnose_com7.py
 diagnose_loopback.py
 probe_40h.py
 probe_tilt.py
+
+# One-off migration utilities (not for end users)
+_migrate_ui_scale.py
 
 # Local dev backups
 _backup/
