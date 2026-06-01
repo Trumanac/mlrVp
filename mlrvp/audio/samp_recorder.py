@@ -21,7 +21,6 @@ no input-trim. The bus tap already provides the desired post-FX signal.
 from __future__ import annotations
 
 import datetime
-import os
 import threading
 from pathlib import Path
 from typing import Optional

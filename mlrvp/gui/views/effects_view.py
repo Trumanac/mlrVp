@@ -10,8 +10,8 @@ import numpy as np
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTabWidget, QFrame, QComboBox, QSpinBox, QDoubleSpinBox,
-    QCheckBox, QGroupBox, QGridLayout, QSizePolicy, QScrollArea,
+    QFrame, QComboBox, QSpinBox, QDoubleSpinBox,
+    QCheckBox, QGroupBox, QGridLayout, QScrollArea,
     QProgressBar, QInputDialog, QMenu, QMessageBox
 )
 from PySide6.QtCore import Qt, Signal
@@ -20,9 +20,9 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 from mlrvp.config import DelayState, RecorderState, FilterState, FilterBState, TapeDelayState, ModState
 from mlrvp.gui.styles import (
     ACCENT_GOLD, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY,
-    ACCENT_BLUE, FX1_COLOR, FX2_COLOR
+    ACCENT_BLUE, FX2_COLOR
 )
-from mlrvp.gui.widgets.fader import RotaryKnob, HorizontalFader
+from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.gui.widgets.vu_meter import VUMeter
 from mlrvp.gui.scale import bind_fixed_height, bind_fixed_width, bind_max_height, bind_min_height, bind_min_width
 
@@ -1510,7 +1510,7 @@ class ModPanel(QFrame):
 #  FX Rack view — replaces old tabbed layout with skeuomorphic rack UI
 # ---------------------------------------------------------------------------
 
-from mlrvp.gui.widgets.rack_container import RackContainer, MAX_MODULES_PER_RACK
+from mlrvp.gui.widgets.rack_container import RackContainer
 from mlrvp.gui.rack_modules.digital_delay import DigitalDelayModule
 from mlrvp.gui.rack_modules.tape_delay import TapeDelayModule
 from mlrvp.gui.rack_modules.multiband_filter import MultibandFilterModule
@@ -1528,26 +1528,13 @@ from mlrvp.gui.rack_modules.vhs import VHSModule
 from mlrvp.gui.rack_modules.vinyl import VinylModule
 from mlrvp.gui.rack_modules.ether_drift import EtherDriftModule
 from mlrvp.gui.rack_modules.hall_reverb import HallReverbModule
-from mlrvp.gui.rack_modules.plate_spring_reverb import PlateSpringReverbModule
 from mlrvp.gui.rack_modules.bit_crusher import BitCrusherModule
 from mlrvp.gui.rack_modules.tube_overdrive import TubeOverdriveModule
 from mlrvp.gui.rack_modules.noise_gate import NoiseGateModule
 from mlrvp.gui.rack_modules.tremolo import TremoloModule
 from mlrvp.gui.rack_modules.auto_wah import AutoWahModule
 from mlrvp.gui.rack_modules.fet_limiter import FETLimiterModule
-from mlrvp.gui.rack_modules.exciter import ExciterModule
-from mlrvp.gui.rack_modules.harmonizer import HarmonizerModule
-from mlrvp.gui.rack_modules.stereo_widener import StereoWidenerModule
-from mlrvp.gui.rack_modules.ring_mod import RingModModule
-from mlrvp.gui.rack_modules.simple_eq import SimpleEQModule
-from mlrvp.gui.rack_modules.ping_pong_delay import PingPongDelayModule
-from mlrvp.gui.rack_modules.shimmer_reverb import ShimmerReverbModule
-from mlrvp.gui.rack_modules.lofi_radio import LoFiRadioModule
-from mlrvp.gui.rack_modules.auto_pan import AutoPanModule
-from mlrvp.gui.rack_modules.fuzz import FuzzModule
 from mlrvp.gui.rack_modules.transient_shaper import TransientShaperModule
-# Ensure registry is populated
-import mlrvp.gui.rack_modules  # noqa: F401
 
 # Total effects across all FX groups must stay under this cap.
 # Budget: 512 samples @ 44100 Hz → 11.6ms callback, ~10.1ms for FX (after ~1.5ms routing overhead).

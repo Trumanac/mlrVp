@@ -40,13 +40,10 @@ class _SafeFloatEncoder(json.JSONEncoder):
         return obj
 
 from mlrvp.config import (
-    AppConfig, ChannelState, GroupState, DelayState,
-    RecorderState, PatternRecorderState, FilterState, FilterBState,
-    TapeDelayState, ModState, HallReverbState, PlateReverbState,
-    SlicerState,
+    AppConfig,
     PlaybackMode, QuantizeMode,
     MONOME_BACKENDS, MONOME_BACKEND_AUTO,
-    get_presets_dir, get_setlists_dir, NUM_PRESETS, NUM_SETLIST_SLOTS, NUM_GROUPS
+    get_presets_dir, get_setlists_dir, NUM_SETLIST_SLOTS, NUM_GROUPS
 )
 
 log = logging.getLogger("mlrvp")

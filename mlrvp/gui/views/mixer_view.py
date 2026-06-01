@@ -10,17 +10,16 @@ import math
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
-    QFrame, QComboBox, QSizePolicy
+    QFrame, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, QRect
-from PySide6.QtGui import QPainter, QColor, QPolygon, QPen
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import Qt, Signal, QPoint
 
+from PySide6.QtGui import QPainter, QColor, QPolygon
 from mlrvp.config import NUM_GROUPS
 from mlrvp.gui.styles import (
     GROUP_COLORS, BG_PANEL, BG_BLACK, SEPARATOR, FADER_SLIDER,
-    SEND_FADER_COLOR, PURPLE, TEXT_PRIMARY, TEXT_SECONDARY,
-    ACCENT_GOLD, ACCENT_BLUE, LOGO_MAGENTA, BG_MAIN,
+    SEND_FADER_COLOR, TEXT_PRIMARY, TEXT_SECONDARY,
+    ACCENT_GOLD, LOGO_MAGENTA,
     FX1_COLOR, FX2_COLOR, FX3_COLOR, FX4_COLOR, AUX_COLOR,
 )
 from mlrvp.gui.widgets.fader import VerticalFader

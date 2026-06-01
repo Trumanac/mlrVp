@@ -2,7 +2,7 @@
 
 import math
 
-from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget, QPushButton
+from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QFont, QLinearGradient, QPainterPath,
@@ -247,7 +247,6 @@ class _RatioButtons(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         fnt = self._FONT_CELL
         p.setFont(fnt)
-        fm = p.fontMetrics()
         for i, label in enumerate(self._LABELS):
             y = i * self._CELL_H
             r = QRectF(0, y, self._W, self._CELL_H)

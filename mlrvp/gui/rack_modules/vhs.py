@@ -4,7 +4,7 @@ import math
 
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath, QFont
+from PySide6.QtGui import QPainter, QColor, QPen, QFont
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob

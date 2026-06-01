@@ -1,7 +1,5 @@
 """Glow Worm — 1U tube overdrive with glowing tube vent."""
 
-import math
-
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QColor, QPen, QRadialGradient, QPainterPath

@@ -1,7 +1,6 @@
 """DSP effects for mlrVp: delay, filters, modulation, etc."""
 
 import math
-import random
 import numpy as np
 from scipy.signal import lfilter
 from mlrvp.config import (
@@ -5248,7 +5247,6 @@ class FuzzProcessor:
         self._out_f32_size = _sz
 
     def _ensure_bufs(self, n: int, n_ch: int) -> None:
-        sz = n * n_ch
         if n > self._wet_buf_size or n_ch != self._wet_buf.shape[1] if self._wet_buf.ndim == 2 else True:
             self._wet_buf = np.zeros((n, n_ch), dtype=np.float32)
             self._wet_buf_size = n

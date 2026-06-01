@@ -1,10 +1,8 @@
 """Echo Chamber — 2U hall/room/chamber reverb with LCD and jog wheel."""
 
-import math
-
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget, QComboBox
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
 from PySide6.QtCore import QPointF
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase

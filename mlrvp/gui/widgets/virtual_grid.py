@@ -7,10 +7,10 @@ from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, Signal, QRect
 from PySide6.QtGui import QPainter, QColor, QMouseEvent
 
-from mlrvp.config import MAX_ROWS, MAX_COLUMNS, LED_OFF, LED_BRIGHT
+from mlrvp.config import MAX_ROWS, MAX_COLUMNS, LED_OFF
 from mlrvp.gui.scale import sp, scale_manager
 from mlrvp.gui.styles import (
-    GRID_LED_ON, GRID_LED_DIM, GRID_LED_OFF, GRID_BUTTON_BG, GROUP_COLORS,
+    GRID_BUTTON_BG, GROUP_COLORS,
     BG_BLACK
 )
 

@@ -1,12 +1,10 @@
 """Déjà Vu Delay — 1U digital delay with blue segmented LED display."""
 
-import math
-
 from PySide6.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QWidget,
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QColor, QFont, QPen, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob

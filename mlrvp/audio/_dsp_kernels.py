@@ -8,7 +8,6 @@ No Python objects allowed inside @njit functions.
 """
 
 import math
-import numpy as np
 from numba import njit
 
 # ── Moog Ladder Filter (4-pole, 24dB/oct) ────────────────────────────

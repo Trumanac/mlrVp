@@ -4,7 +4,7 @@ import hashlib
 import logging
 import threading
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
+    QMainWindow, QWidget, QVBoxLayout, QTabWidget,
     QLabel, QPushButton, QScrollArea, QGridLayout,
 )
 from PySide6.QtCore import Qt, QTimer, QSettings

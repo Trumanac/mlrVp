@@ -1,7 +1,5 @@
 """Needle Drop — 1U vinyl record character with crackle, pops, surface noise, and warmth."""
 
-import math
-
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QColor, QPen, QFont

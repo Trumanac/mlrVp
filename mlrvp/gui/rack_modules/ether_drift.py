@@ -1,10 +1,8 @@
 """Ether Drift — 2U bipolar infinite phaser for vaporwave/slushwave."""
 
-import math
-
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget, QPushButton
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath, QLinearGradient
+from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob

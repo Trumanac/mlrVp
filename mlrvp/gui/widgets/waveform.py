@@ -2,12 +2,12 @@
 
 import numpy as np
 from PySide6.QtWidgets import QWidget, QSizePolicy
-from PySide6.QtCore import Qt, Signal, QRectF, QLine
-from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient, QMouseEvent, QPixmap
+from PySide6.QtCore import Qt, Signal, QLine
+from PySide6.QtGui import QPainter, QColor, QPen, QMouseEvent, QPixmap
 
 from mlrvp.gui.scale import bind_min_height
 from mlrvp.gui.styles import (
-    BG_BLACK, BG_PANEL, SEPARATOR, ACCENT_BLUE, TEXT_SECONDARY, GROUP_COLORS
+    BG_BLACK, SEPARATOR, ACCENT_BLUE, TEXT_SECONDARY, GROUP_COLORS
 )
 
 

@@ -191,7 +191,6 @@ class SlicerPreviewService:
             loop = self._loop
             vol = self._volume
             ch_offset = self._channel_offset
-            pending = self._pending_buf
 
         if buf is None:
             outdata[:] = 0
@@ -225,7 +224,6 @@ class SlicerPreviewService:
                         src_ch = buf.shape[1]
                         pos = 0
                         chunk_start = 0
-                        pending = None  # consumed
                 avail = len(buf) - chunk_start
                 need = frames - written
                 n = min(avail, need)

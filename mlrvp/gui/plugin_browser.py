@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QAbstractItemView, QListWidget, QFileDialog,
     QMessageBox,
 )
-from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtCore import Signal, QThread
 from PySide6.QtGui import QColor
 from mlrvp.gui.scale import bind_fixed_width, bind_min_size
 

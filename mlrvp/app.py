@@ -19,13 +19,13 @@ from PySide6.QtGui import QIcon
 
 from mlrvp.config import (
     AppConfig, PlaybackMode, MAX_ROWS, MAX_COLUMNS, NUM_GROUPS, NUM_PATTERN_RECORDERS,
-    LED_OFF, LED_DIM, LED_BRIGHT, PITCH_SCALE_MAPS, PITCH_SCALE_NAMES,
+    LED_OFF, LED_DIM, LED_BRIGHT, PITCH_SCALE_MAPS,
     LIVE_STATE_EMPTY, LIVE_STATE_COUNTING_IN, LIVE_STATE_RECORDING,
     LIVE_STATE_OVERDUBBING, LIVE_STATE_ARMED_RERECORD, LIVE_STATE_PLAYING,
     LIVE_STATE_PENDING,
     LIVE_STATE_ARMED,
-    LIVE_QUANTIZE_NAMES, LIVE_SOURCE_INPUT,
-    LIVE_AFTER_REC_LAYER, LIVE_AFTER_REC_REPLACE, LIVE_AFTER_REC_REPLACE_STOP,
+    LIVE_SOURCE_INPUT,
+    LIVE_AFTER_REC_REPLACE, LIVE_AFTER_REC_REPLACE_STOP,
     LIVE_AFTER_REC_MANUAL,
     LIVE_PLAY_START_IMMEDIATE, LIVE_PLAY_START_NEXT_BEAT, LIVE_PLAY_START_NEXT_BAR,
     LIVE_SOURCE_GRP_BASE, LIVE_SOURCE_FX_BASE,
@@ -39,7 +39,7 @@ from mlrvp.audio.sample import load_sample, get_waveform_overview
 from mlrvp.transport.clock import MasterClock
 from mlrvp.transport.pattern import PatternRecorder
 from mlrvp.grid.controller import GridController
-from mlrvp.midi.handler import MidiHandler, MidiMapping
+from mlrvp.midi.handler import MidiHandler
 from mlrvp.osc.handler import OscHandler
 from mlrvp.preset.manager import PresetManager
 from mlrvp.gui.main_window import MainWindow
@@ -1577,7 +1577,6 @@ class AppController:
         import datetime as _dt
         import os as _os
         from PySide6.QtWidgets import QInputDialog
-        from mlrvp.audio.live_loop import LiveLoopRecorder
 
         ch = self.engine.channels[row]
         data_dir = getattr(self.config, "data_dir", None) or "data"
@@ -1595,7 +1594,7 @@ class AppController:
         if prompt_name:
             text, ok = QInputDialog.getText(
                 self.window, "Export LIVE loop",
-                f"Slice name (saved to data/slices/Live/):",
+                "Slice name (saved to data/slices/Live/):",
                 text=default_name,
             )
             if not ok:
@@ -3249,7 +3248,7 @@ class AppController:
                     )
                     # Load assignments list; fall back to legacy num_group_stops/num_patterns
                     from mlrvp.config import (
-                        CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, _default_cr_assignments
+                        CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN
                     )
                     saved_assignments = cr_data.get("assignments")
                     if saved_assignments and isinstance(saved_assignments, list):
@@ -7324,7 +7323,7 @@ class AppController:
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
 
-    def _build_pitch_scale_cache_async(self, row: int, source_override: 'np.ndarray | None' = None):
+    def _build_pitch_scale_cache_async(self, row: int, source_override=None):
         """Pre-compute duration-preserving pitch shifts for each scale semitone.
 
         Entries accumulate — only semitones not already cached are computed.
@@ -7926,7 +7925,7 @@ class AppController:
 
     def _update_control_leds(self, group_active: list[bool]):
         """Update control row LEDs based on slot assignments."""
-        from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_ALL_STOP, CR_SLOT_GRID_MODE, GRID_MODE_GRID, GRID_MODES
+        from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_ALL_STOP, CR_SLOT_GRID_MODE, GRID_MODES
         assignments = self.config.control_row.assignments
         any_group_active = any(group_active[:NUM_GROUPS])
 

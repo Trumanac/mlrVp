@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
-from mlrvp.gui.styles import BG_PANEL, BG_BLACK, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY
+from mlrvp.gui.styles import BG_PANEL, BG_BLACK, SEPARATOR, TEXT_SECONDARY
 from mlrvp.gui.widgets.fader import RotaryKnob
 from mlrvp.gui.scale import bind_fixed_height, bind_fixed_width, bind_min_height, bind_min_width
 

@@ -2,8 +2,8 @@
 
 import math
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QWidget
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QLinearGradient, QPainterPath
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.scale import bind_fixed_size

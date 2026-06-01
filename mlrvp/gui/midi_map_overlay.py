@@ -4,11 +4,9 @@ When MIDI map mode is active, mappable buttons/faders are highlighted.
 Click a control → it starts MIDI learn → move/push MIDI controller → mapped.
 """
 
-from PySide6.QtWidgets import QWidget, QPushButton, QDoubleSpinBox, QComboBox, QLabel
+from PySide6.QtWidgets import QWidget, QPushButton, QDoubleSpinBox, QComboBox
 from PySide6.QtCore import Signal, QObject
-from PySide6.QtGui import QColor
-
-from mlrvp.gui.styles import ACCENT_BLUE, ACCENT_GOLD, BG_BLACK, TEXT_PRIMARY
+from mlrvp.gui.styles import ACCENT_BLUE, ACCENT_GOLD
 
 
 def _has_midi_highlight(widget: QWidget) -> bool:

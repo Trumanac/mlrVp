@@ -138,13 +138,13 @@ class TapeDelayModule(RackModuleBase):
         title_col.setContentsMargins(0, 2, 0, 0)
         title = QLabel("REEL SPACE")
         title.setStyleSheet(
-            f"color: #111111; font-size: 12px; font-weight: bold;"
+            "color: #111111; font-size: 12px; font-weight: bold;"
             " font-family: 'Arial'; letter-spacing: 3px; background: transparent;"
         )
         title_col.addWidget(title)
         sub = QLabel("TAPE ECHO DELAY")
         sub.setStyleSheet(
-            f"color: #444444; font-size: 7px; font-weight: bold;"
+            "color: #444444; font-size: 7px; font-weight: bold;"
             " font-family: 'Arial'; letter-spacing: 2px; background: transparent;"
         )
         title_col.addWidget(sub)

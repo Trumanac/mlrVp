@@ -29,8 +29,8 @@ from typing import Optional, Callable
 log = logging.getLogger("mlrvp")
 
 from mlrvp.config import (
-    AppConfig, SAMPLE_RATE, BUFFER_SIZE, MAX_ROWS, NUM_GROUPS,
-    PlaybackMode, ChannelState
+    AppConfig, BUFFER_SIZE, MAX_ROWS, NUM_GROUPS,
+    PlaybackMode
 )
 from mlrvp.audio.channel import Channel
 from mlrvp.audio.mixer import Mixer

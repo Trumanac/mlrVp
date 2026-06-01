@@ -1,10 +1,8 @@
 """Golden Ears — 1U Pultec-style 3-band parametric EQ."""
 
-import math
-
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
 from PySide6.QtCore import Qt, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient
+from PySide6.QtGui import QPainter, QColor, QPen
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob

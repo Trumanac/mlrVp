@@ -7,7 +7,7 @@ Uses Qt signals for thread-safe communication from the MIDI callback thread.
 import logging
 import threading
 from typing import Optional, Callable
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 
 from PySide6.QtCore import QObject, Signal
 

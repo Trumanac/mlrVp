@@ -1,10 +1,8 @@
 """The Ladder — 1U 24dB/oct ladder filter with cutoff, resonance, and drive."""
 
-import math
-
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient, QFont, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import (

@@ -1,14 +1,13 @@
 """Foreign Exchange — 2U external plugin host (VST3 · AU)."""
 
 from PySide6.QtWidgets import (
-    QHBoxLayout, QVBoxLayout, QLabel, QWidget, QPushButton, QMenu,
+    QHBoxLayout, QVBoxLayout, QLabel, QWidget, QPushButton,
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath, QFont
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
-from mlrvp.config import StowawayState
 from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size
 
 # ── Colour palette — dark forest / mint accent ──────────────────────────────

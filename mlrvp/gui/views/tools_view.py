@@ -9,12 +9,12 @@ import soundfile as sf
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QFrame, QComboBox, QSpinBox, QDoubleSpinBox,
-    QLineEdit, QCheckBox, QGridLayout, QSizePolicy, QFileDialog,
+    QLineEdit, QCheckBox, QSizePolicy, QFileDialog,
     QMenu, QScrollArea, QMessageBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QProgressBar, QListWidget, QAbstractItemView,
     QTreeWidget, QTreeWidgetItem, QStackedWidget, QSlider,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QMimeData, QUrl, QThread, QModelIndex
+from PySide6.QtCore import Qt, Signal, QTimer, QMimeData, QUrl, QThread
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QMouseEvent, QWheelEvent, QDrag
 )
@@ -2247,7 +2247,7 @@ class _SliceLibraryRow(QWidget):
             )
         else:
             self.setStyleSheet(
-                f"background: transparent;"
+                "background: transparent;"
             )
             self._lbl.setStyleSheet(
                 f"color: {TEXT_PRIMARY}; font-size: 9px; background: transparent;"
@@ -3795,7 +3795,6 @@ class _LibrarySlicesTab(_LibraryTableBase):
             self._build_tree()
 
     def _add_row(self, fpath: str, fname: str, meta: dict, duration: float, mtime: float):
-        import math as _m
         from datetime import datetime as _dt
         r = self._table.rowCount()
         self._table.insertRow(r)
@@ -4418,7 +4417,7 @@ class _LibrarySlicesTab(_LibraryTableBase):
 
         folders.sort(key=lambda x: x.text(1).lower())
         leaves.sort(key=_key, reverse=not ascending)
-        taken = item.takeChildren()  # noqa
+        item.takeChildren()
         for f in folders:
             item.addChild(f)
         for lv in leaves:
@@ -5067,7 +5066,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
         leaves.sort(key=_leaf_key, reverse=not ascending)
 
         # Re-insert in sorted order (folders first, then leaves)
-        taken = item.takeChildren()  # noqa — detaches all children
+        item.takeChildren()
         for f in folders:
             item.addChild(f)
         for lv in leaves:

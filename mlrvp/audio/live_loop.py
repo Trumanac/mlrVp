@@ -19,7 +19,6 @@ Threading model:
 from __future__ import annotations
 
 import datetime
-import os
 import threading
 from pathlib import Path
 from typing import Optional

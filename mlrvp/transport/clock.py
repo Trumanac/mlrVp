@@ -17,7 +17,7 @@ log = logging.getLogger("mlrvp")
 # Ableton Link — optional soft dependency via aalink
 # ---------------------------------------------------------------------------
 try:
-    import aalink as _aalink_mod  # noqa: F401  (imported for availability check)
+    __import__('aalink')
     _HAS_LINK = True
 except ImportError:
     _HAS_LINK = False

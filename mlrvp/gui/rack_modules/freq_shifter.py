@@ -3,7 +3,7 @@
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import (QPainter, QColor, QPen, QFont,
-                            QLinearGradient, QRadialGradient)
+                            QLinearGradient)
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
@@ -48,6 +48,7 @@ class _HzBadge(QWidget):
         # Small tilde above — suggests waveform / frequency
         p.setPen(QPen(QColor(_AMBER), 1.0))
         cx = 14
+        prev_y = 0
         for i in range(10):
             x = cx - 4 + i
             y = int(2 + math.sin(i * 0.9) * 1.2)

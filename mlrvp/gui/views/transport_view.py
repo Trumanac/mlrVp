@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 import time
 
-from mlrvp.config import QuantizeMode, NUM_PATTERN_RECORDERS, NUM_PRESETS, NUM_SETLIST_SLOTS, NUM_GROUPS
+from mlrvp.config import NUM_PATTERN_RECORDERS, NUM_GROUPS
 from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width
 from mlrvp.gui.styles import (
     ACCENT_GOLD, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY,

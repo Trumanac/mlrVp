@@ -11,7 +11,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QMouseEvent, QFont
 import math
 from mlrvp.gui.scale import bind_fixed_size, bind_max_height, bind_max_width, bind_min_size
 from mlrvp.gui.styles import (
-    BG_BLACK, BG_PANEL, SEPARATOR, FADER_SLIDER, FADER_BORDER, GROUP_COLORS,
+    BG_BLACK, BG_PANEL, SEPARATOR, FADER_SLIDER, FADER_BORDER,
     ACCENT_BLUE, ACCENT_GOLD
 )
 

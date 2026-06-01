@@ -1,12 +1,11 @@
 """CRT:// Scope — 2U oscilloscope with CRT-style real-time waveform display."""
 
 import collections
-import math
 import threading
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QWidget
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtGui import (
-    QPainter, QColor, QPen, QFont, QLinearGradient, QRadialGradient,
+    QPainter, QColor, QPen, QRadialGradient,
     QPainterPath, QPixmap,
 )
 

@@ -297,7 +297,7 @@ def _check_qt_conflict(path: str, vendor: str = "") -> bool:
 def _has_pedalboard() -> bool:
     """Return True if the pedalboard package is importable."""
     try:
-        import pedalboard  # noqa: F401
+        __import__('pedalboard')
         return True
     except ImportError:
         return False

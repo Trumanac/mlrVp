@@ -21,9 +21,9 @@ import time
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import Qt, Signal, QTimer, QPointF
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import (
-    QColor, QPainter, QBrush, QPen, QLinearGradient, QFont, QFontMetrics,
+    QColor, QPainter, QBrush, QPen, QLinearGradient,
     QMouseEvent,
 )
 from PySide6.QtWidgets import (

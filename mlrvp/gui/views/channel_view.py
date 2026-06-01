@@ -12,8 +12,8 @@ from PySide6.QtWidgets import (
     QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QFileDialog,
     QScrollArea, QFrame, QSizePolicy, QMenu
 )
-from PySide6.QtCore import Qt, Signal, QMimeData, QTimer
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QAction
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 
 from mlrvp.config import (
     ChannelState, PlaybackMode, NUM_GROUPS, MAX_ROWS, PITCH_SCALE_NAMES,
@@ -26,7 +26,7 @@ from mlrvp.config import (
     SEQ_STEP_DIV_NAMES, SEQ_STEP_DIV_DEFAULT,
 )
 from mlrvp.gui.styles import (
-    GROUP_COLORS, BG_PANEL, BG_BLACK, BG_MAIN, SEPARATOR,
+    GROUP_COLORS, BG_PANEL, BG_BLACK, SEPARATOR,
     ACCENT_GOLD, TEXT_PRIMARY, TEXT_SECONDARY,
     _ARROW_UP, _ARROW_DOWN,
 )
@@ -1126,7 +1126,7 @@ class ChannelStrip(QFrame):
     def _show_sample_menu(self):
         """Show dropdown of all previously loaded samples plus a clear option."""
         import os
-        from mlrvp.gui.widgets.overflow_menu import make_menu, populate_menu, MENU_QSS
+        from mlrvp.gui.widgets.overflow_menu import make_menu, populate_menu
 
         menu = make_menu(self)
 

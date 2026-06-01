@@ -1,13 +1,13 @@
 """Scrollable rack container with drag-drop reordering and add/remove."""
 
 from PySide6.QtWidgets import (
-    QScrollArea, QWidget, QVBoxLayout, QPushButton, QMenu, QFrame
+    QScrollArea, QWidget, QVBoxLayout, QPushButton, QFrame
 )
-from PySide6.QtCore import Qt, Signal, QMimeData, QPoint
-from PySide6.QtGui import QPainter, QColor, QLinearGradient, QDrag, QPixmap, QPen
+from PySide6.QtCore import Qt, Signal, QPoint
+from PySide6.QtGui import QPainter, QColor, QLinearGradient, QPen
 from typing import Callable, Optional
 
-from mlrvp.gui.widgets.rack_module_base import RackModuleBase, RACK_EAR_WIDTH
+from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.scale import bind_fixed_height
 
 
@@ -216,7 +216,7 @@ class RackContainer(QScrollArea):
 
     def _show_add_menu(self):
         from mlrvp.gui.widgets.overflow_menu import (
-            make_menu, _make_submenu, MENU_QSS,
+            make_menu, _make_submenu,
         )
         at_local_limit = len(self._modules) >= MAX_MODULES_PER_RACK
         at_global_limit = self._global_limit_fn and self._global_limit_fn()
@@ -378,7 +378,7 @@ class RackContainer(QScrollArea):
         p = QPainter(self)
         if not p.isActive():
             return
-        w, h = self.width(), self.height()
+        w = self.width()
 
         # Subtle top/bottom rail shadow
         p.setPen(Qt.PenStyle.NoPen)

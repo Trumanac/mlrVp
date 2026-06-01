@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPainter, QColor, QLinearGradient
 import weakref
 
-from mlrvp.gui.styles import BG_BLACK, BG_PANEL, VU_COLOR
+from mlrvp.gui.styles import BG_BLACK
 from mlrvp.gui.scale import bind_max_height, bind_max_width, bind_min_size
 
 

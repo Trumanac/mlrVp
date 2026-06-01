@@ -4,7 +4,7 @@ import math
 
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QColor, QPen, QLinearGradient, QFont, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
@@ -51,8 +51,8 @@ class PlateSpringReverbModule(RackModuleBase):
         super().__init__(unit_height=1, faceplate_color=_FACE,
                          title="SPRING FLING", parent=parent)
         self._faceplate.setStyleSheet(
-            f"background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            f"stop:0 #a0a0a0, stop:0.5 #c0c0c0, stop:1 #a0a0a0);"
+            "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #a0a0a0, stop:0.5 #c0c0c0, stop:1 #a0a0a0);"
         )
         self._build_faceplate()
 

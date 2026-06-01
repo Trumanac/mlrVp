@@ -27,7 +27,6 @@ from mlrvp.config import (
     MAX_COLUMNS,
     LED_OFF,
     LED_DIM,
-    LED_MED,
     LED_BRIGHT,
     MONOME_BACKENDS,
     MONOME_BACKEND_AUTO,
@@ -36,7 +35,7 @@ from mlrvp.config import (
     MONOME_BACKEND_LEGACY_OSC,
 )
 from mlrvp.grid.midi_grid import MidiGridAdapter, scan_midi_grid_devices
-from mlrvp.grid.monome40h import Monome40hApp, probe_40h
+from mlrvp.grid.monome40h import Monome40hApp
 from mlrvp.grid.monomeserial import MonomeSerialApp
 
 from PySide6.QtCore import QObject, Signal, Qt
@@ -935,13 +934,12 @@ class GridController:
             MONOME_BACKEND_AUTO,
             MONOME_BACKEND_SERIALOSC,
         )
-        force_40h = backend_mode == MONOME_BACKEND_40H_DIRECT
         use_monomeserial = backend_mode == MONOME_BACKEND_LEGACY_OSC
         try:
             try:
-                import monome  # noqa: F401  pymonome >= 0.9
+                __import__('monome')
             except ImportError:
-                import pymonome as monome  # noqa: F401  legacy fallback
+                __import__('pymonome')
         except ImportError:
             if use_serialosc:
                 log.info("pymonome not available — monome grids won't be detected")

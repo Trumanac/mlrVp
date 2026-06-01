@@ -1,7 +1,5 @@
 """Jet Stream — 1U flanger with aviation red-and-white theme."""
 
-import math
-
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QWidget
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath

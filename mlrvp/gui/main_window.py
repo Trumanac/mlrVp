@@ -2,13 +2,13 @@
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QSplitter, QTabWidget, QStatusBar, QMenuBar,
-    QMenu, QMessageBox, QFileDialog, QDialog, QSizePolicy,
+    QSplitter, QTabWidget, QStatusBar,
+    QFileDialog, QDialog,
     QTextBrowser, QPushButton, QButtonGroup, QLabel, QSlider,
     QDialogButtonBox,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QIcon, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPixmap
 import logging
 
 _log = logging.getLogger(__name__)
@@ -26,8 +26,8 @@ from mlrvp.gui.widgets.song_recorder_panel import SongRecorderPanel
 from mlrvp.gui.styles import get_stylesheet, BG_BLACK
 from mlrvp.gui.scale import (
     sp,
-    bind_fixed_size, bind_fixed_height, bind_fixed_width,
-    bind_min_width, bind_min_height, bind_max_width, bind_min_size,
+    bind_fixed_height,
+    bind_min_width, bind_max_width, bind_min_size,
     scale_manager,
 )
 

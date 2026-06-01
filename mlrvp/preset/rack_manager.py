@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 from mlrvp.config import get_racks_dir
 from mlrvp.preset.manager import _atomic_write_json, _sanitize_name, _SafeFloatEncoder

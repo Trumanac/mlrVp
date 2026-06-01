@@ -1,7 +1,7 @@
 """The Velvet Rope — 1U Drawmer DS201-style frequency-conscious noise gate."""
 
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget, QPushButton
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
@@ -266,19 +266,16 @@ class NoiseGateModule(RackModuleBase):
     @staticmethod
     def _knob_to_attack(v: float) -> float:
         """0-1 knob → 0.02–20 ms (log)."""
-        import math
         return 0.02 * (1000.0 ** v)
 
     @staticmethod
     def _knob_to_hold(v: float) -> float:
         """0-1 knob → 2–4000 ms (log)."""
-        import math
         return 2.0 * (2000.0 ** v)
 
     @staticmethod
     def _knob_to_release(v: float) -> float:
         """0-1 knob → 5–4000 ms (log)."""
-        import math
         return 5.0 * (800.0 ** v)
 
     @staticmethod

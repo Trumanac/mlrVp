@@ -2,11 +2,10 @@
 
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget, QPushButton
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QConicalGradient
+from PySide6.QtGui import QPainter, QColor, QPen
 
 from mlrvp.gui.widgets.rack_module_base import RackModuleBase
 from mlrvp.gui.widgets.fader import RotaryKnob
-from mlrvp.config import RingModState
 from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width
 
 # ── colour palette — dark metallic copper/bronze ─────────────────────────────

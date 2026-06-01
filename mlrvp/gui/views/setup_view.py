@@ -2,16 +2,15 @@
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QGroupBox,
+    QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox,
     QGridLayout, QTabWidget, QLineEdit, QFrame, QScrollArea,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QMenu, QSizePolicy,
+    QMenu,
 )
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QColor, QPalette, QAction
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction
 
 from mlrvp.config import (
-    AppConfig,
     MAX_ROWS,
     MAX_COLUMNS,
     NUM_GROUPS,
@@ -171,9 +170,9 @@ class AudioSetupPanel(QFrame):
             )
         if num_peers > 0:
             return (
-                f"QPushButton {{ font-size: 11px; font-weight: bold; color: #0A0A0A; "
-                f"background: #4A9EFF; border: 1px solid #4A9EFF; padding: 0; }}"
-                f"QPushButton:checked {{ background: #4A9EFF; }}"
+                "QPushButton { font-size: 11px; font-weight: bold; color: #0A0A0A; "
+                "background: #4A9EFF; border: 1px solid #4A9EFF; padding: 0; }"
+                "QPushButton:checked { background: #4A9EFF; }"
             )
         return (
             f"QPushButton {{ font-size: 11px; font-weight: bold; color: #4A9EFF; "
