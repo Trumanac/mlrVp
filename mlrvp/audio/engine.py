@@ -1025,7 +1025,7 @@ class AudioEngine:
         # pauses on the audio thread.  A dedicated background thread runs
         # gen-0 collections once per second.
         gc.disable()
-        self._gc_running = True
+        self._gc_stop = threading.Event()
         self._gc_thread = threading.Thread(
             target=self._gc_loop, name="gc-worker", daemon=True
         )
@@ -1103,7 +1103,7 @@ class AudioEngine:
             self._running = True
         except Exception as e:
             # Stop the GC worker thread we started before the try block
-            self._gc_running = False
+            self._gc_stop.set()
             if self._gc_thread is not None:
                 self._gc_thread.join(timeout=0.5)
                 self._gc_thread = None
@@ -1157,7 +1157,8 @@ class AudioEngine:
             self._input_stream.close()
             self._input_stream = None
         # Re-enable automatic GC and stop the GC worker thread
-        self._gc_running = False
+        if hasattr(self, '_gc_stop'):
+            self._gc_stop.set()   # wakes the GC loop immediately
         if hasattr(self, '_gc_thread') and self._gc_thread is not None:
             self._gc_thread.join(timeout=2.0)
             self._gc_thread = None
@@ -1184,14 +1185,13 @@ class AudioEngine:
         # Python auto-promotes to gen-1, which can take 10-100ms.
         # Set gen-1/gen-2 very high so only cheap gen-0 runs automatically.
         gc.set_threshold(700, 50, 50)
-        while self._gc_running:
-            time.sleep(2.0)
-            if self._gc_running:
-                scheduler = self.gc_scheduler
-                if scheduler is not None:
-                    scheduler(_collect_young)
-                else:
-                    _collect_young()
+        stop = self._gc_stop
+        while not stop.wait(2.0):
+            scheduler = self.gc_scheduler
+            if scheduler is not None:
+                scheduler(_collect_young)
+            else:
+                _collect_young()
 
     def _input_callback(self, indata, frames, time_info, status):
         """Capture input audio for recording (double-buffered)."""

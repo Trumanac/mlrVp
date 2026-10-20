@@ -608,15 +608,30 @@ class TestCallbacks:
         assert np.all(outdata == pytest.approx(0.7))
         assert engine._ring_read == 1
 
-    def test_gc_loop_exits_promptly_when_flag_cleared(self):
+    def test_gc_loop_exits_promptly_when_stopped(self):
         import threading
+        import time
         engine = make_engine()
-        engine._gc_running = True
+        engine._gc_stop = threading.Event()
         t = threading.Thread(target=engine._gc_loop, daemon=True)
         t.start()
-        engine._gc_running = False
+        t0 = time.perf_counter()
+        engine._gc_stop.set()
         t.join(timeout=3.0)
         assert not t.is_alive()
+        assert time.perf_counter() - t0 < 1.0   # no longer waits out a 2 s sleep
+
+    def test_gc_collection_is_handed_to_scheduler(self):
+        import threading
+        engine = make_engine()
+        engine._gc_stop = threading.Event()
+        scheduled = threading.Event()
+        engine.gc_scheduler = lambda fn: scheduled.set()
+        t = threading.Thread(target=engine._gc_loop, daemon=True)
+        t.start()
+        assert scheduled.wait(5.0)   # first collection goes to the scheduler
+        engine._gc_stop.set()
+        t.join(timeout=3.0)
 
 
 class TestProfiling:
