@@ -132,7 +132,8 @@ jobs:
             **File → Import Data from Previous Version…** once to bring them across
             (see [Where your files are stored](https://github.com/${{ github.repository }}#where-your-files-are-stored)).
 
-            > **macOS**: If you see "unidentified developer", right-click `mlrVp.app` → **Open** and click Open in the dialog. Or remove the quarantine flag via Terminal:
+            > **Windows**: The app isn't code-signed yet — if SmartScreen says "Windows protected your PC", click **More info → Run anyway**.
+            > **macOS** (Apple Silicon; on Intel Macs run from source): If you see "unidentified developer", right-click `mlrVp.app` → **Open** and click Open in the dialog. Or remove the quarantine flag via Terminal:
             > ```
             > xattr -dr com.apple.quarantine mlrVp.app
             > ```

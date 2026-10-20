@@ -82,7 +82,8 @@ mlrVp is a standalone, cross-platform application that recreates the legendary m
 2. Extract to a folder of your choice
 3. Run `mlrVp.exe` (Windows), `mlrVp.app` (macOS), or `./mlrVp` (Linux)
 
-> **macOS:** If you get a security warning, go to System Settings → Privacy & Security → Allow.
+> **Windows:** The app isn't code-signed yet, so SmartScreen may say "Windows protected your PC" — click **More info → Run anyway**.
+> **macOS:** The app isn't notarized yet. If you get a security warning, go to System Settings → Privacy & Security → Allow (or right-click `mlrVp.app` → **Open**). The macOS download is for **Apple Silicon** Macs; on an Intel Mac, run mlrVp [from source](#quick-start-all-platforms).
 > **Linux:** You may need `chmod +x mlrVp` before running.
 
 ### Where your files are stored
