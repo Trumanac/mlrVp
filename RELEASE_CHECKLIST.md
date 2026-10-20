@@ -80,6 +80,20 @@ Baseline: `c7319d2` (v0.6.9.24)
   - Documented in README + release body: SmartScreen prompt, Gatekeeper workaround, Apple-Silicon-only macOS download (universal2 not viable: numba/llvmlite). Real signing/notarization needs paid certificates — post-1.0. — `d36b6fe`
 - [ ] **D12.** Tag v1.0.0.
 
+## G. Second full review (pre-tag)
+
+- [ ] **G1. License conflict — needs a decision.** mlrVp is MIT + Commons Clause, but release builds bundle **pedalboard (GPL-3.0)** and **aalink (GPL-3.0+, wraps Ableton Link)**. GPL forbids added restrictions like the Commons Clause, so distributing the bundled binaries under the current license is likely not permitted. Options: relicense to GPL-3.0; or stop bundling both (lose VST/AU hosting + Link in downloads); or ask the authors for an exception. Not legal advice — worth a check before going public.
+- [x] **G2.** Saved audio device busy/absent or rejecting the saved sample rate/buffer size crashed startup on *every* launch (settings now persist). Falls back to default output, then starts with audio off + explanation. 4 tests. — `90f033b`
+- [x] **G3.** Presets store absolute sample paths → after the data-folder move, every sample under an old `data/slices|songs` broke once the old folder was deleted; a missing sample left its row on "(loading...)" forever. Paths are followed to the new folders; missing ones show "(missing)" + status. 6 tests. — `cc4dd75`
+- [x] **G4.** Fuzzing preset loading: `1e999`/`Infinity`/wrong types raised out of `apply_preset` (OverflowError, control-row block); malformed racks (non-object, bad UTF-8) crashed; case-only rack rename failed. All text files read/written as UTF-8 explicitly. Fuzzer: 1000+ presets × 25 bad values, clean. 5 tests. — `a5d4fe1`
+- [x] **G5.** Malformed MIDI/tilt mappings in a preset aborted recall part-way (raw `m["param_path"]`); validated + deduplicated into one helper. 3 tests. — `eeced6a`
+- [x] **G6.** `stop()` ran twice on every quit; quitting could leave a zombie process if another top-level window was open (Qt 6 `quit()` vetoed by the hide-only grid window). — `7be2d85`, `ed041fb`
+- [x] **G7.** Release zips had no license texts (LGPL Qt/soxr/libsndfile, GPL pedalboard/aalink). Generated `THIRD_PARTY_LICENSES.txt` + `LICENSE` + `licenses/` now ship with every build. — `68251e6`
+- [x] **G8.** Depend on PySide6-Essentials (only QtCore/Gui/Widgets used) instead of PySide6 + Addons/WebEngine/Pdf. — `ef5a81b`
+- [ ] **G9.** Before tagging: `Development Status :: 4 - Beta` → `5 - Production/Stable` in pyproject; bump `__version__`; CHANGELOG Unreleased → 1.0.0. _(with D12)_
+- Verified clean: OSC binds 127.0.0.1 and is off by default; preset/rack keys are whitelisted (no arbitrary attribute writes); no eval/pickle; packaged Windows build launches, seeds racks, logs correctly.
+- Note: the local `origin` URL uses old casing (`trumanac/mlrVp`); pushes work via redirect — `git remote set-url origin https://github.com/Trumanac/mlrVp.git` to silence the notice.
+
 ## Found during fixes
 
 - [x] **F1.** CI test job failed on first run: `test_rejects_oversized_file` crashed pytest on Python 3.12 (Path.stat patch missing `follow_symlinks`); checkbox click missed hit area on Linux. — `bf142b0`
