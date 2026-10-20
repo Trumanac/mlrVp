@@ -311,6 +311,9 @@ class AppController:
         # preset; cleared on save or when a new preset is recalled.
         self._preset_dirty: bool = False
 
+        # time.monotonic() of the last local tempo change (see _follow_link_tempo)
+        self._local_tempo_changed_at: float = -1e9
+
         # Persistent background worker for startup-settings writes.
         # Thread creation on Python/Windows involves a kernel allocation that
         # can take 0.5–5 ms while holding the GIL.  Creating a fresh thread on
@@ -2523,7 +2526,29 @@ class AppController:
 
     # --- Transport handlers ---
 
+    # Ignore Link session tempo for this long after a local tempo change, so
+    # the change can round-trip through the Link thread without being undone.
+    _LINK_FOLLOW_HOLDOFF = 0.5
+
     def _gui_tempo_changed(self, bpm: float):
+        """Tempo changed locally (BPM box, tap, MIDI, OSC, presets)."""
+        self._local_tempo_changed_at = time.monotonic()
+        self._apply_tempo(bpm)
+
+    def _follow_link_tempo(self) -> None:
+        """Adopt tempo changes made by other Ableton Link peers (GUI timer)."""
+        if not self.clock or not self.config.link_enabled:
+            return
+        link_bpm = self.clock.link_tempo
+        if link_bpm is None or abs(link_bpm - self.config.tempo) < 0.01:
+            return
+        if time.monotonic() - self._local_tempo_changed_at < self._LINK_FOLLOW_HOLDOFF:
+            return
+        self._apply_tempo(link_bpm)
+        if self.window:
+            self.window.transport.set_tempo(link_bpm)
+
+    def _apply_tempo(self, bpm: float):
         if self.clock:
             self.clock.set_tempo(bpm)
         if self.engine:
@@ -2619,6 +2644,7 @@ class AppController:
         detected_bpm = round(candidates[mid], 1)
 
         self.config.tempo = detected_bpm
+        self._local_tempo_changed_at = time.monotonic()
         if self.clock:
             self.clock.set_tempo(detected_bpm, immediate=True)
         if self.engine:
@@ -7021,12 +7047,19 @@ class AppController:
     #  State sync helpers                                                 #
     # ------------------------------------------------------------------ #
 
+    def _sync_clock_tempo(self):
+        """Bring the clock (and Link session) to config.tempo after a recall."""
+        if self.clock:
+            self._local_tempo_changed_at = time.monotonic()
+            self.clock.set_tempo(self.config.tempo, immediate=True)
+
     def _apply_config_to_engine(self):
         """Push current config to the audio engine after preset recall."""
         if not self.engine:
             return
 
         self.engine.set_tempo(self.config.tempo)
+        self._sync_clock_tempo()
         self.engine.set_master_volume(self.config.master_volume)
         self.engine.set_master_hp(self.config.master_hp)
         self.engine.set_master_lp(self.config.master_lp)
@@ -7170,6 +7203,7 @@ class AppController:
             return
 
         self.engine.set_tempo(self.config.tempo)
+        self._sync_clock_tempo()
         self.engine.set_master_volume(self.config.master_volume)
         self.engine.set_master_hp(self.config.master_hp)
         self.engine.set_master_lp(self.config.master_lp)
@@ -7779,7 +7813,8 @@ class AppController:
         self._check_monome_connect()
         self._check_monome_disconnect()
 
-        # Ableton Link — update peer count in Setup > Audio panel
+        # Ableton Link — follow peers' tempo, update peer count in Setup > Audio
+        self._follow_link_tempo()
         if self.clock:
             self.window.setup_view.set_link_state(
                 self.config.link_enabled,

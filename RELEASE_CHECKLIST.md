@@ -25,8 +25,9 @@ Baseline: `c7319d2` (v0.6.9.24)
 ## B. Bugs
 
 - [x] **B1. ~270 `setStyleSheet` calls/sec** from the 30 fps loop (group-stop buttons + Link button).
-  - Both setters cache their last state (keyed incl. group color); cache cleared after MIDI-map mode and on manual Link clicks so a failed Link enable still reverts the button. 4 tests.
-- [ ] **B2. Ableton Link tempo** from peers not pushed to engine / BPM display.
+  - Both setters cache their last state (keyed incl. group color); cache cleared after MIDI-map mode and on manual Link clicks so a failed Link enable still reverts the button. 4 tests. — `5ccd7c3`
+- [x] **B2. Ableton Link tempo** from peers not pushed to engine / BPM display.
+  - GUI timer follows `clock.link_tempo` through the normal tempo path (engine, delays, speed spinners, BPM box), with a 0.5 s hold-off after local changes so they aren't undone. Unit-tested; **needs a manual check with a real Link peer** (multicast blocked in the dev sandbox; also `aalink` isn't installed in the local .venv, so the Link button is disabled there — `pip install -r requirements.txt`).
 - [ ] **B3. Pan law −3 dB jump** just off center.
 - [ ] **B4. Plugin scan timeout ineffective** (executor `shutdown(wait=True)` blocks on hung plugin).
 - [ ] **B5. Renaming a preset breaks other setlists.**
@@ -66,4 +67,5 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [ ] **F5.** `_save_startup_settings()` overwrites the whole file and erases the `welcome_shown` flag → Welcome dialog reappears after any settings change. _(fix with B7)_
 - [ ] **F6.** Startup blocks the GUI ~7 s probing serialosc when the daemon isn't running.
 - [ ] **F7.** Add `.gitattributes` for consistent line endings across platforms.
+- [x] **F8.** Preset recall set the engine tempo but never the clock: after loading a preset with a different BPM, beats/quantize/SEQ/patterns kept the old tempo while loops used the new one. _(fixed with B2)_
 - [ ] **F2.** Song Recorder "saved" status shown before the export ran / even on failure. Fixed for Song Recorder in A1; audit other save paths under B9.

@@ -273,6 +273,13 @@ class MasterClock:
         return 0
 
     @property
+    def link_tempo(self) -> Optional[float]:
+        """Current Ableton Link session tempo, or None if Link is off."""
+        if self._link_enabled and self._link_bridge is not None:
+            return self._link_bridge.tempo
+        return None
+
+    @property
     def link_available(self) -> bool:
         """True if aalink is installed and Link can be used."""
         return _HAS_LINK
