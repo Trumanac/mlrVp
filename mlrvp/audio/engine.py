@@ -77,6 +77,10 @@ except ImportError:
     _HAS_NUMBA = False
 
 
+def _collect_young() -> None:
+    gc.collect(0)
+
+
 class AudioEngine:
     """Core real-time audio engine.
 
@@ -1160,6 +1164,11 @@ class AudioEngine:
         gc.enable()
         gc.collect()
 
+    # Runs the periodic collection somewhere other than the gc-worker thread
+    # (the app passes run_on_main_thread).  Collecting on a worker thread can
+    # destroy unreachable Qt objects there, which Qt does not allow.
+    gc_scheduler: Optional[Callable[[Callable[[], None]], None]] = None
+
     def _gc_loop(self):
         """Background thread that runs gen-0 GC collection every 2 seconds.
 
@@ -1178,7 +1187,11 @@ class AudioEngine:
         while self._gc_running:
             time.sleep(2.0)
             if self._gc_running:
-                gc.collect(0)
+                scheduler = self.gc_scheduler
+                if scheduler is not None:
+                    scheduler(_collect_young)
+                else:
+                    _collect_young()
 
     def _input_callback(self, indata, frames, time_info, status):
         """Capture input audio for recording (double-buffered)."""

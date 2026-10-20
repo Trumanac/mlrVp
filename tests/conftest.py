@@ -136,3 +136,17 @@ def ramp_sample():
         filepath="",
         duration_sec=num_frames / SAMPLE_RATE,
     )
+
+
+@pytest.fixture(autouse=True)
+def _collect_qt_garbage_on_main_thread(request):
+    """After each Qt test, collect garbage here on the main thread.
+
+    Otherwise widgets left in reference cycles can be collected later by
+    whichever thread next triggers the GC — e.g. a worker thread in a later
+    test — and Qt aborts when a widget is destroyed off the GUI thread.
+    """
+    yield
+    if "qtbot" in request.fixturenames:
+        import gc
+        gc.collect()

@@ -354,6 +354,8 @@ class AppController:
     def init_audio(self):
         """Initialize the audio engine."""
         self.engine = AudioEngine(self.config)
+        # Periodic GC must run on the GUI thread: it can free Qt objects.
+        self.engine.gc_scheduler = run_on_main_thread
         self.engine.set_meter_callback(self._on_meter_levels)
         self.engine.set_live_recorded_callback(self._live_loop_marshaller.recorded)
         self.engine.set_samp_recorded_callback(self._samp_marshaller.recorded)
@@ -8295,6 +8297,10 @@ def run_app(argv=None) -> int:
     app.setApplicationName("mlrVp")
     import mlrvp
     app.setApplicationVersion(mlrvp.__version__)
+    # Create the cross-thread invoker on the main thread before any worker
+    # thread (OSC, exports, saves) can call run_on_main_thread().
+    from mlrvp.gui.main_thread import init_main_thread_invoker
+    init_main_thread_invoker()
 
     # Delay tooltips so they only appear after hovering intentionally.
     from PySide6.QtWidgets import QProxyStyle, QStyle

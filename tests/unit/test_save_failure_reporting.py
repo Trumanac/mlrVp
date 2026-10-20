@@ -48,3 +48,5 @@ def test_failure_is_shown_without_blocking(qtbot):
     assert "rack 'Drums'" in boxes[0].text() and "Access denied" in boxes[0].text()
     assert "Could not save rack 'Drums'" in window.statusBar().currentMessage()
     boxes[0].close()
+    window._allow_close = True
+    window.close()

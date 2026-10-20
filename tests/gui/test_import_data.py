@@ -11,7 +11,9 @@ def window(qtbot, tmp_path, monkeypatch):
     monkeypatch.setenv(config.DATA_DIR_ENV, str(tmp_path / "userdata"))
     w = MainWindow()
     qtbot.addWidget(w)
-    return w
+    yield w
+    w._allow_close = True   # closeEvent otherwise defers to the app controller
+    w.close()
 
 
 @pytest.fixture
