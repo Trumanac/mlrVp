@@ -62,7 +62,8 @@ Baseline: `c7319d2` (v0.6.9.24)
   - build.yml reuses pr_check (full matrix) before building; quoted pyinstaller; draft releases with generated notes; least-privilege permissions. — `4b5559d`
 - [x] **D3.** PR check: Windows + Python 3.11–3.13 matrix; add ruff; pre-commit config.
   - Ubuntu 3.11/3.12/3.13 + Windows 3.12 + macOS 3.12; ruff (correctness rules in pyproject) replaces pyflakes; .pre-commit-config.yaml. — `4b5559d`
-- [ ] **D4.** Pinned/constraints file for release builds.
+- [x] **D4.** Pinned/constraints file for release builds.
+  - requirements-lock.txt (uv universal lock, Python 3.12) used by build.yml; PR checks test latest. — `da6f6e1`
 - [ ] **D5.** Close/merge the 4 stale Dependabot PRs; bump actions; delete `copilot/*` branches.
   - Actions bumped in the workflows (supersedes the PRs) — PRs still to close; `copilot/*` branches need a decision (two hold unmerged commits).
 - [x] **D6.** Add `CHANGELOG.md`; adopt semver from 1.0.0.
@@ -71,7 +72,7 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [ ] **D8.** Repo settings: enable Discussions (or drop link), private vulnerability reporting, topics, auto-delete merged branches.
 - [ ] **D9.** Decide on history scrub (personal paths in deleted presets) before going public.
 - [ ] **D10.** After public: protect `main` (PR + passing checks, no force-push).
-- [ ] **D13.** macOS CI job never gets a runner (stays queued; earlier one cancelled after 15 min) — likely private-repo macOS minutes (10× rate). Decide: keep macOS (free once public) or drop it until then.
+- [x] **D13.** macOS CI job queued/cancelled at times — GitHub macOS arm64 *capacity* (annotation: "longer queue times"), not billing. When it runs it passes (~1.5 min). Keeping it.
 - [ ] **D11.** Known distribution gaps (document or address): unsigned Windows exe, ad-hoc-signed un-notarized macOS, arm64-only mac build.
 - [ ] **D12.** Tag v1.0.0.
 
