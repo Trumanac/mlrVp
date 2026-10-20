@@ -2,6 +2,7 @@
 
 import os
 import math
+import logging
 import threading
 import numpy as np
 import soundfile as sf
@@ -25,6 +26,9 @@ from mlrvp.gui.styles import (
     ACCENT_BLUE_HOVER, ACCENT_GOLD_HOVER, STATUS_ERROR_HOVER,
 )
 from mlrvp.gui.widgets.fader import HorizontalFader
+from mlrvp.gui.main_thread import run_on_main_thread
+
+log = logging.getLogger("mlrvp")
 
 AUDIO_EXTENSIONS = {'.wav', '.aiff', '.aif', '.flac', '.ogg', '.mp3'}
 
@@ -2098,20 +2102,27 @@ class SlicePanel(QFrame):
                         except OSError:
                             pass
 
-                # Thread-safe progress update via QTimer
+                # Thread-safe progress update
                 _exp, _tot = exported, len(regions)
-                QTimer.singleShot(0, lambda e=_exp, t=_tot: self._status.setText(
+                run_on_main_thread(lambda e=_exp, t=_tot: self._status.setText(
                     f"Exported {e}/{t} slices\u2026"
                 ))
 
-            # Final UI updates must run on the main thread
             if failed:
-                msg = f"\u26A0 {len(failed)} slices failed \u2014 {exported}/{len(regions)} exported"
-            else:
-                msg = f"Exported {exported} slices to data/slices/"
-            QTimer.singleShot(0, lambda: self._finish_export(msg))
+                return f"\u26A0 {len(failed)} slices failed \u2014 {exported}/{len(regions)} exported"
+            return f"Exported {exported} slices to data/slices/"
 
-        threading.Thread(target=_do_export, daemon=True).start()
+        def _run_export():
+            # Always finish on the main thread so the EXPORT ALL button is
+            # re-enabled even if the export raises unexpectedly.
+            msg = "\u26A0 Export failed \u2014 see log"
+            try:
+                msg = _do_export()
+            except Exception:
+                log.exception("Slice export failed")
+            run_on_main_thread(lambda: self._finish_export(msg))
+
+        threading.Thread(target=_run_export, daemon=True).start()
 
     def _finish_export(self, msg: str):
         """Called on the main thread after background export completes."""

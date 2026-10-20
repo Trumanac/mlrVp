@@ -43,6 +43,7 @@ from mlrvp.midi.handler import MidiHandler
 from mlrvp.osc.handler import OscHandler
 from mlrvp.preset.manager import PresetManager
 from mlrvp.gui.main_window import MainWindow
+from mlrvp.gui.main_thread import run_on_main_thread
 from mlrvp.gui.midi_map_overlay import MidiMapManager
 from mlrvp.gui.widgets.fader import ControlDisplaySettings
 from mlrvp.gui.views.mixer_view import _fader_to_gain, _gain_to_fader
@@ -407,7 +408,7 @@ class AppController:
         """Register OSC address handlers for mixer and effects control.
 
         OSC messages arrive on ThreadingOSCUDPServer worker threads, so
-        each handler is bounced to the Qt main thread via QTimer.singleShot.
+        each handler is bounced to the Qt main thread via run_on_main_thread.
         """
         osc = self.osc
         if not osc:
@@ -416,7 +417,7 @@ class AppController:
         def _osc(fn):
             """Wrap an OSC handler to execute on the Qt main thread."""
             def _handler(addr, *args):
-                QTimer.singleShot(0, lambda: fn(addr, *args))
+                run_on_main_thread(lambda: fn(addr, *args))
             return _handler
 
         # Group mixer: /mlrvp/group/<1-N>/volume|send|mute|fx_route  (float 0-1 or int)
@@ -1985,15 +1986,15 @@ class AppController:
                 # main thread.  Calling them directly from the MIDI callback
                 # thread (where this handler runs) causes unpredictable GIL
                 # stalls that drain the audio ring buffer.
-                QTimer.singleShot(0, self._gui_grid_mode_cycle)
+                run_on_main_thread(self._gui_grid_mode_cycle)
 
         elif slot_type == CR_SLOT_PRESET_PREV:
             if state == 1:
-                QTimer.singleShot(0, self._gui_preset_prev)
+                run_on_main_thread(self._gui_preset_prev)
 
         elif slot_type == CR_SLOT_PRESET_NEXT:
             if state == 1:
-                QTimer.singleShot(0, self._gui_preset_next)
+                run_on_main_thread(self._gui_preset_next)
 
         elif slot_type == CR_SLOT_PATTERN:
             idx = slot_val
@@ -3125,9 +3126,8 @@ class AppController:
 
         def _bg():
             data = _read()
-            from PySide6.QtCore import QTimer
             # Bounce back to main thread for engine/GUI mutation
-            QTimer.singleShot(0, lambda: _apply(data))
+            run_on_main_thread(lambda: _apply(data))
 
         threading.Thread(target=_bg, daemon=True).start()
 
@@ -3574,7 +3574,7 @@ class AppController:
         # as the audio volume change (avoids GIL contention with DSP thread).
         from .config import GRID_MODE_MIX
         if self.config.grid_mode == GRID_MODE_MIX:
-            QTimer.singleShot(0, lambda g=group: self._mix_mode_update_col(g))
+            run_on_main_thread(lambda g=group: self._mix_mode_update_col(g))
 
     def _gui_group_send(self, group: int, send: float):
         if not (0 <= group < NUM_GROUPS):
@@ -3688,7 +3688,7 @@ class AppController:
             # Defer the bulk MIDI/serial LED writes to the next event loop cycle
             # so the DSP thread is not starved by 64+ send_message calls on the
             # main thread at the moment of the button press.
-            QTimer.singleShot(0, self._mix_mode_update_all)
+            run_on_main_thread(self._mix_mode_update_all)
         elif prev_mode == GRID_MODE_MIX:
             # Clear virtual grid col colors immediately (no I/O)
             if self.window:
@@ -3698,7 +3698,7 @@ class AppController:
             # because the dedup cache still thinks those positions are current.
             self._row_last_led_col = [-1] * MAX_ROWS
             # Defer the grid.clear() bulk send for the same reason
-            QTimer.singleShot(0, self.grid.clear)
+            run_on_main_thread(self.grid.clear)
         # Enqueue a settings save on the persistent background worker —
         # avoids per-call thread creation (kernel allocation ~0.5-5ms) which
         # was holding the GIL at the worst possible moment.
@@ -4806,7 +4806,7 @@ class AppController:
                 log.error("Send-to-Slice background write failed: %s", e)
                 return
             # Marshal back to GUI thread to load + switch tab
-            QTimer.singleShot(0, lambda: self._after_send_to_slice(path, filename))
+            run_on_main_thread(lambda: self._after_send_to_slice(path, filename))
 
         threading.Thread(target=_writer, daemon=True, name="SendToSlice").start()
 
@@ -4960,16 +4960,11 @@ class AppController:
 
         def _save():
             ok = self.engine.song_recorder.export(filepath, tape_speed=speed)
-            try:
-                from PySide6.QtCore import QTimer
-                if ok:
-                    QTimer.singleShot(0, self._refresh_songs_library)
-            except Exception:
-                pass
+            run_on_main_thread(lambda: self._after_song_recorder_export(ok, f"'{name}.wav'"))
 
         _threading.Thread(target=_save, daemon=True, name="SongRecorderManualSave").start()
         if self.window:
-            self.window.set_status(f"Song Recorder: saved '{name}.wav'")
+            self.window.set_status(f"Song Recorder: saving '{name}.wav'…")
 
     def _on_song_recorder_save_as(self) -> None:
         """Open a file dialog and export to chosen path."""
@@ -4988,19 +4983,23 @@ class AppController:
 
         def _save():
             ok = self.engine.song_recorder.export(path, tape_speed=speed)
-            try:
-                from PySide6.QtCore import QTimer
-                if ok:
-                    QTimer.singleShot(0, self._refresh_songs_library)
-            except Exception:
-                pass
+            run_on_main_thread(lambda: self._after_song_recorder_export(ok, path))
 
         _threading.Thread(target=_save, daemon=True, name="SongRecorderSaveAs").start()
         import os
         name = os.path.splitext(os.path.basename(path))[0]
         if self.window:
             self.window.song_recorder_panel.set_filename(name)
-            self.window.set_status(f"Song Recorder: saved to {path}")
+            self.window.set_status(f"Song Recorder: saving to {path}…")
+
+    def _after_song_recorder_export(self, ok: bool, target: str) -> None:
+        """GUI-thread continuation of a background Song Recorder export."""
+        if ok:
+            self._refresh_songs_library()
+            if self.window:
+                self.window.set_status(f"Song Recorder: saved {target}")
+        elif self.window:
+            self.window.set_status(f"Song Recorder: save FAILED for {target} — see log")
 
     def _on_song_recorder_play(self) -> None:
         if self.engine:
@@ -7005,7 +7004,7 @@ class AppController:
                             w.set_value(val)
                         finally:
                             w.blockSignals(False)
-                    QTimer.singleShot(0, _apply)
+                    run_on_main_thread(_apply)
                 self.midi.set_param_callback(param_path, _wrapped)
 
     # ------------------------------------------------------------------ #
