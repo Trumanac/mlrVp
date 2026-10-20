@@ -277,26 +277,61 @@ class PresetManager:
                 fp.unlink()
 
     def rename_preset(self, old_name: str, new_name: str) -> bool:
-        """Rename a preset in the library. Updates internal name field."""
+        """Rename a preset in the library.
+
+        Updates the preset's internal name and its references in *every*
+        setlist, not just the current one.
+        """
         old_fp = get_presets_dir() / f"{_sanitize_name(old_name)}.json"
         new_fp = get_presets_dir() / f"{_sanitize_name(new_name)}.json"
-        if not old_fp.exists() or new_fp.exists():
+        if not old_fp.exists():
+            return False
+        # A case-only rename ("live set" -> "Live Set") resolves to the same
+        # file on case-insensitive filesystems (Windows, macOS default).
+        same_file = new_fp.exists() and new_fp.samefile(old_fp)
+        if new_fp.exists() and not same_file:
             return False
         try:
             with self._io_lock:
                 with open(old_fp) as f:
                     data = json.load(f)
                 data["name"] = new_name
-                _atomic_write_json(new_fp, data, cls=_SafeFloatEncoder)
-                old_fp.unlink()
-                # Update references in current setlist
+                if same_file:
+                    _atomic_write_json(old_fp, data, cls=_SafeFloatEncoder)
+                    os.replace(old_fp, new_fp)  # applies the new filename case
+                else:
+                    _atomic_write_json(new_fp, data, cls=_SafeFloatEncoder)
+                    old_fp.unlink()
+                self._rename_in_other_setlists(old_name, new_name)
                 for i, p in enumerate(self.setlist_presets):
                     if p == old_name:
                         self.setlist_presets[i] = new_name
             self.save_setlist()
             return True
-        except Exception:
+        except Exception as e:
+            log.error("Rename preset %r -> %r failed: %s", old_name, new_name, e)
             return False
+
+    def _rename_in_other_setlists(self, old_name: str, new_name: str) -> None:
+        """Rewrite preset references in setlist files other than the current one.
+
+        Caller holds _io_lock.  The current setlist is saved separately from
+        its in-memory list.
+        """
+        current_fp = get_setlists_dir() / f"{_sanitize_name(self.setlist_name)}.json"
+        for fp in get_setlists_dir().glob("*.json"):
+            if fp == current_fp:
+                continue
+            try:
+                with open(fp) as f:
+                    sl = json.load(f)
+                presets = sl.get("presets", [])
+                if old_name not in presets:
+                    continue
+                sl["presets"] = [new_name if p == old_name else p for p in presets]
+                _atomic_write_json(fp, sl)
+            except Exception as e:
+                log.warning("Could not update preset name in setlist %s: %s", fp.name, e)
 
     def preset_exists(self, name: str) -> bool:
         """Check if a preset exists in the library."""

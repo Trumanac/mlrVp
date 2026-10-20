@@ -31,8 +31,9 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **B3. Pan law −3 dB jump** just off center.
   - Decision: balance law — centre unchanged (unity both sides), panning only attenuates the opposite side; no jump, no boost. 2 tests. — `a1f0954`
 - [x] **B4. Plugin scan timeout ineffective** (executor `shutdown(wait=True)` blocks on hung plugin).
-  - Daemon probe thread + join(timeout): scan moves on after the timeout and a permanently hung plugin no longer blocks app exit. 2 tests.
-- [ ] **B5. Renaming a preset breaks other setlists.**
+  - Daemon probe thread + join(timeout): scan moves on after the timeout and a permanently hung plugin no longer blocks app exit. 2 tests. — `345bd50`
+- [x] **B5. Renaming a preset breaks other setlists.**
+  - Rename rewrites the preset name in every setlist file; case-only renames now work on case-insensitive filesystems; failures logged. 2 tests.
 - [ ] **B6. serialosc elevation:** predictable `%TEMP%` script run elevated (use `-EncodedCommand`); service start mode changed and never restored.
 - [x] **B7. Settings worker** can drop the last change on quit; non-atomic write; thread not joined.
   - New `startup_settings` module: locked, merged, atomic writes. Worker saves a pending change even when the quit sentinel arrives in the same batch; `stop()` joins it.

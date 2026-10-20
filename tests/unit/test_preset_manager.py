@@ -438,6 +438,36 @@ class TestSetlists:
         preset_manager.rename_preset("SetlistedOld", "SetlistedNew")
         assert preset_manager.setlist_presets == ["SetlistedNew"]
 
+    def test_rename_preset_updates_every_setlist(self, preset_manager):
+        import json
+        from mlrvp.config import get_setlists_dir
+        cfg = AppConfig()
+        preset_manager.save_preset("Opener", cfg)
+        assert wait_until(lambda: preset_manager.preset_exists("Opener"))
+        # A setlist that isn't loaded also uses the preset
+        preset_manager.create_setlist("Friday")
+        preset_manager.load_setlist("Friday")
+        preset_manager.add_to_setlist("Opener")
+        friday = get_setlists_dir() / "Friday.json"
+        assert wait_until(lambda: "Opener" in json.loads(friday.read_text())["presets"])
+        preset_manager.create_setlist("Saturday")
+        preset_manager.load_setlist("Saturday")
+        preset_manager.add_to_setlist("Opener")
+
+        assert preset_manager.rename_preset("Opener", "Intro") is True
+        assert preset_manager.setlist_presets == ["Intro"]
+        assert json.loads(friday.read_text())["presets"] == ["Intro"]
+        saturday = get_setlists_dir() / "Saturday.json"
+        assert wait_until(lambda: json.loads(saturday.read_text())["presets"] == ["Intro"])
+
+    def test_rename_preset_case_only(self, preset_manager):
+        cfg = AppConfig()
+        preset_manager.save_preset("live set", cfg)
+        assert wait_until(lambda: preset_manager.preset_exists("live set"))
+        assert preset_manager.rename_preset("live set", "Live Set") is True
+        assert preset_manager.load_preset("Live Set")["name"] == "Live Set"
+        assert "Live Set" in preset_manager.list_presets()
+
 
 class TestPresetErrorPaths:
     def test_list_presets_survives_corrupt_file(self, preset_manager, tmp_config_dir):
