@@ -19,6 +19,8 @@ project uses [Semantic Versioning](https://semver.org/).
   switches serialosc to manual start, so other monome apps keep working after a reboot.
 - New releases are published as drafts after the full test suite passes on Windows,
   macOS and Linux.
+- Depends on `PySide6-Essentials` instead of the full `PySide6` package, which also
+  installed the large Qt Addons (WebEngine, Multimedia, …) that mlrVp never uses.
 
 ### Added
 - **File → Import Data from Previous Version…** to bring presets, setlists, racks and
@@ -27,6 +29,8 @@ project uses [Semantic Versioning](https://semver.org/).
 - A log file (`logs/mlrvp.log`, plus `crash.log` for native crashes) — release builds
   previously had no way to see errors.
 - The version number is shown in the window title.
+- Release downloads include mlrVp's license and the licenses of all bundled third-party
+  software (`THIRD_PARTY_LICENSES.txt`, `licenses/`).
 - A status-bar notice when an effect fails and is bypassed.
 - A warning when a background save (preset, setlist, rack, default) fails — previously
   only visible in the log.
