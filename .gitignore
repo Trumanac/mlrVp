@@ -84,3 +84,11 @@ _migrate_ui_scale.py
 
 # Local dev backups
 _backup/
+
+# Test / lint artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/

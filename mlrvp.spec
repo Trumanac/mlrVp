@@ -93,8 +93,8 @@ if sys.platform == 'darwin':
         info_plist={
             'CFBundleName': 'mlrVp',
             'CFBundleDisplayName': 'mlrVp',
-            'CFBundleVersion': '0.6.9',
-            'CFBundleShortVersionString': '0.6.9',
+            'CFBundleVersion': '0.6.9.24',
+            'CFBundleShortVersionString': '0.6.9.24',
             'NSHighResolutionCapable': True,
             'NSMicrophoneUsageDescription':
                 'mlrVp needs microphone access for audio recording.',

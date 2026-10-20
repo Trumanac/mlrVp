@@ -21,7 +21,8 @@ from PySide6.QtGui import (
 
 from mlrvp.gui.styles import (
     ACCENT_GOLD, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY,
-    ACCENT_BLUE, RED
+    ACCENT_BLUE, RED, GREEN,
+    ACCENT_BLUE_HOVER, ACCENT_GOLD_HOVER, STATUS_ERROR_HOVER,
 )
 from mlrvp.gui.widgets.fader import HorizontalFader
 
@@ -281,7 +282,7 @@ class SliceWaveformWidget(QWidget):
                 last_shown_frac = tfrac
 
         # Start marker (green line)
-        p.setPen(QPen(QColor("#44cc44"), 2))
+        p.setPen(QPen(QColor(GREEN), 2))
         p.drawLine(sx, 0, sx, h)
 
         # End marker (red line)
@@ -699,7 +700,7 @@ class SlicePanel(QFrame):
         self._auto_loop_btn.setStyleSheet(
             f"QPushButton {{ background: {ACCENT_BLUE}; color: {BG_BLACK}; "
             f"font-weight: bold; font-size: 9px; border: none; }}"
-            f"QPushButton:hover {{ background: #5ca0d3; }}"
+            f"QPushButton:hover {{ background: {ACCENT_BLUE_HOVER}; }}"
         )
         self._auto_loop_btn.setToolTip("Auto-snap selection to nearest transients for a perfect musical loop")
         self._auto_loop_btn.clicked.connect(self._auto_loop)
@@ -885,7 +886,7 @@ class SlicePanel(QFrame):
         self._chop_btn.setStyleSheet(
             f"QPushButton {{ background: {ACCENT_BLUE}; color: {BG_BLACK}; "
             f"font-weight: bold; font-size: 9px; border: none; }}"
-            f"QPushButton:hover {{ background: #5ca0d3; }}"
+            f"QPushButton:hover {{ background: {ACCENT_BLUE_HOVER}; }}"
         )
         self._chop_btn.clicked.connect(self._run_chop)
         self._chop_btn.setToolTip("Run auto-chop with the selected mode and settings")
@@ -920,7 +921,7 @@ class SlicePanel(QFrame):
         self._slice_btn.setStyleSheet(
             f"QPushButton {{ background: {ACCENT_GOLD}; color: {BG_BLACK}; "
             f"font-weight: bold; font-size: 10px; border: none; }}"
-            f"QPushButton:hover {{ background: #e6ca6b; }}"
+            f"QPushButton:hover {{ background: {ACCENT_GOLD_HOVER}; }}"
         )
         self._slice_btn.clicked.connect(self._do_slice)
         self._slice_btn.setToolTip(
@@ -934,7 +935,7 @@ class SlicePanel(QFrame):
         self._export_all_btn.setStyleSheet(
             f"QPushButton {{ background: {ACCENT_BLUE}; color: {BG_BLACK}; "
             f"font-weight: bold; font-size: 9px; border: none; }}"
-            f"QPushButton:hover {{ background: #5ca0d3; }}"
+            f"QPushButton:hover {{ background: {ACCENT_BLUE_HOVER}; }}"
         )
         self._export_all_btn.clicked.connect(self._export_all_slices)
         self._export_all_btn.setToolTip("Export all chop regions as separate WAV files")
@@ -2187,7 +2188,7 @@ class _SliceLibraryRow(QWidget):
         del_btn.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {TEXT_SECONDARY}; "
             f"border: none; font-size: 9px; padding: 0px; min-height: 0px; }}"
-            f"QPushButton:hover {{ color: #ff6666; background: transparent; }}"
+            f"QPushButton:hover {{ color: {STATUS_ERROR_HOVER}; background: transparent; }}"
         )
         del_btn.setToolTip(f"Delete {name}")
         del_btn.clicked.connect(self._on_delete)
@@ -2420,7 +2421,7 @@ class SliceLibraryPanel(QFrame):
         self._batch_del_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
-            f"QPushButton:hover {{ color: #ff6666; }}"
+            f"QPushButton:hover {{ color: {STATUS_ERROR_HOVER}; }}"
         )
         self._batch_del_btn.setVisible(False)
         self._batch_del_btn.clicked.connect(self._batch_delete)
@@ -3241,7 +3242,7 @@ class _LibraryTableBase(QWidget):
         self._batch_del_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
-            f"QPushButton:hover {{ color: #ff6666; }}"
+            f"QPushButton:hover {{ color: {STATUS_ERROR_HOVER}; }}"
         )
         self._batch_del_btn.setVisible(False)
         self._batch_del_btn.clicked.connect(self._on_delete_selected)
@@ -3337,7 +3338,7 @@ class _LibraryTableBase(QWidget):
         self._stop_preview_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"font-size: 10px; border: 1px solid {SEPARATOR}; padding: 0; }}"
-            f"QPushButton:hover {{ color: #ff6666; border-color: #ff6666; }}"
+            f"QPushButton:hover {{ color: {STATUS_ERROR_HOVER}; border-color: {STATUS_ERROR_HOVER}; }}"
             f"QPushButton:disabled {{ color: #333; border-color: #333; }}"
         )
         self._stop_preview_btn.setEnabled(False)
@@ -4627,7 +4628,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
         rem_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
-            f"QPushButton:hover {{ color: #ff6666; }}"
+            f"QPushButton:hover {{ color: {STATUS_ERROR_HOVER}; }}"
         )
         rem_btn.clicked.connect(self._on_remove_dir)
         dirs_btn_row.addWidget(rem_btn)
@@ -5585,7 +5586,7 @@ class _LibrarySongsTab(_LibraryTableBase):
         rem_btn.setStyleSheet(
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"font-size: 8px; border: 1px solid {SEPARATOR}; padding: 1px 6px; }}"
-            f"QPushButton:hover {{ color: #ff6666; }}"
+            f"QPushButton:hover {{ color: {STATUS_ERROR_HOVER}; }}"
         )
         rem_btn.clicked.connect(self._on_remove_dir)
         dirs_btn_row.addWidget(rem_btn)

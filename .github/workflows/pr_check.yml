@@ -36,3 +36,39 @@ jobs:
           python -c "import mlrvp; print('mlrvp version:', mlrvp.__version__)"
           python -c "from mlrvp.config import AppConfig; print('config OK')"
           python -c "from mlrvp.preset.manager import PresetManager; print('preset manager OK')"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Linux audio + Qt headless dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libportaudio2 portaudio19-dev \
+            libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xinerama0
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-qt pytest-cov pytest-mock
+
+      - name: Run test suite with coverage
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          pytest --cov=mlrvp --cov-report=term-missing --cov-report=xml -v
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml

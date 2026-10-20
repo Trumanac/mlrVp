@@ -128,7 +128,7 @@ def generate_inno_script(path: Path):
     content = f"""; mlrVp Inno Setup Script
 [Setup]
 AppName=mlrVp
-AppVersion=0.6.9.23
+AppVersion=0.6.9.24
 AppPublisher=monome community
 AppPublisherURL=https://github.com/trentgill/mlrv2
 DefaultDirName={{autopf}}\\mlrVp

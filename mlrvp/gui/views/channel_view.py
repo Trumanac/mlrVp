@@ -27,7 +27,8 @@ from mlrvp.config import (
 )
 from mlrvp.gui.styles import (
     GROUP_COLORS, BG_PANEL, BG_BLACK, SEPARATOR,
-    ACCENT_GOLD, TEXT_PRIMARY, TEXT_SECONDARY,
+    ACCENT_GOLD, ACCENT_BLUE, TEXT_PRIMARY, TEXT_SECONDARY,
+    STATUS_ERROR_HOVER, STATUS_LEARNING_BG,
     _ARROW_UP, _ARROW_DOWN,
 )
 from mlrvp.gui.widgets.waveform import WaveformWidget
@@ -324,7 +325,7 @@ class ChannelStrip(QFrame):
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"border: 1px solid {SEPARATOR}; font-size: 9px; font-weight: bold; "
             f"padding: 0px; }}"
-            f"QPushButton:hover {{ color: {TEXT_PRIMARY}; border-color: #79b1ff; }}"
+            f"QPushButton:hover {{ color: {TEXT_PRIMARY}; border-color: {ACCENT_BLUE}; }}"
         )
         self._half_btn = QPushButton("-½")
         bind_fixed_size(self._half_btn, 28, 20)
@@ -594,8 +595,8 @@ class ChannelStrip(QFrame):
             f"border: 1px solid {SEPARATOR}; font-size: 8px; font-weight: bold; "
             f"padding: 0px 2px; }}"
             f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"
-            f"QPushButton:checked {{ background: #79b1ff; color: {BG_BLACK}; "
-            f"border: 1px solid #79b1ff; }}"
+            f"QPushButton:checked {{ background: {ACCENT_BLUE}; color: {BG_BLACK}; "
+            f"border: 1px solid {ACCENT_BLUE}; }}"
         )
         self._solo_btn.toggled.connect(
             lambda v: self.param_changed.emit(self._row, "solo", v)
@@ -607,8 +608,8 @@ class ChannelStrip(QFrame):
             f"QPushButton {{ background: {BG_BLACK}; color: {SEPARATOR}; "
             f"border: 1px solid {SEPARATOR}; font-size: 8px; font-weight: bold; "
             f"padding: 0px 2px; }}"
-            f"QPushButton:hover {{ color: #ff6666; border-color: #ff6666; }}"
-            f"QPushButton:pressed {{ background: #331111; color: #ff6666; }}"
+            f"QPushButton:hover {{ color: {STATUS_ERROR_HOVER}; border-color: {STATUS_ERROR_HOVER}; }}"
+            f"QPushButton:pressed {{ background: #331111; color: {STATUS_ERROR_HOVER}; }}"
         )
         self._stop_btn.setToolTip("Stop this channel")
         self._stop_btn.clicked.connect(
@@ -661,7 +662,7 @@ class ChannelStrip(QFrame):
             f"QPushButton {{ background: {BG_BLACK}; color: {TEXT_SECONDARY}; "
             f"border: 1px solid {SEPARATOR}; font-size: 8px; font-weight: bold; "
             f"padding: 0px; }}"
-            f"QPushButton:checked {{ background: #1a2000; color: {ACCENT_GOLD}; "
+            f"QPushButton:checked {{ background: {STATUS_LEARNING_BG}; color: {ACCENT_GOLD}; "
             f"border: 1px solid {ACCENT_GOLD}; }}"
         )
         hl.addWidget(_section("LIVE", self._live_cfg_btn))
@@ -691,8 +692,8 @@ class ChannelStrip(QFrame):
         self._live_rec_btn = QPushButton("●REC")
         bind_fixed_size(self._live_rec_btn, 40, 20)
         self._live_rec_btn.setStyleSheet(
-            f"QPushButton {{ background: {BG_BLACK}; color: #ff6666; "
-            f"border: 1px solid #ff6666; font-size: 9px; font-weight: bold; "
+            f"QPushButton {{ background: {BG_BLACK}; color: {STATUS_ERROR_HOVER}; "
+            f"border: 1px solid {STATUS_ERROR_HOVER}; font-size: 9px; font-weight: bold; "
             f"padding: 0px; }}"
             f"QPushButton:hover {{ background: #221111; }}"
             f"QPushButton:pressed {{ background: #441111; }}"
@@ -992,7 +993,7 @@ class ChannelStrip(QFrame):
             f"QMenu {{ background: {BG_BLACK}; color: {TEXT_PRIMARY}; "
             f"border: 1px solid {SEPARATOR}; font-size: 10px; padding: 2px; }}"
             f"QMenu::item {{ padding: 3px 18px 3px 18px; }}"
-            f"QMenu::item:selected {{ background: #1a2000; color: {ACCENT_GOLD}; }}"
+            f"QMenu::item:selected {{ background: {STATUS_LEARNING_BG}; color: {ACCENT_GOLD}; }}"
             f"QMenu::separator {{ height: 1px; background: {SEPARATOR}; "
             f"margin: 2px 4px; }}"
         )

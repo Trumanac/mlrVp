@@ -40,6 +40,11 @@ ACCENT_BLUE = "#79b1ff"
 ACCENT = ACCENT_GOLD
 ACCENT_BRIGHT = ACCENT_BLUE
 
+# Lightened hover variants for solid accent-colored buttons (was reinvented
+# ad hoc in tools_view.py in three near-identical spots)
+ACCENT_BLUE_HOVER = "#5ca0d3"
+ACCENT_GOLD_HOVER = "#e6ca6b"
+
 # Utility colors
 RED = "#cc3333"
 GREEN = "#44cc44"
@@ -89,6 +94,41 @@ VU_COLOR = "#424242"
 FADER_SLIDER = "#8e8e8e"      # slidercolor [0.556863, 0.556863, 0.556863, 1.0]
 FADER_BORDER = "#636363"      # bordercolor [0.388235, 0.388235, 0.388235, 1.0]
 SEND_FADER_COLOR = "#888888"  # send fader: grey to match aux theme
+
+# ── Status / semantic colors ──
+# Consolidated from values that had drifted slightly out of sync across
+# setup_view / channel_view / transport_view / tools_view (e.g. three
+# near-identical reds and two near-identical blues doing the same job).
+# Use these instead of hardcoding a new hex value for connected/error/
+# success/warning/learn-mode UI states.
+STATUS_CONNECTED = ACCENT_BLUE      # device/link connected indicator
+
+STATUS_SUCCESS = GREEN              # simple "Connected" / active status text
+STATUS_SUCCESS_SOFT = "#7fc97f"     # softer green for mapped/active pill text
+STATUS_SUCCESS_SOFT_HOVER = "#99e999"
+STATUS_SUCCESS_BG = "#1a2a1a"
+STATUS_SUCCESS_BG_HOVER = "#243824"
+STATUS_SUCCESS_BORDER = "#336633"
+
+STATUS_ERROR = "#cc4444"            # delete / clear / remove buttons
+STATUS_ERROR_HOVER = "#ff6666"
+STATUS_ERROR_BG = "#3a1a1a"
+STATUS_ERROR_BG_HOVER = "#4a2a2a"
+STATUS_ERROR_BORDER = "#663333"
+
+STATUS_LEARNING = ACCENT_GOLD       # MIDI-learn "armed" highlight
+STATUS_LEARNING_BG = "#2a2200"
+STATUS_LEARNING_BORDER = "#665500"
+
+STATUS_RECORDING = RED              # transport/channel record-active indicator
+
+# Grid-mode toggle family — was duplicated verbatim in two places in
+# transport_view.py and echoed independently in setup_view's control-row
+# legend; named here so both stay in sync.
+STATUS_GRID_MODE = "#00aa55"
+STATUS_GRID_MODE_BRIGHT = "#00dd77"
+STATUS_GRID_MODE_HOVER = "#00cc66"
+STATUS_GRID_MODE_PRESSED = "#008833"
 
 
 def get_stylesheet(scale: float = 1.0) -> str:
@@ -318,17 +358,6 @@ QTabBar::tab:selected {{
 QScrollArea {{
     background-color: {BG_MAIN};
     border: none;
-}}
-
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-    height: 0px;
-}}
-
-QStatusBar {{
-    background: {BG_PANEL};
-    color: {TEXT_SECONDARY};
-    border-top: 1px solid {SEPARATOR};
-    font-size: {s(10)}px;
 }}
 
 QTabBar::tab:hover {{

@@ -16,7 +16,9 @@ from mlrvp.config import NUM_PATTERN_RECORDERS, NUM_GROUPS
 from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width
 from mlrvp.gui.styles import (
     ACCENT_GOLD, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY,
-    GROUP_COLORS, LOGO_MAGENTA
+    GROUP_COLORS, LOGO_MAGENTA,
+    STATUS_RECORDING, STATUS_SUCCESS, STATUS_LEARNING_BG,
+    STATUS_GRID_MODE, STATUS_GRID_MODE_BRIGHT, STATUS_GRID_MODE_HOVER, STATUS_GRID_MODE_PRESSED,
 )
 
 
@@ -162,7 +164,7 @@ class PatternButton(QWidget):
     def _update_style(self):
         if self._state == "recording":
             self._label_btn.setStyleSheet(
-                f"QPushButton {{ background: #cc3333; color: white; "
+                f"QPushButton {{ background: {STATUS_RECORDING}; color: white; "
                 f"border: 1px solid {SEPARATOR}; border-radius: 0px; font-size: 9px; font-weight: bold; }}"
             )
         elif self._state == "playing":
@@ -209,7 +211,7 @@ class _GridIconButton(QPushButton):
 
     def _update_style(self):
         if self.isChecked():
-            bg = "#3a3000"
+            bg = STATUS_LEARNING_BG
             border = ACCENT_GOLD
         else:
             bg = BG_BLACK
@@ -452,8 +454,8 @@ class TransportView(QWidget):
         self._grid_mode_btn.setStyleSheet(
             f"QPushButton {{ font-size: 9px; font-weight: bold; color: {TEXT_SECONDARY}; "
             f"background: {BG_BLACK}; border: 1px solid {SEPARATOR}; padding: 0; }}"
-            f"QPushButton:hover {{ border-color: #00aa55; color: #00dd77; }}"
-            f"QPushButton:pressed {{ background: #00aa55; color: {BG_BLACK}; }}"
+            f"QPushButton:hover {{ border-color: {STATUS_GRID_MODE}; color: {STATUS_GRID_MODE_BRIGHT}; }}"
+            f"QPushButton:pressed {{ background: {STATUS_GRID_MODE}; color: {BG_BLACK}; }}"
         )
         self._grid_mode_btn.clicked.connect(self.grid_mode_cycle_requested.emit)
         grid_mode_vl.addWidget(self._grid_mode_btn)
@@ -762,8 +764,8 @@ class TransportView(QWidget):
     def flash_save_button(self):
         """Briefly flash the SAVE button green to confirm a save."""
         self._save_btn.setStyleSheet(
-            f"QPushButton {{ background: #4CAF50; color: {BG_BLACK}; "
-            f"font-size: 9px; font-weight: bold; border: 1px solid #4CAF50; padding: 0; }}"
+            f"QPushButton {{ background: {STATUS_SUCCESS}; color: {BG_BLACK}; "
+            f"font-size: 9px; font-weight: bold; border: 1px solid {STATUS_SUCCESS}; padding: 0; }}"
         )
         QTimer.singleShot(600, self._reset_save_style)
 
@@ -951,14 +953,14 @@ class TransportView(QWidget):
             self._grid_mode_btn.setStyleSheet(
                 f"QPushButton {{ font-size: 9px; font-weight: bold; color: {TEXT_SECONDARY}; "
                 f"background: {BG_BLACK}; border: 1px solid {SEPARATOR}; padding: 0; }}"
-                f"QPushButton:hover {{ border-color: #00aa55; color: #00dd77; }}"
-                f"QPushButton:pressed {{ background: #00aa55; color: {BG_BLACK}; }}"
+                f"QPushButton:hover {{ border-color: {STATUS_GRID_MODE}; color: {STATUS_GRID_MODE_BRIGHT}; }}"
+                f"QPushButton:pressed {{ background: {STATUS_GRID_MODE}; color: {BG_BLACK}; }}"
             )
         else:
             self._grid_mode_btn.setText(label)
             self._grid_mode_btn.setStyleSheet(
                 f"QPushButton {{ font-size: 9px; font-weight: bold; color: {BG_BLACK}; "
-                f"background: #00aa55; border: 1px solid #00dd77; padding: 0; }}"
-                f"QPushButton:hover {{ background: #00cc66; }}"
-                f"QPushButton:pressed {{ background: #008833; }}"
+                f"background: {STATUS_GRID_MODE}; border: 1px solid {STATUS_GRID_MODE_BRIGHT}; padding: 0; }}"
+                f"QPushButton:hover {{ background: {STATUS_GRID_MODE_HOVER}; }}"
+                f"QPushButton:pressed {{ background: {STATUS_GRID_MODE_PRESSED}; }}"
             )

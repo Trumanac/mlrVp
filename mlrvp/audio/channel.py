@@ -609,13 +609,24 @@ class Channel:
         # --- Envelope computation (vectorized ramp, zero-alloc) ---
         if self._releasing:
             frames_to_zero = max(1, int(self._envelope * release_samples) + 1)
+            # frames_to_zero is where the ramp is *expected* to bottom out;
+            # once the block reaches (or exceeds) it, force silence rather
+            # than trusting env[-1] to land below the 1e-6 threshold on its
+            # own. The ramp's per-sample decrement is (frame_index /
+            # release_samples), so as envelope shrinks, frames_to_zero can
+            # collapse to 1 — and with active_frames == 1, frame_index 0
+            # contributes a zero decrement, leaving env[-1] == envelope
+            # unchanged. Without this guard that's a fixed point: envelope
+            # stalls at a small-but->1e-6 residual and the channel never
+            # reports itself stopped.
+            ramp_completes_this_block = frames_to_zero <= active_frames
             active_frames = min(active_frames, frames_to_zero)
             env = self._env_buf[:active_frames]
             np.divide(self._arange_f32[:active_frames], release_samples, out=env)
             np.subtract(self._envelope, env, out=env)
             np.maximum(env, 0.0, out=env)
             self._envelope = float(env[-1]) if active_frames > 0 else 0.0
-            if self._envelope < 1e-6:
+            if ramp_completes_this_block or self._envelope < 1e-6:
                 self._envelope = 0.0
                 self._playing = False
                 self.state.playing = False

@@ -43,7 +43,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pyinstaller>=6.0", "pytest>=7.0"]
+dev = [
+    "pyinstaller>=6.0",
+    "pytest>=7.0",
+    "pytest-qt>=4.2",
+    "pytest-cov>=4.1",
+    "pytest-mock>=3.12",
+]
 link = ["aalink>=0.2.1"]
 
 [project.scripts]
@@ -61,3 +67,27 @@ include = ["mlrvp*"]
 
 [tool.setuptools.package-data]
 mlrvp = ["resources/*.png", "resources/*.ico", "resources/*.icns", "resources/*.html", "resources/*.svg"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+qt_api = "pyside6"
+addopts = "-ra --strict-markers"
+markers = [
+    "gui: tests that create Qt widgets (require QT_QPA_PLATFORM=offscreen in CI)",
+    "slow: tests that take more than ~1s (e.g. real-time clock/thread tests)",
+]
+
+[tool.coverage.run]
+source = ["mlrvp"]
+omit = [
+    "mlrvp/main.py",
+    "mlrvp/__main__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

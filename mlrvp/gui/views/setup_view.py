@@ -27,7 +27,14 @@ from mlrvp.config import (
     CR_SLOT_PRESET_NEXT,
     CR_PRESETS,
 )
-from mlrvp.gui.styles import ACCENT_BLUE, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY
+from mlrvp.gui.styles import (
+    ACCENT_BLUE, BG_BLACK, BG_PANEL, SEPARATOR, TEXT_SECONDARY, TEXT_PRIMARY,
+    STATUS_CONNECTED, STATUS_SUCCESS, STATUS_SUCCESS_SOFT, STATUS_SUCCESS_SOFT_HOVER,
+    STATUS_SUCCESS_BG, STATUS_SUCCESS_BG_HOVER, STATUS_SUCCESS_BORDER,
+    STATUS_ERROR, STATUS_ERROR_HOVER, STATUS_ERROR_BG, STATUS_ERROR_BG_HOVER, STATUS_ERROR_BORDER,
+    STATUS_LEARNING, STATUS_LEARNING_BG, STATUS_LEARNING_BORDER,
+    STATUS_GRID_MODE,
+)
 from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width, bind_min_width
 
 
@@ -165,18 +172,18 @@ class AudioSetupPanel(QFrame):
             return (
                 f"QPushButton {{ font-size: 11px; font-weight: bold; color: {TEXT_SECONDARY}; "
                 f"background: {BG_BLACK}; border: 1px solid {SEPARATOR}; padding: 0; }}"
-                f"QPushButton:hover {{ border-color: #4A9EFF; color: #4A9EFF; }}"
+                f"QPushButton:hover {{ border-color: {STATUS_CONNECTED}; color: {STATUS_CONNECTED}; }}"
                 f"QPushButton:checked {{ background: {BG_BLACK}; }}"
             )
         if num_peers > 0:
             return (
-                "QPushButton { font-size: 11px; font-weight: bold; color: #0A0A0A; "
-                "background: #4A9EFF; border: 1px solid #4A9EFF; padding: 0; }"
-                "QPushButton:checked { background: #4A9EFF; }"
+                f"QPushButton {{ font-size: 11px; font-weight: bold; color: {BG_BLACK}; "
+                f"background: {STATUS_CONNECTED}; border: 1px solid {STATUS_CONNECTED}; padding: 0; }}"
+                f"QPushButton:checked {{ background: {STATUS_CONNECTED}; }}"
             )
         return (
-            f"QPushButton {{ font-size: 11px; font-weight: bold; color: #4A9EFF; "
-            f"background: {BG_BLACK}; border: 1px solid #4A9EFF; padding: 0; }}"
+            f"QPushButton {{ font-size: 11px; font-weight: bold; color: {STATUS_CONNECTED}; "
+            f"background: {BG_BLACK}; border: 1px solid {STATUS_CONNECTED}; padding: 0; }}"
             f"QPushButton:checked {{ background: {BG_BLACK}; }}"
         )
 
@@ -843,8 +850,8 @@ class GridSetupPanel(QFrame):
             "font-size: 8px; font-weight: bold;"
         ),
         CR_SLOT_GRID_MODE: (
-            "background: #006633; color: #fff; border: 1px solid #00aa55; "
-            "font-size: 8px; font-weight: bold;"
+            f"background: #006633; color: #fff; border: 1px solid {STATUS_GRID_MODE}; "
+            f"font-size: 8px; font-weight: bold;"
         ),
         CR_SLOT_PRESET_PREV: (
             "background: #4a0080; color: #fff; border: 1px solid #9933ff; "
@@ -1000,7 +1007,7 @@ class GridSetupPanel(QFrame):
     def set_connection_status(self, connected: bool, device_name: str = ""):
         if connected:
             self._status_label.setText(f"Connected: {device_name}")
-            self._status_label.setStyleSheet("color: #44cc44; font-size: 10px;")
+            self._status_label.setStyleSheet(f"color: {STATUS_SUCCESS}; font-size: 10px;")
             self._connect_btn.setText("Disconnect")
             # Select the connected device in the combo dropdown
             for i in range(1, self._grid_combo.count()):
@@ -1134,9 +1141,9 @@ class MidiSetupPanel(QFrame):
         add_input_btn = QPushButton("+ Add MIDI Input")
         bind_fixed_height(add_input_btn, 24)
         add_input_btn.setStyleSheet(
-            "QPushButton { background: #1a2a1a; color: #66aa66; "
-            "font-size: 9px; border: 1px solid #336633; }"
-            "QPushButton:hover { background: #2a3a2a; }"
+            f"QPushButton {{ background: {STATUS_SUCCESS_BG}; color: {STATUS_SUCCESS_SOFT}; "
+            f"font-size: 9px; border: 1px solid {STATUS_SUCCESS_BORDER}; }}"
+            f"QPushButton:hover {{ background: {STATUS_SUCCESS_BG_HOVER}; }}"
         )
         add_input_btn.clicked.connect(self._on_add_input)
         add_input_btn.setToolTip("Add another MIDI input port to receive controller messages from")
@@ -1239,9 +1246,9 @@ class MidiSetupPanel(QFrame):
         self._clear_all_btn = QPushButton("Clear All Mappings")
         bind_fixed_height(self._clear_all_btn, 24)
         self._clear_all_btn.setStyleSheet(
-            "QPushButton { background: #3a1a1a; color: #cc4444; "
-            "font-size: 9px; border: 1px solid #663333; }"
-            "QPushButton:hover { background: #4a2a2a; }"
+            f"QPushButton {{ background: {STATUS_ERROR_BG}; color: {STATUS_ERROR}; "
+            f"font-size: 9px; border: 1px solid {STATUS_ERROR_BORDER}; }}"
+            f"QPushButton:hover {{ background: {STATUS_ERROR_BG_HOVER}; }}"
         )
         self._clear_all_btn.clicked.connect(self._on_clear_all)
         self._clear_all_btn.setToolTip("Remove all active MIDI CC mappings")
@@ -1468,9 +1475,9 @@ class MidiSetupPanel(QFrame):
         bind_fixed_height(gm_clear_all_btn, 20)
         bind_fixed_width(gm_clear_all_btn, 58)
         gm_clear_all_btn.setStyleSheet(
-            "QPushButton { background: #3a1a1a; color: #cc4444; "
-            "font-size: 9px; border: 1px solid #663333; }"
-            "QPushButton:hover { background: #4a2a2a; }"
+            f"QPushButton {{ background: {STATUS_ERROR_BG}; color: {STATUS_ERROR}; "
+            f"font-size: 9px; border: 1px solid {STATUS_ERROR_BORDER}; }}"
+            f"QPushButton:hover {{ background: {STATUS_ERROR_BG_HOVER}; }}"
         )
         gm_clear_all_btn.setToolTip("Remove all grid MIDI CC assignments")
         gm_clear_all_btn.clicked.connect(self._on_grid_cc_clear_all)
@@ -1505,13 +1512,15 @@ class MidiSetupPanel(QFrame):
             "QPushButton:hover { background: #252525; color: #888; border-color: #444; }"
         )
         self._gm_ss_mapped = (
-            "QPushButton { background: #1a2a1a; color: #7fc97f; border: 1px solid #336633; "
-            "font-size: 8px; padding: 1px; }"
-            "QPushButton:hover { background: #243824; color: #99e999; }"
+            f"QPushButton {{ background: {STATUS_SUCCESS_BG}; color: {STATUS_SUCCESS_SOFT}; "
+            f"border: 1px solid {STATUS_SUCCESS_BORDER}; "
+            f"font-size: 8px; padding: 1px; }}"
+            f"QPushButton:hover {{ background: {STATUS_SUCCESS_BG_HOVER}; color: {STATUS_SUCCESS_SOFT_HOVER}; }}"
         )
         self._gm_ss_learning = (
-            "QPushButton { background: #2a2200; color: #f5d97a; border: 1px solid #665500; "
-            "font-size: 8px; padding: 1px; font-weight: bold; }"
+            f"QPushButton {{ background: {STATUS_LEARNING_BG}; color: {STATUS_LEARNING}; "
+            f"border: 1px solid {STATUS_LEARNING_BORDER}; "
+            f"font-size: 8px; padding: 1px; font-weight: bold; }}"
         )
 
         self._gm_buttons: dict[tuple[int, int], QPushButton] = {}
@@ -1577,9 +1586,9 @@ class MidiSetupPanel(QFrame):
             "QPushButton:hover { background: #3a3a3a; color: #fff; }"
         )
         _clr_ss = (
-            "QPushButton { background: transparent; color: #cc4444; "
-            "font-weight: bold; border: none; font-size: 11px; padding: 0; }"
-            "QPushButton:hover { color: #ff6666; }"
+            f"QPushButton {{ background: transparent; color: {STATUS_ERROR}; "
+            f"font-weight: bold; border: none; font-size: 11px; padding: 0; }}"
+            f"QPushButton:hover {{ color: {STATUS_ERROR_HOVER}; }}"
         )
         _cell_ss = (
             "QWidget#crCell { background: #1e1e1e; border: 1px solid #2a2a2a; "
@@ -1660,7 +1669,7 @@ class MidiSetupPanel(QFrame):
                 if info:
                     row_info["assign_lbl"].setText(info)
                     row_info["assign_lbl"].setStyleSheet(
-                        "color: #7fc97f; font-size: 9px;"
+                        f"color: {STATUS_SUCCESS_SOFT}; font-size: 9px;"
                     )
                 else:
                     row_info["assign_lbl"].setText("\u2014")
@@ -1672,7 +1681,7 @@ class MidiSetupPanel(QFrame):
     def update_tilt_live(self, x: float, y: float):
         """Update live tilt value display (called from app when data arrives)."""
         self._tilt_live_label.setStyleSheet(
-            "font-size: 9px; color: #7fc97f;"
+            f"font-size: 9px; color: {STATUS_SUCCESS_SOFT};"
         )
         self._tilt_live_label.setText(
             f"X={x:.2f}  Y={y:.2f}"
@@ -1835,9 +1844,9 @@ class MidiSetupPanel(QFrame):
         remove_btn = QPushButton("✕")
         bind_fixed_size(remove_btn, 24, 22)
         remove_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #cc4444; "
-            "font-weight: bold; border: none; font-size: 11px; }"
-            "QPushButton:hover { color: #ff6666; }"
+            f"QPushButton {{ background: transparent; color: {STATUS_ERROR}; "
+            f"font-weight: bold; border: none; font-size: 11px; }}"
+            f"QPushButton:hover {{ color: {STATUS_ERROR_HOVER}; }}"
         )
         row_layout.addWidget(remove_btn)
 
@@ -1972,9 +1981,9 @@ class MidiSetupPanel(QFrame):
         del_btn = QPushButton("✕")
         bind_fixed_size(del_btn, 24, 22)
         del_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #cc4444; "
-            "font-weight: bold; border: none; font-size: 11px; }"
-            "QPushButton:hover { color: #ff6666; }"
+            f"QPushButton {{ background: transparent; color: {STATUS_ERROR}; "
+            f"font-weight: bold; border: none; font-size: 11px; }}"
+            f"QPushButton:hover {{ color: {STATUS_ERROR_HOVER}; }}"
         )
         del_btn.clicked.connect(lambda checked=False, p=path: self._on_delete(p))
         self._map_table.setCellWidget(row, 6, del_btn)

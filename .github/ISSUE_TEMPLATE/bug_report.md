@@ -26,7 +26,7 @@ If applicable, add screenshots to help explain the problem.
 
 ## Environment
 - **OS**: (e.g. Windows 11, macOS 14, Ubuntu 22.04)
-- **mlrVp version**: (e.g. 0.6.9 — shown in the title bar)
+- **mlrVp version**: (e.g. 0.6.9.24 — shown in the title bar)
 - **Python version**: (e.g. 3.12 — `python --version`)
 - **Audio interface / driver**: (e.g. ASIO4ALL, WASAPI, CoreAudio)
 - **Grid controller**: (e.g. monome 128, Launchpad MK3, virtual grid only)
