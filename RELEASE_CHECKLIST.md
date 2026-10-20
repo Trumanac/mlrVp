@@ -33,11 +33,12 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **B4. Plugin scan timeout ineffective** (executor `shutdown(wait=True)` blocks on hung plugin).
   - Daemon probe thread + join(timeout): scan moves on after the timeout and a permanently hung plugin no longer blocks app exit. 2 tests. — `345bd50`
 - [x] **B5. Renaming a preset breaks other setlists.**
-  - Rename rewrites the preset name in every setlist file; case-only renames now work on case-insensitive filesystems; failures logged. 2 tests.
+  - Rename rewrites the preset name in every setlist file; case-only renames now work on case-insensitive filesystems; failures logged. 2 tests. — `d094552`
 - [ ] **B6. serialosc elevation:** predictable `%TEMP%` script run elevated (use `-EncodedCommand`); service start mode changed and never restored.
 - [x] **B7. Settings worker** can drop the last change on quit; non-atomic write; thread not joined.
   - New `startup_settings` module: locked, merged, atomic writes. Worker saves a pending change even when the quit sentinel arrives in the same batch; `stop()` joins it.
-- [ ] **B8. Folder-delete safety check** uses string `startswith`.
+- [x] **B8. Folder-delete safety check** uses string `startswith`.
+  - Strict resolved-path check (rejects the Slices folder itself, look-alike siblings, ../ escapes); applied to Rename too, which also rejects names containing / or \. 1 test.
 - [x] **B10. Audio settings never persist / never apply.** Output/input device, driver, sample rate and buffer size aren't saved anywhere; sample rate & buffer size are only read when the engine is created, so the "restart to apply" message can never come true. Persist (devices by name, not index) and apply. _(with B7/F5)_
   - Saved in startup_settings.json (devices by name, resolved per launch with fallback + status notice); restored before the engine is created so sample rate/buffer size apply on next launch (verified end-to-end: 512 → 256 survives relaunch). Device/driver changes now reopen the stream immediately (debounced). Setup combos show the real values (buffer combo used to show 256 while running 512). 9 tests. — `05b65cc`
 - [ ] **B9. Silent save failures** — surface preset/rack/export errors in the UI.

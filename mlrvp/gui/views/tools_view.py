@@ -30,6 +30,23 @@ from mlrvp.gui.main_thread import run_on_main_thread
 
 log = logging.getLogger("mlrvp")
 
+
+def _is_slices_subfolder(path: str) -> bool:
+    """True only for a folder strictly inside the slices folder.
+
+    Guards destructive folder actions: rejects the slices folder itself and
+    look-alike siblings such as "Slices_backup" (a plain string-prefix
+    check accepted both).
+    """
+    from pathlib import Path
+    from mlrvp.config import get_slices_dir
+    try:
+        root = get_slices_dir().resolve()
+        target = Path(path).resolve()
+    except OSError:
+        return False
+    return target != root and root in target.parents
+
 AUDIO_EXTENSIONS = {'.wav', '.aiff', '.aif', '.flac', '.ogg', '.mp3'}
 
 
@@ -4101,9 +4118,14 @@ class _LibrarySlicesTab(_LibraryTableBase):
 
     def _on_rename_folder(self, dir_path: str, tree_item: QTreeWidgetItem):
         from PySide6.QtWidgets import QInputDialog
+        if not _is_slices_subfolder(dir_path):
+            return
         old_name = os.path.basename(dir_path)
         name, ok = QInputDialog.getText(self, "Rename Folder", "New name:", text=old_name)
         if not ok or not name.strip() or name.strip() == old_name:
+            return
+        if any(sep in name for sep in ("/", "\\")) or name.strip() in (".", ".."):
+            QMessageBox.warning(self, "Rename Folder", "Folder names can't contain / or \\.")
             return
         dest = os.path.join(os.path.dirname(dir_path), name.strip())
         if os.path.exists(dest):
@@ -4118,10 +4140,8 @@ class _LibrarySlicesTab(_LibraryTableBase):
 
     def _on_delete_folder(self, dir_path: str):
         import shutil
-        from mlrvp.config import get_slices_dir
-        slices_dir = str(get_slices_dir())
-        # Safety: must be inside slices dir
-        if not os.path.abspath(dir_path).startswith(os.path.abspath(slices_dir)):
+        # Safety: only ever delete a real subfolder of the slices folder
+        if not _is_slices_subfolder(dir_path):
             return
         name = os.path.basename(dir_path)
         reply = QMessageBox.warning(
