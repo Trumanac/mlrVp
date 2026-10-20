@@ -128,7 +128,7 @@ def _parse_version(v) -> tuple:
     for p in parts[:3]:
         try:
             out.append(int(p))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             out.append(0)
     while len(out) < 3:
         out.append(0)
@@ -218,7 +218,7 @@ class PresetManager:
         get_setlists_dir().mkdir(parents=True, exist_ok=True)
         fp = get_setlists_dir() / "Default.json"
         if not fp.exists():
-            with open(fp, 'w') as f:
+            with open(fp, 'w', encoding="utf-8") as f:
                 json.dump({"name": "Default", "presets": []}, f, indent=2)
 
     # ------------------------------------------------------------------ #
@@ -230,7 +230,7 @@ class PresetManager:
         result = []
         for fp in sorted(get_presets_dir().glob("*.json")):
             try:
-                with open(fp) as f:
+                with open(fp, encoding="utf-8") as f:
                     data = json.load(f)
                 result.append(data.get("name", fp.stem))
             except Exception:
@@ -275,7 +275,7 @@ class PresetManager:
             return None
         try:
             with self._io_lock:
-                with open(fp) as f:
+                with open(fp, encoding="utf-8") as f:
                     data = json.load(f)
             return migrate_preset(data)
         except Exception as e:
@@ -306,7 +306,7 @@ class PresetManager:
             return False
         try:
             with self._io_lock:
-                with open(old_fp) as f:
+                with open(old_fp, encoding="utf-8") as f:
                     data = json.load(f)
                 data["name"] = new_name
                 if same_file:
@@ -336,7 +336,7 @@ class PresetManager:
             if fp == current_fp:
                 continue
             try:
-                with open(fp) as f:
+                with open(fp, encoding="utf-8") as f:
                     sl = json.load(f)
                 presets = sl.get("presets", [])
                 if old_name not in presets:
@@ -361,7 +361,7 @@ class PresetManager:
         result = []
         for fp in sorted(get_setlists_dir().glob("*.json")):
             try:
-                with open(fp) as f:
+                with open(fp, encoding="utf-8") as f:
                     data = json.load(f)
                 result.append(data.get("name", fp.stem))
             except Exception:
@@ -383,7 +383,7 @@ class PresetManager:
             return False
         try:
             with self._io_lock:
-                with open(fp) as f:
+                with open(fp, encoding="utf-8") as f:
                     data = json.load(f)
                 self.setlist_name = data.get("name", name)
                 self.setlist_presets = data.get("presets", [])
@@ -438,7 +438,7 @@ class PresetManager:
             def _io():
                 try:
                     with self._io_lock:
-                        with open(old_fp) as f:
+                        with open(old_fp, encoding="utf-8") as f:
                             data = json.load(f)
                         data["name"] = new_name
                         _atomic_write_json(new_fp, data)
@@ -542,31 +542,31 @@ class PresetManager:
         # Tempo
         try:
             config.tempo = max(20.0, min(999.0, float(cfg_data.get("tempo", config.tempo))))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         try:
             config.quantize = QuantizeMode(cfg_data.get("quantize", config.quantize))
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, TypeError):
             pass
         try:
             config.row_count = max(1, min(16, int(cfg_data.get("row_count", config.row_count))))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         try:
             config.master_volume = max(0.0, min(2.0, float(cfg_data.get("master_volume", config.master_volume))))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         try:
             config.master_hp = max(20.0, min(500.0, float(cfg_data.get("master_hp", config.master_hp))))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         try:
             config.master_lp = max(200.0, min(20000.0, float(cfg_data.get("master_lp", config.master_lp))))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         try:
             config.fadetime = max(0.0, min(5000.0, float(cfg_data.get("fadetime", config.fadetime))))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
 
         # Channels
@@ -577,18 +577,18 @@ class PresetManager:
                 try:
                     ch.speed = max(0.125, min(8.0, float(ch_data.get("speed", ch.speed))))
                     ch.normal_speed = max(0.125, min(8.0, float(ch_data.get("normal_speed", ch_data.get("speed", ch.speed)))))
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     pass
                 try:
                     ch.mode = PlaybackMode(ch_data.get("mode", ch.mode))
-                except (ValueError, KeyError):
+                except (ValueError, KeyError, TypeError):
                     pass
                 ch.slave = ch_data.get("slave", ch.slave)
                 ch.filename = ch_data.get("filename", ch.filename)
                 try:
                     ch.gain = max(0.0, min(2.0, float(ch_data.get("gain", ch.gain))))
                     ch.group = max(0, min(NUM_GROUPS - 1, int(ch_data.get("group", ch.group))))
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     pass
                 ch.reverse = ch_data.get("reverse", ch.reverse)
                 ch.shot_hold = ch_data.get("shot_hold", ch.shot_hold)
@@ -600,7 +600,7 @@ class PresetManager:
                     ch.sel_end = max(0.0, min(1.0, float(ch_data.get("sel_end", ch.sel_end))))
                     if ch.sel_start > ch.sel_end:
                         ch.sel_start, ch.sel_end = ch.sel_end, ch.sel_start
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     pass
                 ch.mute = ch_data.get("mute", ch.mute)
                 try:
@@ -614,16 +614,16 @@ class PresetManager:
                     ch.ch_hp = max(0.0, min(1.0, float(ch_data.get("ch_hp", ch.ch_hp))))
                     ch.pitch_scale = max(0, min(4, int(ch_data.get("pitch_scale", ch.pitch_scale))))
                     ch.pitch_root = max(-24, min(24, int(ch_data.get("pitch_root", ch.pitch_root))))
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     pass
                 ch.pitch_loop = bool(ch_data.get("pitch_loop", ch_data.get("pitch_hold", ch.pitch_loop)))
                 try:
                     ch.seq_step_div = max(0, min(6, int(ch_data.get("seq_step_div", ch.seq_step_div))))
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     pass
                 try:
                     ch.seq_swing = max(50, min(75, int(ch_data.get("seq_swing", ch.seq_swing))))
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     pass
 
                 # LIVE looper state
@@ -637,7 +637,7 @@ class PresetManager:
                         ch.live.input_trim = max(0.0, min(2.0, float(live_data.get("input_trim", ch.live.input_trim))))
                         ch.live.loop_state = str(live_data.get("loop_state", ch.live.loop_state))
                         ch.live.exported_path = str(live_data.get("exported_path", ch.live.exported_path))
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OverflowError):
                         pass
 
         # Groups
@@ -651,7 +651,7 @@ class PresetManager:
                     g.mute = g_data.get("mute", g.mute)
                     g.route = g_data.get("route", g.route)
                     g.fx_route = max(0, min(4, int(g_data.get("fx_route", g.fx_route))))
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     pass
 
         # Delay
@@ -849,12 +849,12 @@ class PresetManager:
         # Aux bus
         try:
             config.aux_volume = max(0.0, min(2.0, float(cfg_data.get("aux_volume", config.aux_volume))))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         config.aux_mute = bool(cfg_data.get("aux_mute", config.aux_mute))
         try:
             config.aux_fx_route = max(0, min(4, int(cfg_data.get("aux_fx_route", config.aux_fx_route))))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         # Support both new float key and legacy bool key from older presets
         try:
@@ -862,13 +862,13 @@ class PresetManager:
                 config.aux_send_level = max(0.0, min(1.0, float(cfg_data["aux_send_level"])))
             elif "aux_send_toggle" in cfg_data:
                 config.aux_send_level = 1.0 if cfg_data["aux_send_toggle"] else 0.0
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
 
         # Grid
         try:
             config.grid_columns = max(1, min(16, int(cfg_data.get("grid_columns", config.grid_columns))))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         backend = cfg_data.get("monome_backend", config.monome_backend)
         if backend not in MONOME_BACKENDS:
@@ -903,24 +903,33 @@ class PresetManager:
 
         # Control row
         cr_data = cfg_data.get("control_row", {})
-        if cr_data:
-            config.control_row.enabled = bool(cr_data.get("enabled", config.control_row.enabled))
-            config.control_row.monome_row = int(cr_data.get("monome_row", config.control_row.monome_row))
-            from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_EMPTY
-            saved_assignments = cr_data.get("assignments")
-            if saved_assignments and isinstance(saved_assignments, list):
-                empty = {"type": CR_SLOT_EMPTY, "value": 0}
-                config.control_row.assignments = (saved_assignments + [empty] * 8)[:8]
-            elif "num_group_stops" in cr_data or "num_patterns" in cr_data:
-                n_grp = max(1, min(7, int(cr_data.get("num_group_stops", 4))))
-                n_pat = max(1, min(7, int(cr_data.get("num_patterns", 4))))
-                if n_grp + n_pat > 8:
-                    n_pat = max(1, 8 - n_grp)
-                config.control_row.assignments = (
-                    [{"type": CR_SLOT_GROUP_STOP, "value": i} for i in range(n_grp)] +
-                    [{"type": CR_SLOT_PATTERN,    "value": i} for i in range(n_pat)] +
-                    [{"type": CR_SLOT_EMPTY,      "value": 0}] * max(0, 8 - n_grp - n_pat)
-                )
+        if cr_data and isinstance(cr_data, dict):
+            try:
+                config.control_row.enabled = bool(cr_data.get("enabled", config.control_row.enabled))
+                config.control_row.monome_row = int(cr_data.get("monome_row", config.control_row.monome_row))
+                from mlrvp.config import CR_SLOT_GROUP_STOP, CR_SLOT_PATTERN, CR_SLOT_EMPTY
+                saved_assignments = cr_data.get("assignments")
+                if saved_assignments and isinstance(saved_assignments, list):
+                    empty = {"type": CR_SLOT_EMPTY, "value": 0}
+                    # Malformed slots (hand-edited / damaged files) become empty
+                    valid = [
+                        a if (isinstance(a, dict) and isinstance(a.get("type"), str)
+                              and isinstance(a.get("value", 0), int)) else dict(empty)
+                        for a in saved_assignments
+                    ]
+                    config.control_row.assignments = (valid + [empty] * 8)[:8]
+                elif "num_group_stops" in cr_data or "num_patterns" in cr_data:
+                    n_grp = max(1, min(7, int(cr_data.get("num_group_stops", 4))))
+                    n_pat = max(1, min(7, int(cr_data.get("num_patterns", 4))))
+                    if n_grp + n_pat > 8:
+                        n_pat = max(1, 8 - n_grp)
+                    config.control_row.assignments = (
+                        [{"type": CR_SLOT_GROUP_STOP, "value": i} for i in range(n_grp)] +
+                        [{"type": CR_SLOT_PATTERN,    "value": i} for i in range(n_pat)] +
+                        [{"type": CR_SLOT_EMPTY,      "value": 0}] * max(0, 8 - n_grp - n_pat)
+                    )
+            except (ValueError, TypeError, OverflowError) as exc:
+                log.warning("Preset load: skipping bad control_row data (%s)", exc)
 
         # Grid MIDI CC output map
         gm_data = cfg_data.get("grid_midi_cc_map")

@@ -411,7 +411,7 @@ def load_cache() -> list[PluginInfo]:
     if not fp.exists():
         return []
     try:
-        with open(fp) as f:
+        with open(fp, encoding="utf-8") as f:
             data = json.load(f)
         valid = {f.name for f in _dc_fields(PluginInfo)}
         return [PluginInfo(**{k: v for k, v in d.items() if k in valid}) for d in data]
@@ -456,7 +456,7 @@ def load_custom_scan_paths() -> list[str]:
     if not fp.exists():
         return []
     try:
-        with open(fp) as f:
+        with open(fp, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
             return [str(p) for p in data]
@@ -470,7 +470,7 @@ def save_custom_scan_paths(paths: list[str]) -> None:
     fp = _custom_paths_file()
     fp.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with open(fp, "w") as f:
+        with open(fp, "w", encoding="utf-8") as f:
             json.dump(paths, f, indent=2)
     except Exception as exc:
         log.error("Custom scan paths save failed: %s", exc)

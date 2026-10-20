@@ -12,6 +12,7 @@ config.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from mlrvp.config import get_racks_dir
@@ -53,9 +54,11 @@ def load_rack(name: str) -> list[dict]:
     if not fp.exists():
         return []
     try:
-        with open(fp, "r") as f:
+        with open(fp, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):   # ValueError covers bad JSON and bad UTF-8
+        return []
+    if not isinstance(data, dict):
         return []
     mods = data.get("modules", [])
     if not isinstance(mods, list):
@@ -104,15 +107,26 @@ def rename_rack(old_name: str, new_name: str) -> bool:
     d = get_racks_dir()
     src = d / f"{old_safe}.json"
     dst = d / f"{new_safe}.json"
-    if not src.exists() or dst.exists():
+    if not src.exists():
+        return False
+    # A case-only rename ("drums" -> "Drums") resolves to the same file on
+    # case-insensitive filesystems (Windows, macOS default).
+    same_file = dst.exists() and dst.samefile(src)
+    if dst.exists() and not same_file:
         return False
     try:
-        with open(src, "r") as f:
+        with open(src, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
         return False
     data["name"] = new_name
     try:
+        if same_file:
+            _atomic_write_json(src, data, cls=_SafeFloatEncoder)
+            os.replace(src, dst)  # applies the new filename case
+            return True
         _atomic_write_json(dst, data, cls=_SafeFloatEncoder)
     except Exception:
         return False

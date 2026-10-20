@@ -491,6 +491,23 @@ class TestPresetErrorPaths:
         fp.write_text("{not valid json")
         assert preset_manager.load_preset("Broken") is None
 
+    def test_apply_preset_survives_out_of_range_and_wrong_types(self, preset_manager):
+        # Python's json accepts 1e999 / Infinity; int() of those overflows.
+        import json
+        from mlrvp.config import AppConfig
+        data = json.loads('{"config": {"row_count": 1e999, "grid_columns": -Infinity,'
+                          ' "quantize": [1], "tempo": "fast",'
+                          ' "control_row": {"monome_row": Infinity,'
+                          '                 "assignments": ["x", {"type": "pattern", "value": 1}]}}}')
+        cfg = preset_manager.apply_preset(data, AppConfig())
+        assert cfg.row_count == AppConfig().row_count
+        assert cfg.tempo == AppConfig().tempo
+        data = json.loads('{"config": {"control_row": {"assignments":'
+                          ' ["x", {"type": "pattern", "value": 1}]}}}')
+        slots = preset_manager.apply_preset(data, AppConfig()).control_row.assignments
+        assert len(slots) == 8 and all(isinstance(a, dict) for a in slots)
+        assert slots[1] == {"type": "pattern", "value": 1}
+
     def test_rename_preset_returns_false_if_source_missing(self, preset_manager):
         assert preset_manager.rename_preset("does-not-exist", "New") is False
 

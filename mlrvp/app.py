@@ -3167,7 +3167,7 @@ class AppController:
         def _read():
             import json
             try:
-                with open(path, 'r') as f:
+                with open(path, 'r', encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
                 log.error("Failed to read preset file: %s", e)

@@ -54,6 +54,20 @@ class TestSaveLoadRack:
         target.write_text(json.dumps({"version": "1.0.0", "name": "Broken", "modules": "nope"}))
         assert rm.load_rack("Broken") == []
 
+    def test_load_rejects_non_object_and_bad_utf8_files(self, tmp_config_dir):
+        from mlrvp.config import get_racks_dir
+        (get_racks_dir() / "List.json").write_text("[1, 2]")
+        (get_racks_dir() / "Bytes.json").write_bytes(b'{"name": "\xff\xfe"}')
+        assert rm.load_rack("List") == []
+        assert rm.load_rack("Bytes") == []
+
+    def test_load_reads_utf8_names(self, tmp_config_dir):
+        from mlrvp.config import get_racks_dir
+        (get_racks_dir() / "Cafe.json").write_text(
+            '{"name": "Café — FX", "modules": [{"effect_type": "fuzz", "state": {}}]}',
+            encoding="utf-8")
+        assert rm.load_rack("Cafe") == [{"effect_type": "fuzz", "state": {}}]
+
 
 class TestDeleteRack:
     def test_delete_existing_rack(self, tmp_config_dir):
@@ -83,3 +97,10 @@ class TestRenameRack:
     def test_rename_to_same_name_is_a_noop_failure(self, tmp_config_dir):
         rm.save_rack("Same", [])
         assert rm.rename_rack("Same", "Same") is False
+
+    def test_case_only_rename(self, tmp_config_dir):
+        from mlrvp.config import get_racks_dir
+        rm.save_rack("drums", [{"effect_type": "fuzz", "state": {}}])
+        assert rm.rename_rack("drums", "Drums") is True
+        assert [f.name for f in get_racks_dir().glob("*.json")] == ["Drums.json"]
+        assert rm.load_rack("Drums") == [{"effect_type": "fuzz", "state": {}}]
