@@ -520,8 +520,10 @@ class TestPresetErrorPaths:
         monkeypatch.setattr(manager_mod, "_atomic_write_json",
                              lambda *a, **kw: (_ for _ in ()).throw(OSError("boom")))
         preset_manager.rename_setlist("StaysPut", "NeverLands")
-        assert preset_manager.setlist_name == "NeverLands"  # optimistic update, briefly
-        assert wait_until(lambda: preset_manager.setlist_name == "StaysPut")  # reverted after I/O failure
+        # The optimistic in-memory rename is reverted once the background write
+        # fails (not asserting the brief "NeverLands" state: a fast background
+        # thread can revert before this line runs — flaked on macOS CI).
+        assert wait_until(lambda: preset_manager.setlist_name == "StaysPut")
 
     def test_save_preset_survives_write_error(self, preset_manager, monkeypatch):
         import mlrvp.preset.manager as manager_mod
