@@ -4,6 +4,7 @@ Wires together all subsystems: audio engine, grid controller,
 transport clock, MIDI, OSC, preset manager, and GUI.
 """
 
+import os
 import sys
 import logging
 import time
@@ -5292,7 +5293,7 @@ class AppController:
             try:
                 rack_manager.save_rack(name, modules)
             except Exception as e:
-                print(f"[rack save] failed: {e}")
+                log.error("Rack save failed: %s", e)
         threading.Thread(target=_do_save, daemon=True).start()
         if self.window:
             self.window.set_status(f"Saving rack: {name}")
@@ -5348,7 +5349,7 @@ class AppController:
         try:
             self._apply_config_to_engine()
         except Exception as e:
-            print(f"[rack load] _apply_config_to_engine failed: {e}")
+            log.error("Rack load: _apply_config_to_engine failed: %s", e)
         if self.window:
             self.window.set_status(f"Rack loaded: {name}")
 
@@ -7980,12 +7981,83 @@ class AppController:
 # ================================================================== #
 
 
+_crash_log_file = None  # kept open for faulthandler for the process lifetime
+
+
+def _setup_logging() -> None:
+    """Log to <data folder>/logs/mlrvp.log (rotating) and, if present, the console.
+
+    Release builds are windowed (no console), so the file is the only place
+    errors can be found.  Also routes uncaught exceptions — including those
+    raised in Qt slots and worker threads — into the log, and writes native
+    crash tracebacks (PortAudio, plugins) to logs/crash.log.
+    """
+    global _crash_log_file
+    import faulthandler
+    import platform
+    from logging.handlers import RotatingFileHandler
+    from mlrvp.config import get_logs_dir
+
+    debug = os.environ.get("MLRVP_DEBUG", "").strip() == "1"
+    fmt = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if debug else logging.INFO)
+
+    if sys.stderr is not None:
+        console = logging.StreamHandler()
+        console.setFormatter(fmt)
+        root.addHandler(console)
+
+    logs_dir = None
+    try:
+        logs_dir = get_logs_dir()
+        file_handler = RotatingFileHandler(
+            logs_dir / "mlrvp.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8"
+        )
+        file_handler.setFormatter(fmt)
+        root.addHandler(file_handler)
+    except OSError as e:
+        log.warning("File logging unavailable: %s", e)
+
+    if logs_dir is not None:
+        try:
+            _crash_log_file = open(logs_dir / "crash.log", "a", encoding="utf-8")
+            faulthandler.enable(file=_crash_log_file)
+        except OSError:
+            pass
+
+    def _log_uncaught(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        log.critical("Uncaught exception", exc_info=(exc_type, exc, tb))
+
+    def _log_uncaught_thread(args):
+        if args.exc_type is SystemExit:
+            return
+        name = args.thread.name if args.thread is not None else "?"
+        log.critical("Uncaught exception in thread %s", name,
+                     exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+    sys.excepthook = _log_uncaught
+    threading.excepthook = _log_uncaught_thread
+
+    import mlrvp
+    try:
+        from PySide6 import __version__ as _pyside_version
+    except ImportError:
+        _pyside_version = "?"
+    log.info(
+        "mlrVp %s starting — %s %s, Python %s, PySide6 %s%s",
+        mlrvp.__version__, platform.system(), platform.release(),
+        platform.python_version(), _pyside_version,
+        ", frozen" if getattr(sys, "frozen", False) else "",
+    )
+
+
 def run_app(argv=None) -> int:
     """Launch the mlrVp application."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
+    _setup_logging()
 
     # Per-user data folders: one-time migration from the legacy location
     # and factory-rack seeding — before anything reads presets/settings.

@@ -13,6 +13,8 @@ import logging
 
 _log = logging.getLogger(__name__)
 
+ISSUES_URL = "https://github.com/Trumanac/mlrVp/issues/new/choose"
+
 from mlrvp.gui.views.channel_view import ChannelView
 from mlrvp.gui.views.mixer_view import MixerView
 from mlrvp.gui.views.effects_view import EffectsView
@@ -310,7 +312,8 @@ class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.setWindowTitle("mlrVp")
+        from mlrvp import __version__
+        self.setWindowTitle(f"mlrVp {__version__}")
         bind_min_size(self, 1380, 600)
         self.resize(sp(1620), sp(700))  # initial size — wide enough that no controls are squished
 
@@ -526,6 +529,19 @@ class MainWindow(QMainWindow):
         howto_action.triggered.connect(self._on_howto)
         help_menu.addAction(howto_action)
 
+        help_menu.addSeparator()
+
+        open_logs_action = QAction("Open &Log Folder", self)
+        open_logs_action.setToolTip("Show mlrvp.log — attach it when reporting a bug")
+        open_logs_action.triggered.connect(self._on_open_log_folder)
+        help_menu.addAction(open_logs_action)
+
+        report_bug_action = QAction("&Report a Bug…", self)
+        report_bug_action.triggered.connect(self._on_report_bug)
+        help_menu.addAction(report_bug_action)
+
+        help_menu.addSeparator()
+
         about_action = QAction("&About mlrVp", self)
         about_action.triggered.connect(self._on_about)
         help_menu.addAction(about_action)
@@ -573,6 +589,13 @@ class MainWindow(QMainWindow):
     def _on_open_data_folder(self):
         from mlrvp.config import get_config_dir
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(get_config_dir())))
+
+    def _on_open_log_folder(self):
+        from mlrvp.config import get_logs_dir
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(get_logs_dir())))
+
+    def _on_report_bug(self):
+        QDesktopServices.openUrl(QUrl(ISSUES_URL))
 
     def _on_import_data(self):
         from pathlib import Path
