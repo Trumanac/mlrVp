@@ -1,18 +1,17 @@
 """Song Recorder — stereo master-output loopback recorder with tape-speed pitch control.
 
 Records the post-master DSP output (loopback mode always on) into a growable buffer,
-applies real-time soft-clip limiting, and on finalise resamples to emulate tape varispeed:
+applies real-time soft-clip limiting, and emulates a varispeed tape machine:
 
-    tape_speed = 1.0  →  unity (no pitch change)
-    tape_speed < 1.0  →  recorded slow  →  plays back faster  →  pitch UP
-    tape_speed > 1.0  →  recorded fast  →  plays back slower  →  pitch DOWN
+    record:   each block is stored at the current tape_speed (speed > 1 stores
+              more frames per second of input, speed < 1 fewer)
+    playback: the tape is read at the current tape_speed frames per output frame
 
-    formula: out_sr = int(in_sr * tape_speed)
-    resampy.resample(data, in_sr, out_sr)  writes out_sr frames per second of audio,
-    which a player reading at in_sr will play back at tape_speed rate.
+Recording and playing back at the same speed reproduces the original pitch;
+changing the speed between the two shifts pitch and tempo like real tape.
 
-The finalised SampleBuffer is available via `.result` for in-panel playback and export.
-Playback is driven by a QTimer on the GUI thread feeding a sounddevice OutputStream.
+The finalised SampleBuffer is available via `.result`.  `export()` writes the
+tape as it sounds when played back at the given speed.
 """
 
 from __future__ import annotations
@@ -55,6 +54,9 @@ class SongRecorder:
         self._chunks: list[np.ndarray] = []
         self._total_frames: int = 0
         self._punch_in_frame: int = 0   # frame index where current recording started
+        # Set by process() when the duration cap stops a take; the take is
+        # still in _chunks until stop() finalises it.
+        self._capped: bool = False
 
         # Config
         self.tape_speed: float = 1.0
@@ -103,6 +105,7 @@ class SongRecorder:
                 self._punch_in_frame = int(self._pb_fpos)
                 self._chunks = []
                 self._total_frames = 0
+                self._capped = False
                 self._recording = True
 
     def start_recording_now(self) -> None:
@@ -111,17 +114,22 @@ class SongRecorder:
             self._punch_in_frame = int(self._pb_fpos)
             self._chunks = []
             self._total_frames = 0
+            self._capped = False
             self._armed = False
             self._recording = True
 
     def stop(self) -> Optional[SampleBuffer]:
         """Stop, splice new audio into existing tape, return updated SampleBuffer."""
         with self._lock:
-            if not self._recording and not self._armed:
+            if not self._recording and not self._armed and not self._capped:
                 return self.result
             self._recording = False
             self._armed = False
-            chunks = list(self._chunks)
+            self._capped = False
+            chunks = self._chunks
+            # The take is moved into .result below — drop the chunk list so a
+            # finished recording isn't held in memory twice.
+            self._chunks = []
             total = self._total_frames
             punch_in = self._punch_in_frame
             existing = self.result
@@ -154,6 +162,7 @@ class SongRecorder:
         with self._lock:
             self._recording = False
             self._armed = False
+            self._capped = False
             self._chunks = []
             self._total_frames = 0
             self._punch_in_frame = 0
@@ -164,6 +173,7 @@ class SongRecorder:
         with self._lock:
             self._recording = False
             self._armed = False
+            self._capped = False
             self._chunks = []
             self._total_frames = 0
             self._punch_in_frame = 0
@@ -244,6 +254,7 @@ class SongRecorder:
             # Hard cap: stop recording if we exceed the maximum
             if self._total_frames >= int(MAX_FREE_SECONDS * self.sr):
                 self._recording = False
+                self._capped = True
                 cb = self._complete_cb
         if cb is not None:
             cb()
@@ -261,6 +272,11 @@ class SongRecorder:
     @property
     def armed_or_recording(self) -> bool:
         return self._armed or self._recording
+
+    @property
+    def capped(self) -> bool:
+        """True when the duration cap stopped a take that stop() hasn't finalised yet."""
+        return self._capped
 
     @property
     def input_peak_l(self) -> float:
@@ -302,6 +318,37 @@ class SongRecorder:
     def playback_seconds(self) -> float:
         return self.playback_frames / float(self.sr)
 
+    # ------------------------------------------------------------------ tape snapshot
+
+    def _tape_data(self) -> Optional[np.ndarray]:
+        """Return the whole tape as it currently stands, or None if empty.
+
+        That is the finalised result, or — while a take is in progress (or
+        stopped by the duration cap but not yet finalised) — the pre-punch
+        portion of the last result spliced with the new audio, exactly as
+        stop() will produce it.
+        """
+        with self._lock:
+            in_take = self._recording or self._capped
+            chunks = list(self._chunks) if in_take else None
+            punch_in = self._punch_in_frame
+            result = self.result
+
+        if in_take:
+            parts = []
+            if result is not None and punch_in > 0:
+                parts.append(result.data[:punch_in])
+            if chunks:
+                parts.append(np.concatenate(chunks, axis=0))
+            if not parts:
+                return None
+            data = np.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
+        elif result is not None:
+            data = result.data
+        else:
+            return None
+        return data if data.shape[0] > 0 else None
+
     # ------------------------------------------------------------------ waveform peaks
 
     def get_peaks(self, num_bins: int) -> Optional[np.ndarray]:
@@ -316,29 +363,8 @@ class SongRecorder:
         if num_bins <= 0:
             return None
 
-        with self._lock:
-            recording = self._recording
-            chunks_snapshot = list(self._chunks) if recording else None
-            punch_in = self._punch_in_frame
-            result_snap = self.result
-
-        if recording:
-            # Build the live composite: existing tape up to punch-in + new audio
-            parts = []
-            if result_snap is not None and punch_in > 0:
-                parts.append(result_snap.data[:punch_in])
-            if chunks_snapshot:
-                new_audio = np.concatenate(chunks_snapshot, axis=0)
-                parts.append(new_audio)
-            if not parts:
-                return None
-            data = np.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
-        elif result_snap is not None and result_snap.num_frames > 0:
-            data = result_snap.data
-        else:
-            return None
-
-        if data.shape[0] == 0:
+        data = self._tape_data()
+        if data is None:
             return None
         mono = data.mean(axis=1) if data.ndim == 2 else data
         n = mono.shape[0]
@@ -560,10 +586,12 @@ class SongRecorder:
         return f"Recording_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     def export(self, filepath: str, tape_speed: Optional[float] = None) -> bool:
-        """Write the recording to a WAV file, resampling at the given tape_speed.
+        """Write the whole tape to a WAV file as it sounds played at *tape_speed*.
 
-        If tape_speed is None, uses self.tape_speed.
-        Returns True on success.
+        Matches in-panel playback: the tape is read at *tape_speed* frames per
+        output frame, so the file is resampled by 1/tape_speed.  Includes the
+        pre-punch-in portion and any take still in progress.
+        If tape_speed is None, uses self.tape_speed.  Returns True on success.
         """
         try:
             import soundfile as sf
@@ -571,35 +599,25 @@ class SongRecorder:
             log.error("soundfile not available; cannot export")
             return False
 
-        with self._lock:
-            chunks = list(self._chunks)
-            total = self._total_frames
-            speed = tape_speed if tape_speed is not None else self.tape_speed
-
-        if total <= 0 or not chunks:
-            # Fall back to pre-finalised result if available
-            if self.result is not None:
-                try:
-                    sf.write(filepath, self.result.data, self.sr, subtype="PCM_24")
-                    return True
-                except Exception as exc:
-                    log.error("SongRecorder export failed: %s", exc)
-                    return False
+        speed = tape_speed if tape_speed is not None else self.tape_speed
+        data = self._tape_data()
+        if data is None:
+            log.warning("SongRecorder export: nothing recorded")
             return False
-
-        raw = np.concatenate(chunks, axis=0)
 
         if abs(speed - 1.0) > 0.001:
             try:
                 import resampy
-                out_sr = int(self.sr * speed)
+                # Playing back at `speed` consumes `speed` tape frames per
+                # output frame → output length = tape length / speed.
+                out_sr = int(round(self.sr / max(0.01, speed)))
                 if out_sr > 0:
-                    raw = resampy.resample(raw, self.sr, out_sr, axis=0).astype(np.float32)
+                    data = resampy.resample(data, self.sr, out_sr, axis=0).astype(np.float32)
             except Exception as exc:
                 log.warning("SongRecorder export resample failed: %s", exc)
 
         try:
-            sf.write(filepath, raw, self.sr, subtype="PCM_24")
+            sf.write(filepath, data, self.sr, subtype="PCM_24")
             return True
         except Exception as exc:
             log.error("SongRecorder export failed: %s", exc)

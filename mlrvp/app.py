@@ -4853,6 +4853,14 @@ class AppController:
         try:
             srp = self.window.song_recorder_panel
             sr = self.engine.song_recorder
+            # Duration cap reached on the DSP thread — finalise the take here
+            # so it isn't lost (REC would otherwise start a fresh take).
+            if sr.capped:
+                self._song_recorder_do_stop()
+                self.window.set_status(
+                    "Song Recorder: reached the 60-minute limit — recording "
+                    "stopped. Press Save to export."
+                )
             # Meters: only show signal when actively recording or playing back.
             # Showing the live master-output when idle causes jitter/spiking.
             if sr.is_playing:
