@@ -34,11 +34,12 @@ Baseline: `c7319d2` (v0.6.9.24)
   - Daemon probe thread + join(timeout): scan moves on after the timeout and a permanently hung plugin no longer blocks app exit. 2 tests. — `345bd50`
 - [x] **B5. Renaming a preset breaks other setlists.**
   - Rename rewrites the preset name in every setlist file; case-only renames now work on case-insensitive filesystems; failures logged. 2 tests. — `d094552`
-- [ ] **B6. serialosc elevation:** predictable `%TEMP%` script run elevated (use `-EncodedCommand`); service start mode changed and never restored.
+- [x] **B6. serialosc elevation:** predictable `%TEMP%` script run elevated (use `-EncodedCommand`); service start mode changed and never restored.
+  - Decision: stop for the session only. Startup type never changed; recovery actions suspended during the stop and restored from `sc qfailure`; elevated scripts passed via -EncodedCommand (no temp .ps1); log in a random temp folder. Also fixed the elevated *restart* path, whose nested quoting broke the command line. Both scripts verified with PowerShell's parser. README note for users whose serialosc was left on manual start. 2 tests. — `f89acf9`
 - [x] **B7. Settings worker** can drop the last change on quit; non-atomic write; thread not joined.
   - New `startup_settings` module: locked, merged, atomic writes. Worker saves a pending change even when the quit sentinel arrives in the same batch; `stop()` joins it.
 - [x] **B8. Folder-delete safety check** uses string `startswith`.
-  - Strict resolved-path check (rejects the Slices folder itself, look-alike siblings, ../ escapes); applied to Rename too, which also rejects names containing / or \. 1 test.
+  - Strict resolved-path check (rejects the Slices folder itself, look-alike siblings, ../ escapes); applied to Rename too, which also rejects names containing / or \. 1 test. — `035dc0b`
 - [x] **B10. Audio settings never persist / never apply.** Output/input device, driver, sample rate and buffer size aren't saved anywhere; sample rate & buffer size are only read when the engine is created, so the "restart to apply" message can never come true. Persist (devices by name, not index) and apply. _(with B7/F5)_
   - Saved in startup_settings.json (devices by name, resolved per launch with fallback + status notice); restored before the engine is created so sample rate/buffer size apply on next launch (verified end-to-end: 512 → 256 survives relaunch). Device/driver changes now reopen the stream immediately (debounced). Setup combos show the real values (buffer combo used to show 256 while running 512). 9 tests. — `05b65cc`
 - [ ] **B9. Silent save failures** — surface preset/rack/export errors in the UI.
@@ -52,12 +53,17 @@ Baseline: `c7319d2` (v0.6.9.24)
 
 ## D. Git / CI / release process
 
-- [ ] **D1.** Single-source the version (spec, Inno script derive from `__version__`); CI fails if tag ≠ version.
-- [ ] **D2.** Build workflow: run tests first; quote `pyinstaller>=6.0`; draft releases with generated notes.
-- [ ] **D3.** PR check: Windows + Python 3.11–3.13 matrix; add ruff; pre-commit config.
+- [x] **D1.** Single-source the version (spec, Inno script derive from `__version__`); CI fails if tag ≠ version.
+  - spec + build.py read mlrvp/__init__.py; installer.iss always regenerated; CI fails on tag/version mismatch. — `4b5559d`
+- [x] **D2.** Build workflow: run tests first; quote `pyinstaller>=6.0`; draft releases with generated notes.
+  - build.yml reuses pr_check (full matrix) before building; quoted pyinstaller; draft releases with generated notes; least-privilege permissions. — `4b5559d`
+- [x] **D3.** PR check: Windows + Python 3.11–3.13 matrix; add ruff; pre-commit config.
+  - Ubuntu 3.11/3.12/3.13 + Windows 3.12 + macOS 3.12; ruff (correctness rules in pyproject) replaces pyflakes; .pre-commit-config.yaml. — `4b5559d`
 - [ ] **D4.** Pinned/constraints file for release builds.
 - [ ] **D5.** Close/merge the 4 stale Dependabot PRs; bump actions; delete `copilot/*` branches.
-- [ ] **D6.** Add `CHANGELOG.md`; adopt semver from 1.0.0.
+  - Actions bumped in the workflows (supersedes the PRs) — PRs still to close; `copilot/*` branches need a decision (two hold unmerged commits).
+- [x] **D6.** Add `CHANGELOG.md`; adopt semver from 1.0.0.
+  - CHANGELOG.md (Keep a Changelog) with an Unreleased section covering this review's changes.
 - [x] **D7.** Remove test rack `data/racks/Updated Names.json`; gitignore user racks; stop tracking runtime-written `startup_settings.json`. _(done with A5; local copies kept as untracked user files)_
 - [ ] **D8.** Repo settings: enable Discussions (or drop link), private vulnerability reporting, topics, auto-delete merged branches.
 - [ ] **D9.** Decide on history scrub (personal paths in deleted presets) before going public.
@@ -73,6 +79,8 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **F5.** `_save_startup_settings()` overwrites the whole file and erases the `welcome_shown` flag → Welcome dialog reappears after any settings change. _(fix with B7)_
   - Welcome dialog and app share the merged writer — flag no longer erased.
 - [ ] **F6.** Startup blocks the GUI ~7 s probing serialosc when the daemon isn't running.
-- [ ] **F7.** Add `.gitattributes` for consistent line endings across platforms.
+- [x] **F7.** Add `.gitattributes` for consistent line endings across platforms.
+  - — `4b5559d`
 - [x] **F8.** Preset recall set the engine tempo but never the clock: after loading a preset with a different BPM, beats/quantize/SEQ/patterns kept the old tempo while loops used the new one. _(fixed with B2)_
+- [ ] **F9.** Inno Setup publisher (`monome community`, mlrV2 URL) and macOS bundle id (`org.monome-community.mlrvp`) should be the project's own.
 - [ ] **F2.** Song Recorder "saved" status shown before the export ran / even on failure. Fixed for Song Recorder in A1; audit other save paths under B9.
