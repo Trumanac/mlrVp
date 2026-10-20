@@ -92,3 +92,33 @@ class TestPresetControls:
     def test_save_button_emits_request(self, qtbot):
         page = TransportPage(qtbot)
         page.run_and_capture_signal(page.widget.preset_save_requested, page.click_save)
+
+
+class TestGroupStopStyling:
+    """set_group_active runs for every group ~30x/s — restyle only on change."""
+
+    def _count_restyles(self, page, monkeypatch, group=0):
+        btn = page.widget._grp_stop_btns[group]
+        calls = []
+        orig = btn.setStyleSheet
+        monkeypatch.setattr(btn, "setStyleSheet", lambda ss: (calls.append(ss), orig(ss)))
+        return calls
+
+    def test_unchanged_state_does_not_restyle(self, qtbot, monkeypatch):
+        page = TransportPage(qtbot)
+        calls = self._count_restyles(page, monkeypatch)
+        for _ in range(30):
+            page.widget.set_group_active(0, True)
+        assert len(calls) == 1
+        page.widget.set_group_active(0, False)
+        assert len(calls) == 2
+
+    def test_restyles_again_after_midi_map_mode(self, qtbot, monkeypatch):
+        page = TransportPage(qtbot)
+        calls = self._count_restyles(page, monkeypatch)
+        page.widget.set_group_active(0, True)
+        page.widget.set_midi_map_active(True)
+        page.widget.set_group_active(0, True)   # suppressed during map mode
+        page.widget.set_midi_map_active(False)  # overlay restored its styles
+        page.widget.set_group_active(0, True)
+        assert len(calls) == 2

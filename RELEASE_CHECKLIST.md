@@ -20,11 +20,12 @@ Baseline: `c7319d2` (v0.6.9.24)
   - Decision: settings/presets/racks/logs → OS user-data folder (`%LOCALAPPDATA%\mlrVp`, `~/Library/Application Support/mlrVp`, `~/.local/share/mlrVp`); audio → `Music/mlrVp/{Songs,Slices}`; source checkouts keep repo `data/`; `MLRVP_DATA_DIR` override.
   - One-time never-overwrite migration from the in-place legacy folder; **File → Import Data from Previous Version…** for users who extract new versions to a new folder; **File → Open Data Folder**. Factory racks shipped in `mlrvp/resources/factory_racks`, seeded once. README "Where your files are stored" + "Updating" sections. Verified end-to-end launch/migrate/shutdown in simulated end-user mode. 14 tests. — `293e1e1`
 - [x] **A6. Effects fail at buffer ≥1024.** Tape Delay (≥1024), Shimmer Reverb (2048). Also rate-limit per-block FX exception logging.
-  - Tape Delay grows its scratch buffer; Shimmer processes in sub-blocks ≤ shortest comb. Failing effects now log once per 10 s (with repeat count) and show a status-bar notice; whole-block DSP failures likewise rate-limited into the log (was `print_exc` every block). `BUFFER_SIZE_CHOICES` shared by Setup + a test running every effect at every size.
+  - Tape Delay grows its scratch buffer; Shimmer processes in sub-blocks ≤ shortest comb. Failing effects now log once per 10 s (with repeat count) and show a status-bar notice; whole-block DSP failures likewise rate-limited into the log (was `print_exc` every block). `BUFFER_SIZE_CHOICES` shared by Setup + a test running every effect at every size. — `e1a9f0b`
 
 ## B. Bugs
 
-- [ ] **B1. ~270 `setStyleSheet` calls/sec** from the 30 fps loop (group-stop buttons + Link button).
+- [x] **B1. ~270 `setStyleSheet` calls/sec** from the 30 fps loop (group-stop buttons + Link button).
+  - Both setters cache their last state (keyed incl. group color); cache cleared after MIDI-map mode and on manual Link clicks so a failed Link enable still reverts the button. 4 tests.
 - [ ] **B2. Ableton Link tempo** from peers not pushed to engine / BPM display.
 - [ ] **B3. Pan law −3 dB jump** just off center.
 - [ ] **B4. Plugin scan timeout ineffective** (executor `shutdown(wait=True)` blocks on hung plugin).

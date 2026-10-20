@@ -736,6 +736,7 @@ class TransportView(QWidget):
         layout.addWidget(vg_frame)
 
         self._midi_map_active = False  # suppresses set_group_active style updates during MIDI map mode
+        self._grp_stop_style_cache: dict[int, tuple[bool, str]] = {}
 
         # Internal flag to avoid signal loops
         self._updating_presets = False
@@ -917,6 +918,9 @@ class TransportView(QWidget):
     def set_midi_map_active(self, active: bool):
         """Suppress group stop style updates while MIDI map highlight is shown."""
         self._midi_map_active = active
+        if not active:
+            # The overlay restored its own saved styles — re-apply ours.
+            self._grp_stop_style_cache.clear()
 
     def set_group_active(self, group: int, active: bool):
         """Update group stop button to show filled color when active."""
@@ -924,6 +928,11 @@ class TransportView(QWidget):
             return  # don't overwrite MIDI map highlights
         if 0 <= group < len(self._grp_stop_btns):
             gc = GROUP_COLORS[group]
+            # Called for every group ~30x/s from the UI timer — only restyle
+            # on change (setStyleSheet re-polishes and stalls the GUI thread).
+            if self._grp_stop_style_cache.get(group) == (active, gc):
+                return
+            self._grp_stop_style_cache[group] = (active, gc)
             btn = self._grp_stop_btns[group]
             if active:
                 btn.setStyleSheet(

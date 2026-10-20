@@ -307,3 +307,24 @@ class TestExternalStateSync:
         page = SetupPage(qtbot)
         page.widget.set_link_state(True, 2)
         assert page.audio._link_btn.isChecked() is True
+
+
+class TestLinkStateCaching:
+    def test_repeated_state_does_not_restyle(self, qtbot, monkeypatch):
+        page = SetupPage(qtbot)
+        btn = page.audio._link_btn
+        calls = []
+        orig = btn.setStyleSheet
+        monkeypatch.setattr(btn, "setStyleSheet", lambda ss: (calls.append(ss), orig(ss)))
+        for _ in range(30):
+            page.widget.set_link_state(True, 2)
+        assert len(calls) == 1
+
+    def test_failed_enable_reverts_button(self, qtbot):
+        page = SetupPage(qtbot)
+        page.widget.set_link_state(False, 0)
+        page.click_link()                        # user turns Link on...
+        assert page.audio._link_btn.isChecked()
+        page.widget.set_link_state(False, 0)     # ...controller reports failure
+        assert not page.audio._link_btn.isChecked()
+        assert page.audio._link_btn.text() == "—"

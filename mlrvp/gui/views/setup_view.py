@@ -189,11 +189,18 @@ class AudioSetupPanel(QFrame):
         )
 
     def _on_link_toggled(self, checked: bool):
+        self._link_state_cache = None  # widget changed outside set_link_state
         self._link_btn.setStyleSheet(self._link_btn_style(checked, 0))
         self.link_toggled.emit(checked)
 
     def set_link_state(self, enabled: bool, num_peers: int, available: bool = True):
         """Update the Link button appearance without triggering signals."""
+        # Called ~30x/s from the UI timer — only touch the widget on change
+        # (setStyleSheet re-polishes and stalls the GUI thread).
+        state = (enabled, num_peers, available)
+        if state == getattr(self, "_link_state_cache", None):
+            return
+        self._link_state_cache = state
         self._link_btn.blockSignals(True)
         self._link_btn.setChecked(enabled)
         if not available:
