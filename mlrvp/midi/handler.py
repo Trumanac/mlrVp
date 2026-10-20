@@ -7,7 +7,7 @@ Uses Qt signals for thread-safe communication from the MIDI callback thread.
 import logging
 import threading
 from typing import Optional, Callable
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, Signal
 
@@ -364,11 +364,25 @@ class MidiHandler(QObject):
         new_mappings = {}
         new_cc_to_param = {}
         new_toggle_state = {}
-        _fields = {f.name for f in fields(MidiMapping)}
         for m_data in mappings_data:
-            filtered = {k: v for k, v in m_data.items() if k in _fields}
-            mapping = MidiMapping(**filtered)
-            mapping.param_path = m_data.get('param_path', mapping.param_path)
+            # Presets can be hand-edited or damaged: skip malformed entries
+            if not isinstance(m_data, dict):
+                continue
+            try:
+                mapping = MidiMapping(
+                    channel=int(m_data.get('channel', 0)) & 0x0F,
+                    cc=int(m_data.get('cc', 0)) & 0x7F,
+                    min_val=float(m_data.get('min_val', 0.0)),
+                    max_val=float(m_data.get('max_val', 1.0)),
+                    param_path=str(m_data.get('param_path', '')),
+                    toggle=bool(m_data.get('toggle', False)),
+                    msg_type=int(m_data.get('msg_type', 0xB0)) & 0xF0,
+                )
+            except (TypeError, ValueError, OverflowError):
+                log.warning("Skipping invalid MIDI mapping: %r", m_data)
+                continue
+            if not mapping.param_path:
+                continue
             new_mappings[mapping.param_path] = mapping
             new_cc_to_param[(mapping.msg_type, mapping.channel, mapping.cc)] = mapping.param_path
             if mapping.toggle and m_data.get('toggle_state', False):

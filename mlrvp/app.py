@@ -3054,12 +3054,7 @@ class AppController:
             self._report_missing_samples(missing)
 
         # ── 5. Restore MIDI mappings ──
-        midi_maps = data.get("midi_mappings", [])
-        self.midi.load_mappings(midi_maps)
-        for m in midi_maps:
-            self._register_midi_param_callback(m["param_path"])
-        self._apply_tilt_mappings(data.get("tilt_mappings", []))
-        self._refresh_midi_mapping_table()
+        self._restore_mappings(data)
 
         self._refresh_setlist_ui()
         self._clear_preset_dirty()
@@ -3147,12 +3142,7 @@ class AppController:
             self._clear_all_waveform_displays()
             self._reload_samples_from_config()
             # Restore MIDI and tilt mappings
-            midi_maps = data.get("midi_mappings", [])
-            self.midi.load_mappings(midi_maps)
-            for m in midi_maps:
-                self._register_midi_param_callback(m["param_path"])
-            self._apply_tilt_mappings(data.get("tilt_mappings", []))
-            self._refresh_midi_mapping_table()
+            self._restore_mappings(data)
             self._refresh_setlist_ui()
             self._clear_preset_dirty()
             if self.window:
@@ -3196,12 +3186,7 @@ class AppController:
                 self._clear_all_waveform_displays()
                 self._reload_samples_from_config()
                 # Restore MIDI and tilt mappings
-                midi_maps = data.get("midi_mappings", [])
-                self.midi.load_mappings(midi_maps)
-                for m in midi_maps:
-                    self._register_midi_param_callback(m["param_path"])
-                self._apply_tilt_mappings(data.get("tilt_mappings", []))
-                self._refresh_midi_mapping_table()
+                self._restore_mappings(data)
                 if self.window:
                     self.window.set_status(f"Loaded preset: {path}")
             except Exception as e:
@@ -6652,6 +6637,15 @@ class AppController:
                                 "sensitivity": sensitivity})
         return result
 
+    def _restore_mappings(self, data: dict) -> None:
+        """Restore MIDI and tilt mappings from preset data, skipping bad entries."""
+        midi_maps = data.get("midi_mappings")
+        self.midi.load_mappings(midi_maps if isinstance(midi_maps, list) else [])
+        for param_path in self.midi.get_mappings():
+            self._register_midi_param_callback(param_path)
+        self._apply_tilt_mappings(_clean_tilt_mappings(data.get("tilt_mappings")))
+        self._refresh_midi_mapping_table()
+
     def _apply_tilt_mappings(self, tilt_maps: list[dict]):
         """Restore tilt axis assignments from preset data and update UI."""
         self._tilt_mappings.clear()
@@ -8264,6 +8258,25 @@ class AppController:
 # ================================================================== #
 #  Entry point                                                        #
 # ================================================================== #
+
+
+def _clean_tilt_mappings(raw) -> list[dict]:
+    """Well-formed tilt mapping dicts from preset data (bad entries dropped)."""
+    out: list[dict] = []
+    for tm in raw if isinstance(raw, list) else []:
+        if not isinstance(tm, dict):
+            continue
+        try:
+            out.append({
+                "axis": str(tm.get("axis", "")),
+                "target": str(tm.get("target") or ""),
+                "min_val": float(tm.get("min_val", 0.0)),
+                "max_val": float(tm.get("max_val", 1.0)),
+                "sensitivity": float(tm.get("sensitivity", 5.0)),
+            })
+        except (TypeError, ValueError):
+            log.warning("Skipping invalid tilt mapping: %r", tm)
+    return out
 
 
 _crash_log_file = None  # kept open for faulthandler for the process lifetime

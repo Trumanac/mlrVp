@@ -66,7 +66,8 @@ project uses [Semantic Versioning](https://semver.org/).
   the saved sample rate / buffer size — it falls back to the default output, or starts
   with audio off and explains why.
 - A damaged or hand-edited preset or rack (out-of-range numbers, wrong value types,
-  non-UTF-8 text) could abort loading part-way; bad values are now skipped. Renaming a
+  malformed MIDI/tilt mappings, non-UTF-8 text) could abort loading part-way; bad values
+  are now skipped. Renaming a
   rack to change only its capitalisation failed on Windows/macOS.
 - Memory slowly grew during long sessions (some objects were never garbage-collected).
 
