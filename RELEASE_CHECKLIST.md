@@ -49,7 +49,8 @@ Baseline: `c7319d2` (v0.6.9.24)
 
 - [x] **C1.** Library "Delete from disk" → move to Recycle Bin/Trash (`QFile.moveToTrash`); don't drop entries whose delete failed.
   - Samples/Slices/Songs delete, slice rows, batch and folder delete all use QFile.moveToTrash; failures left in place + listed; entries only dropped for moved files. 2 tests. — `9471285`
-- [ ] **C2.** Show a reason when a sample fails to load.
+- [x] **C2.** Show a reason when a sample fails to load.
+  - read_sample() raises SampleLoadError with a user-facing reason; status bar shows it. 4 tests. — `4ab09ca`
 - [x] **C3.** Buffer-size options: keep all effects working at every offered size (or cap the list). _(done with A6, guarded by test)_
 - [ ] **C4.** Ableton Link phase/beat sync (beyond tempo) — stretch goal.
 
@@ -80,7 +81,7 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **F4.** `package.py` source zip included `data/defaults/` (personal sample paths, plugin cache, favorites) and user racks. _(fixed with A5)_
 - [x] **F5.** `_save_startup_settings()` overwrites the whole file and erases the `welcome_shown` flag → Welcome dialog reappears after any settings change. _(fix with B7)_
   - Welcome dialog and app share the merged writer — flag no longer erased.
-- [ ] **F6.** Startup blocks the GUI ~7 s probing serialosc when the daemon isn't running.
+- [ ] **F6.** ~~Startup blocks probing serialosc~~ — profiled: the probe is instant; the ~5–7 s is building MainWindow (16 channel strips; re-parenting styled sub-trees costs ~0.4 ms per addWidget). **Post-1.0 optimisation** (needs strip construction + signal wiring refactor). Measured and kept: tooltip eventFilter/styleHint hooks cost ~0.4% of the GUI thread.
 - [x] **F7.** Add `.gitattributes` for consistent line endings across platforms.
   - — `4b5559d`
 - [x] **F8.** Preset recall set the engine tempo but never the clock: after loading a preset with a different BPM, beats/quantize/SEQ/patterns kept the old tempo while loops used the new one. _(fixed with B2)_
