@@ -32,6 +32,14 @@ pip install -r requirements.txt
 python -m mlrvp
 ```
 
+## Dependencies
+
+- `requirements.txt` (and `pyproject.toml`) list the supported version ranges; PR checks
+  install the latest versions that satisfy them.
+- `requirements-lock.txt` pins the exact versions used for release builds. After changing
+  `requirements.txt`, regenerate it with
+  `uv pip compile requirements.txt --universal --python-version 3.12 -o requirements-lock.txt`.
+
 ## Coding Conventions
 
 - **Python 3.10+** — use type hints where they aid clarity

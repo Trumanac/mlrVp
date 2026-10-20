@@ -1,0 +1,126 @@
+# Pinned dependency set used for release builds (build.yml) — generated, do not edit.
+# Regenerate after changing requirements.txt:
+#   uv pip compile requirements.txt --universal --python-version 3.12 -o requirements-lock.txt
+aalink==0.2.3
+    # via -r requirements.txt
+aiosc==0.3
+    # via pymonome
+audioop-lts==0.2.2 ; python_full_version >= '3.13'
+    # via
+    #   -r requirements.txt
+    #   standard-aifc
+    #   standard-sunau
+certifi==2026.10.19
+    # via requests
+cffi==2.1.1
+    # via
+    #   sounddevice
+    #   soundfile
+charset-normalizer==3.5.2
+    # via requests
+cloudpickle==3.1.2
+    # via joblib
+decorator==5.3.1
+    # via librosa
+idna==3.20
+    # via requests
+joblib==1.6.0
+    # via
+    #   librosa
+    #   scikit-learn
+lazy-loader==0.6
+    # via librosa
+librosa==1.0.0
+    # via -r requirements.txt
+llvmlite==0.50.0
+    # via numba
+msgpack==1.2.3
+    # via librosa
+narwhals==2.27.1
+    # via scikit-learn
+numba==0.68.0
+    # via
+    #   -r requirements.txt
+    #   librosa
+    #   resampy
+numpy==2.5.4
+    # via
+    #   -r requirements.txt
+    #   librosa
+    #   numba
+    #   pedalboard
+    #   resampy
+    #   scikit-learn
+    #   scipy
+    #   soundfile
+    #   soxr
+packaging==26.3
+    # via
+    #   lazy-loader
+    #   pooch
+pedalboard==0.9.26
+    # via -r requirements.txt
+platformdirs==4.13.5
+    # via pooch
+pooch==1.9.0
+    # via librosa
+pycparser==3.11 ; implementation_name != 'PyPy'
+    # via cffi
+pymonome==0.12.1
+    # via -r requirements.txt
+pyserial==3.5
+    # via -r requirements.txt
+pyside6==6.12.0
+    # via -r requirements.txt
+pyside6-addons==6.12.0
+    # via
+    #   pyside6
+    #   pyside6-webengine
+pyside6-essentials==6.12.0
+    # via
+    #   pyside6
+    #   pyside6-addons
+    #   pyside6-pdf
+pyside6-pdf==6.12.0.140
+    # via pyside6
+pyside6-webengine==6.12.0.140
+    # via pyside6
+python-osc==1.10.2
+    # via -r requirements.txt
+python-rtmidi==1.5.8
+    # via -r requirements.txt
+requests==2.34.2
+    # via pooch
+resampy==0.4.3
+    # via -r requirements.txt
+scikit-learn==1.9.1
+    # via librosa
+scipy==1.18.1
+    # via
+    #   -r requirements.txt
+    #   librosa
+    #   scikit-learn
+shiboken6==6.12.0
+    # via pyside6-essentials
+sounddevice==0.5.6
+    # via -r requirements.txt
+soundfile==0.14.0
+    # via
+    #   -r requirements.txt
+    #   librosa
+soxr==1.1.0
+    # via librosa
+standard-aifc==3.13.0 ; python_full_version >= '3.13'
+    # via -r requirements.txt
+standard-chunk==3.13.0 ; python_full_version >= '3.13'
+    # via
+    #   -r requirements.txt
+    #   standard-aifc
+standard-sunau==3.13.0 ; python_full_version >= '3.13'
+    # via -r requirements.txt
+threadpoolctl==3.7.0
+    # via scikit-learn
+typing-extensions==4.16.0
+    # via soundfile
+urllib3==2.8.0
+    # via requests
