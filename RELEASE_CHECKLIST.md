@@ -71,6 +71,7 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [ ] **D8.** Repo settings: enable Discussions (or drop link), private vulnerability reporting, topics, auto-delete merged branches.
 - [ ] **D9.** Decide on history scrub (personal paths in deleted presets) before going public.
 - [ ] **D10.** After public: protect `main` (PR + passing checks, no force-push).
+- [ ] **D13.** macOS CI job never gets a runner (stays queued; earlier one cancelled after 15 min) — likely private-repo macOS minutes (10× rate). Decide: keep macOS (free once public) or drop it until then.
 - [ ] **D11.** Known distribution gaps (document or address): unsigned Windows exe, ad-hoc-signed un-notarized macOS, arm64-only mac build.
 - [ ] **D12.** Tag v1.0.0.
 
@@ -89,5 +90,6 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **F10.** CI abort (SIGABRT) on Ubuntu/py3.11: Qt widgets collected by the GC on a worker thread. run_on_main_thread now uses a queued signal; engine's periodic GC runs on the GUI thread; tests collect on the main thread. — `99ffcce`
 - [x] **F11.** Engine disables automatic GC and only ever collects generation 0, so cyclic garbage that survives one collection is never freed (slow memory growth in long sessions). Needs a safe schedule for gen-1/2 collections.
   - gc.freeze() after startup (full collect 60 ms → 2 ms); schedule gen-0/2 s, gen-1/30 s, full/5 min on the GUI thread. — `13e6d42`
+- [x] **F12.** PySide6 6.12.0 regression: `Signal.emit()` loses a reference to True/False → abort on Python < 3.12 (reproduced in WSL Ubuntu, Python 3.11). PySide6 capped `<6.12` for Python < 3.12; guard test. Worth reporting upstream to Qt. — `1a4723f`
 - [x] **F2.** Song Recorder "saved" status shown before the export ran / even on failure. Fixed for Song Recorder in A1; audit other save paths under B9.
   - Song Recorder fixed in A1; remaining save paths covered by B9.
