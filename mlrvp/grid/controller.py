@@ -307,12 +307,37 @@ def _find_monome_ftdi_ports() -> list[tuple[str, str]]:
     return found
 
 
+def _elevated_powershell_command(script: str, wait: bool) -> str:
+    """Build a non-elevated PowerShell command that runs *script* elevated.
+
+    The script travels as -EncodedCommand (base64 UTF-16LE), so nothing is
+    written to disk for the elevated process to execute — a script file in
+    %TEMP% could be swapped by another process between writing and the UAC
+    prompt — and no quoting can break the elevated command line.
+    Prints OUTER_OK, or OUTER_FAIL if elevation was declined / failed.
+    """
+    import base64
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    wait_flag = " -Wait" if wait else ""
+    return (
+        "try { "
+        f"Start-Process powershell -Verb RunAs{wait_flag} "
+        "-ArgumentList '-NoProfile','-NonInteractive','-WindowStyle','Hidden',"
+        f"'-EncodedCommand','{encoded}'; "
+        "Write-Host 'OUTER_OK' "
+        "} catch { Write-Host \"OUTER_FAIL: $_\" }"
+    )
+
+
 def _windows_stop_serialosc_service(com_port: str = "") -> bool:
     """Synchronously stop the serialosc service with UAC elevation.
 
-    Disables auto-restart, stops the service, and force-kills the process
-    by PID.  Captures the elevated script's output to a log file so we can
-    see exactly what happened (UAC declined, access denied, etc).
+    Stops the service for this session only: its startup type is never
+    changed, so serialosc starts again at the next boot and other monome
+    apps keep working.  Auto-restart (recovery) actions are suspended while
+    stopping — a force-kill would otherwise relaunch it — and then restored.
+    Captures the elevated script's output to a log file so we can see
+    exactly what happened (UAC declined, access denied, etc).
 
     Returns True if the elevated script appeared to succeed, False otherwise.
     Blocks until UAC is resolved (up to 2 minutes).
@@ -322,22 +347,23 @@ def _windows_stop_serialosc_service(com_port: str = "") -> bool:
 
     import tempfile
 
-    # Output log written by the elevated script — we read it after.
-    log_path = os.path.join(tempfile.gettempdir(), "mlrvp_serialosc_stop.log")
+    # Output log written by the elevated script — we read it after.  A fresh
+    # randomly-named folder, so the elevated process can't be pointed at a
+    # pre-planted file or link at a predictable path.
     try:
-        if os.path.exists(log_path):
-            os.remove(log_path)
-    except Exception:
-        pass
+        log_path = os.path.join(tempfile.mkdtemp(prefix="mlrvp-"), "serialosc_stop.log")
+    except OSError as e:
+        log.warning("Could not create temp folder for elevated log: %s", e)
+        return False
 
     # Elevated script: aggressive multi-stage kill.
-    #   1. Disable failure-recovery actions so the service won't auto-restart
-    #      if killed.
-    #   2. Set start mode to "demand" — service will not auto-start at boot
-    #      while mlrVp is using the port (user can re-enable from services.msc).
-    #   3. Try graceful Stop-Service.
-    #   4. Look up the service PID from SCM and Stop-Process -Force it.
-    #   5. Kill any remaining serialosc* processes by name.
+    #   1. Remember, then suspend, failure-recovery actions so a killed
+    #      service isn't relaunched.  The startup type is left alone.
+    #   2. Try graceful stop.
+    #   3. Look up the service PID from SCM and Stop-Process -Force it.
+    #   4. Kill any remaining serialosc* processes by name.
+    #   5. Restore the recovery actions (they only fire on unexpected exits,
+    #      so restoring them now doesn't restart the stopped service).
     #   6. Verify final service state and log everything.
     elevated_script = f'''
 $ErrorActionPreference = "Continue"
@@ -346,17 +372,17 @@ function Log($msg) {{ Add-Content -Path $logFile -Value $msg }}
 
 Log "=== mlrVp serialosc stop $(Get-Date) ==="
 
-# 1. Disable failure recovery so killed service won't relaunch.
+# 1. Remember recovery actions, then suspend them so a killed service
+#    isn't relaunched.  The startup type is NOT changed.
+$failBefore = (& sc.exe qfailure serialosc) -join "`n"
+Log "recovery before: $failBefore"
 & sc.exe failure serialosc reset= 0 actions= "" 2>&1 | ForEach-Object {{ Log "failure: $_" }}
 
-# 2. Set to manual start (next reboot won't auto-start either).
-& sc.exe config serialosc start= demand 2>&1 | ForEach-Object {{ Log "config: $_" }}
-
-# 3. Graceful stop.
+# 2. Graceful stop.
 & sc.exe stop serialosc 2>&1 | ForEach-Object {{ Log "stop: $_" }}
 Start-Sleep -Milliseconds 500
 
-# 4. Find service PID and kill.
+# 3. Find service PID and kill.
 $svcPid = 0
 try {{
     $svc = Get-CimInstance Win32_Service -Filter "Name='serialosc'" -EA Stop
@@ -374,7 +400,7 @@ if ($svcPid -gt 0) {{
     }}
 }}
 
-# 5. Kill any remaining processes by name.
+# 4. Kill any remaining processes by name.
 Get-Process | Where-Object {{ $_.ProcessName -like "serialosc*" }} | ForEach-Object {{
     try {{
         Stop-Process -Id $_.Id -Force -EA Stop
@@ -382,6 +408,20 @@ Get-Process | Where-Object {{ $_.ProcessName -like "serialosc*" }} | ForEach-Obj
     }} catch {{
         Log "kill by name FAILED: $($_.ProcessName) (PID=$($_.Id)): $_"
     }}
+}}
+
+# 5. Restore recovery actions from the saved `sc qfailure` output.
+$reset = 0
+if ($failBefore -match 'RESET_PERIOD[^:]*:\\s*(\\d+)') {{ $reset = [int]$Matches[1] }}
+$acts = @()
+foreach ($m in [regex]::Matches($failBefore, '(RESTART|REBOOT|RUN PROCESS)\\s*--\\s*Delay\\s*=\\s*(\\d+)')) {{
+    $kind = @{{ 'RESTART' = 'restart'; 'REBOOT' = 'reboot'; 'RUN PROCESS' = 'run' }}[$m.Groups[1].Value]
+    $acts += "$kind/$($m.Groups[2].Value)"
+}}
+if ($acts.Count -gt 0) {{
+    & sc.exe failure serialosc reset= $reset actions= ($acts -join '/') 2>&1 | ForEach-Object {{ Log "restore recovery: $_" }}
+}} else {{
+    Log "no recovery actions to restore"
 }}
 
 # 6. Verify.
@@ -394,26 +434,10 @@ try {{
 }}
 Log "=== done ==="
 '''
-    # Write the elevated script to a temp file (avoids all quoting issues).
-    script_path = os.path.join(tempfile.gettempdir(), "mlrvp_serialosc_stop.ps1")
-    try:
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(elevated_script)
-    except Exception as e:
-        log.warning("Could not write elevated script: %s", e)
-        return False
-
     # Outer (non-elevated) powershell launches the script via Start-Process
     # -Verb RunAs, which triggers UAC.  -Wait blocks until elevated child exits.
     # If UAC is declined, Start-Process throws; we capture that.
-    outer_cmd = (
-        f"try {{ "
-        f"Start-Process powershell -Verb RunAs -Wait "
-        f"-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',"
-        f"'-File','{script_path}'; "
-        f"Write-Host 'OUTER_OK' "
-        f"}} catch {{ Write-Host \"OUTER_FAIL: $_\" }}"
-    )
+    outer_cmd = _elevated_powershell_command(elevated_script, wait=True)
     try:
         log.info(
             "Requesting elevated Stop-Service — please click YES on the UAC dialog%s",
@@ -1030,12 +1054,12 @@ class GridController:
         )
 
         try:
+            # -EncodedCommand: ps_script contains single quotes, which broke
+            # the old single-quoted -ArgumentList '-Command','...' form.
             subprocess.Popen(
                 [
-                    "powershell", "-WindowStyle", "Hidden",
-                    "-Command",
-                    f"Start-Process powershell -Verb RunAs "
-                    f"-ArgumentList '-WindowStyle','Hidden','-Command','{ps_script}'",
+                    "powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
+                    _elevated_powershell_command(ps_script, wait=False),
                 ],
                 creationflags=subprocess.DETACHED_PROCESS | _WIN_FLAGS,
             )
@@ -1657,6 +1681,11 @@ class GridController:
             self._asyncio_stop = stop_event  # exposed for disconnect()
 
             async def _serialosc_main():
+                # Strong references to in-flight connect tasks — the event
+                # loop only keeps weak ones, so an unreferenced task can be
+                # garbage-collected before the grid finishes connecting.
+                connect_tasks: set = set()
+
                 def _on_device_added(id_, type_, port):
                     log.info("serialosc: device added id=%s type=%s port=%s",
                              id_, type_, port)
@@ -1664,7 +1693,9 @@ class GridController:
                     t = (type_ or "").lower()
                     if "arc" in t:
                         return
-                    asyncio.create_task(app.grid.connect("127.0.0.1", port))
+                    task = asyncio.create_task(app.grid.connect("127.0.0.1", port))
+                    connect_tasks.add(task)
+                    task.add_done_callback(connect_tasks.discard)
 
                 while not stop_event.is_set():
                     # ── Phase 1: wait for daemon to be running ────────────

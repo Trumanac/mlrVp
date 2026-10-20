@@ -401,7 +401,13 @@ The original "40h kit" and early black-rubber 64 boards speak a binary serial pr
 **Requirements:**
 - Install the [FTDI VCP driver](https://ftdichip.com/drivers/vcp-drivers/) so the device appears as a COM port (e.g. `COM7`)
 - Install `pyserial`: `pip install pyserial`
-- If serialosc is installed and running, the 40h-direct backend will request an elevated stop of the serialosc service so it can claim exclusive access to the COM port
+- If serialosc is installed and running, the 40h-direct backend will request an elevated stop of the serialosc service so it can claim exclusive access to the COM port. It is stopped for the current session only — serialosc starts again normally at the next boot
+
+> **Used 40h direct with mlrVp 0.6.9.24 or earlier?** Those versions also switched the serialosc service to manual start, so other monome apps may no longer see your grid after a reboot. To restore it, run in an **administrator** terminal:
+> ```
+> sc config serialosc start= auto
+> sc start serialosc
+> ```
 
 **Backend:** set to **40h direct**. mlrVp scans for FTDI VID/PID `0403:6001` ports automatically; if only one is found it connects on first scan.
 
