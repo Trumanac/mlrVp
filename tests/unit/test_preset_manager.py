@@ -441,6 +441,14 @@ class TestSetlists:
     def test_rename_preset_updates_every_setlist(self, preset_manager):
         import json
         from mlrvp.config import get_setlists_dir
+
+        def presets_in(fp):
+            # A background save may be replacing the file right now (Windows
+            # briefly denies reads during os.replace) — treat as "not yet".
+            try:
+                return json.loads(fp.read_text())["presets"]
+            except (OSError, ValueError):
+                return None
         cfg = AppConfig()
         preset_manager.save_preset("Opener", cfg)
         assert wait_until(lambda: preset_manager.preset_exists("Opener"))
@@ -449,16 +457,16 @@ class TestSetlists:
         preset_manager.load_setlist("Friday")
         preset_manager.add_to_setlist("Opener")
         friday = get_setlists_dir() / "Friday.json"
-        assert wait_until(lambda: "Opener" in json.loads(friday.read_text())["presets"])
+        assert wait_until(lambda: "Opener" in (presets_in(friday) or []))
         preset_manager.create_setlist("Saturday")
         preset_manager.load_setlist("Saturday")
         preset_manager.add_to_setlist("Opener")
 
         assert preset_manager.rename_preset("Opener", "Intro") is True
         assert preset_manager.setlist_presets == ["Intro"]
-        assert json.loads(friday.read_text())["presets"] == ["Intro"]
+        assert wait_until(lambda: presets_in(friday) == ["Intro"])
         saturday = get_setlists_dir() / "Saturday.json"
-        assert wait_until(lambda: json.loads(saturday.read_text())["presets"] == ["Intro"])
+        assert wait_until(lambda: presets_in(saturday) == ["Intro"])
 
     def test_rename_preset_case_only(self, preset_manager):
         cfg = AppConfig()
