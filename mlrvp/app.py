@@ -8468,6 +8468,11 @@ def run_app(argv=None) -> int:
     controller.init_midi()
     controller.init_osc()
     controller.init_gui(app)
+    # Once the main window accepts its close (after controller.stop(), which
+    # is connected first), end the event loop even if other top-level windows
+    # are open.  exit() doesn't ask windows to close; quit() would be vetoed
+    # by the grid window, which only hides.
+    controller.window.quit_requested.connect(lambda: app.exit(0))
 
     # Start running
     controller.start()

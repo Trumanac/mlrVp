@@ -818,12 +818,6 @@ class MainWindow(QMainWindow):
             self._grid_window.close()
             self.quit_requested.emit()
             event.accept()
-            # End the event loop even if other top-level windows (plugin
-            # editors, non-modal warnings) are open — subsystems are stopped
-            # by now.  exit() doesn't ask windows to close; quit() would be
-            # vetoed by the grid window, which only hides.
-            from PySide6.QtWidgets import QApplication
-            QApplication.instance().exit(0)
         else:
             self.close_requested.emit()
             event.ignore()
