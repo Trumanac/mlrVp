@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 MAX_FREE_SECONDS = 3600.0
 _CHUNK_FRAMES = 4096          # free-length chunk size
 LIMITER_THRESHOLD = 0.891     # −1 dBFS soft-clip knee
+_ENV_HOP = 512                # frames per cached waveform-envelope peak
 
 
 class SongRecorder:
@@ -57,6 +58,15 @@ class SongRecorder:
         # Set by process() when the duration cap stops a take; the take is
         # still in _chunks until stop() finalises it.
         self._capped: bool = False
+        self._take_id: int = 0          # bumped on every new take
+
+        # Waveform envelope cache — see get_peaks().  GUI thread only.
+        self._env_cache: Optional[np.ndarray] = None
+        self._env_cache_for: Optional[SampleBuffer] = None
+        self._live_env_take: int = -1
+        self._live_env: np.ndarray = np.zeros(0, dtype=np.float32)
+        self._live_env_seen: int = 0
+        self._live_tail: Optional[np.ndarray] = None
 
         # Config
         self.tape_speed: float = 1.0
@@ -106,6 +116,7 @@ class SongRecorder:
                 self._chunks = []
                 self._total_frames = 0
                 self._capped = False
+                self._take_id += 1
                 self._recording = True
 
     def start_recording_now(self) -> None:
@@ -115,6 +126,7 @@ class SongRecorder:
             self._chunks = []
             self._total_frames = 0
             self._capped = False
+            self._take_id += 1
             self._armed = False
             self._recording = True
 
@@ -133,6 +145,7 @@ class SongRecorder:
             total = self._total_frames
             punch_in = self._punch_in_frame
             existing = self.result
+            take_id = self._take_id
 
         if total <= 0 or not chunks:
             return existing or self.result
@@ -154,6 +167,19 @@ class SongRecorder:
             num_channels=int(raw.shape[1]),
             duration_sec=float(raw.shape[0]) / float(self.sr),
         )
+        # Seed the waveform cache from the incremental live envelope so the
+        # first get_peaks() after stopping doesn't rescan the whole tape.
+        if self._live_env_take != take_id:
+            self._reset_live_envelope()
+        self._update_live_envelope(chunks)
+        self._env_cache = self._live_envelope(
+            existing if existing is not None and existing.num_frames > 0 else None,
+            punch_in,
+        )
+        self._env_cache_for = buf
+        self._reset_live_envelope()
+        self._live_env_take = -1
+
         with self._lock:
             self.result = buf
         return buf
@@ -166,6 +192,8 @@ class SongRecorder:
             self._chunks = []
             self._total_frames = 0
             self._punch_in_frame = 0
+        self._reset_live_envelope()
+        self._live_env_take = -1
 
     def clear(self) -> None:
         """Discard the current recording and result; stop playback."""
@@ -178,6 +206,8 @@ class SongRecorder:
             self._total_frames = 0
             self._punch_in_frame = 0
             self.result = None
+            self._env_cache = None
+            self._env_cache_for = None
             self._pb_peak_l = 0.0
             self._pb_peak_r = 0.0
 
@@ -359,21 +389,91 @@ class SongRecorder:
         portion of the last result with the in-flight chunks so the waveform
         stays stable and grows smoothly from the punch point.
         Returns shape (num_bins,) of |max| per bin, or None.
+
+        Polled by the GUI ~20×/s, so it never rescans the whole tape: it
+        downsamples a cached envelope (one peak per _ENV_HOP frames) that is
+        computed once per finalised result and extended incrementally with
+        newly recorded chunks.  GUI thread only.
         """
         if num_bins <= 0:
             return None
 
-        data = self._tape_data()
-        if data is None:
+        env = self._current_envelope()
+        if env is None or len(env) == 0:
             return None
-        mono = data.mean(axis=1) if data.ndim == 2 else data
-        n = mono.shape[0]
-        bin_size = max(1, n // num_bins)
-        usable = (n // bin_size) * bin_size
-        if usable == 0:
-            return np.array([float(np.abs(mono).max())], dtype=np.float32)
-        peaks = np.abs(mono[:usable]).reshape(-1, bin_size).max(axis=1)
-        return peaks.astype(np.float32)
+        m = len(env)
+        bin_size = max(1, m // num_bins)
+        usable = (m // bin_size) * bin_size
+        return env[:usable].reshape(-1, bin_size).max(axis=1)
+
+    # -- envelope cache (GUI thread) --
+
+    @staticmethod
+    def _envelope(data: np.ndarray) -> np.ndarray:
+        """Mono |peak| per _ENV_HOP frames; a trailing partial hop counts as one."""
+        mono = (data[:, 0] + data[:, 1]) * 0.5 if data.ndim == 2 and data.shape[1] >= 2 \
+            else data.reshape(len(data), -1)[:, 0]
+        n = len(mono)
+        if n == 0:
+            return np.zeros(0, dtype=np.float32)
+        full = (n // _ENV_HOP) * _ENV_HOP
+        env = np.abs(mono[:full]).reshape(-1, _ENV_HOP).max(axis=1) if full else \
+            np.zeros(0, dtype=np.float32)
+        if full < n:
+            env = np.append(env, np.abs(mono[full:]).max())
+        return env.astype(np.float32)
+
+    def _result_envelope(self, result: SampleBuffer) -> np.ndarray:
+        if self._env_cache_for is not result:
+            self._env_cache = self._envelope(result.data)
+            self._env_cache_for = result
+        return self._env_cache
+
+    def _reset_live_envelope(self) -> None:
+        self._live_env = np.zeros(0, dtype=np.float32)
+        self._live_env_seen = 0
+        self._live_tail = None
+
+    def _update_live_envelope(self, chunks: list) -> None:
+        """Fold chunks[self._live_env_seen:] into the live envelope."""
+        new = chunks[self._live_env_seen:]
+        if not new:
+            return
+        self._live_env_seen = len(chunks)
+        parts = new if self._live_tail is None else [self._live_tail] + new
+        audio = np.concatenate(parts, axis=0)
+        full = (len(audio) // _ENV_HOP) * _ENV_HOP
+        if full:
+            self._live_env = np.concatenate([self._live_env, self._envelope(audio[:full])])
+        self._live_tail = audio[full:] if full < len(audio) else None
+
+    def _live_envelope(self, result: Optional[SampleBuffer], punch_in: int) -> np.ndarray:
+        """Envelope of the tape as stop() will splice it: pre-punch + live take."""
+        parts = []
+        if result is not None and punch_in > 0:
+            pre_hops = -(-min(punch_in, result.num_frames) // _ENV_HOP)  # ceil
+            parts.append(self._result_envelope(result)[:pre_hops])
+        parts.append(self._live_env)
+        if self._live_tail is not None:
+            parts.append(self._envelope(self._live_tail))
+        return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+
+    def _current_envelope(self) -> Optional[np.ndarray]:
+        with self._lock:
+            in_take = self._recording or self._capped
+            chunks = list(self._chunks) if in_take else None
+            take_id = self._take_id
+            punch_in = self._punch_in_frame
+            result = self.result
+        if in_take:
+            if self._live_env_take != take_id:
+                self._reset_live_envelope()
+                self._live_env_take = take_id
+            self._update_live_envelope(chunks)
+            return self._live_envelope(result, punch_in)
+        if result is None or result.num_frames == 0:
+            return None
+        return self._result_envelope(result)
 
     # ------------------------------------------------------------------ playback
 

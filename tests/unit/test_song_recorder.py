@@ -87,3 +87,59 @@ def test_duration_cap_take_is_finalised_by_stop(rec, monkeypatch):
 
 def test_export_with_nothing_recorded_fails(rec, tmp_path):
     assert rec.export(str(tmp_path / "x.wav")) is False
+
+
+# ── Waveform peaks (polled ~20×/s by the GUI) ────────────────────────────
+
+def _brute_peaks(data, num_bins):
+    """Reference: mono |peak| per _ENV_HOP frames, then max-downsampled."""
+    mono = data.mean(axis=1)
+    hop = song_mod._ENV_HOP
+    env = np.array([np.abs(mono[i:i + hop]).max() for i in range(0, len(mono), hop)])
+    b = max(1, len(env) // num_bins)
+    return env[: (len(env) // b) * b].reshape(-1, b).max(axis=1)
+
+
+def _noise_take(rec, seconds, seed):
+    rng = np.random.default_rng(seed)
+    for _ in range(int(seconds * SR / BLOCK)):
+        rec.process((rng.standard_normal((BLOCK, 2)) * 0.2).astype(np.float32))
+
+
+def test_peaks_match_reference_for_finished_tape(rec):
+    rec.start_recording_now()
+    _noise_take(rec, 1.0, seed=1)
+    tape = rec.stop()
+    np.testing.assert_allclose(rec.get_peaks(200), _brute_peaks(tape.data, 200), atol=1e-6)
+
+
+def test_peaks_track_punch_in_take_and_survive_stop(rec):
+    rec.start_recording_now()
+    _noise_take(rec, 2.0, seed=2)
+    rec.stop()
+    rec._pb_fpos = song_mod._ENV_HOP * 80   # hop-aligned punch-in point
+    rec.start_recording_now()
+    _noise_take(rec, 0.5, seed=3)
+    live = rec.get_peaks(150)        # mid-take, incremental path
+    _noise_take(rec, 0.5, seed=4)
+    live2 = rec.get_peaks(150)
+    tape_now = rec._tape_data()
+    np.testing.assert_allclose(live2, _brute_peaks(tape_now, 150), atol=1e-6)
+    assert live is not None
+
+    tape = rec.stop()                # cache seeded from the live envelope
+    np.testing.assert_allclose(rec.get_peaks(150), _brute_peaks(tape.data, 150), atol=1e-6)
+
+
+def test_peaks_are_cheap_on_long_tape(rec):
+    import time
+    from mlrvp.audio.sample import SampleBuffer
+    n = SR * 60 * 10                 # 10-minute tape
+    data = np.random.default_rng(5).random((n, 2), dtype=np.float32)
+    rec.result = SampleBuffer(data=data, sample_rate=SR, num_frames=n,
+                              num_channels=2, duration_sec=n / SR)
+    rec.get_peaks(800)               # first call builds the cache
+    t = time.perf_counter()
+    for _ in range(20):
+        rec.get_peaks(800)
+    assert (time.perf_counter() - t) / 20 < 0.005   # was ~260 ms per call
