@@ -5,49 +5,52 @@ on:
     branches: [ main ]
   push:
     branches: [ main ]
+  workflow_call:          # reused by build.yml before release builds
+
+permissions:
+  contents: read
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
-      - name: Install Linux audio dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libportaudio2 portaudio19-dev
-
-      - name: Install dependencies
+      - name: Ruff (rules in pyproject.toml)
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyflakes
-
-      - name: Check imports (pyflakes)
-        run: python -m pyflakes mlrvp/
-
-      - name: Verify package imports
-        run: |
-          python -c "import mlrvp; print('mlrvp version:', mlrvp.__version__)"
-          python -c "from mlrvp.config import AppConfig; print('config OK')"
-          python -c "from mlrvp.preset.manager import PresetManager; print('preset manager OK')"
+          pip install ruff
+          ruff check mlrvp tests
 
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  python-version: '3.11' }
+          - { os: ubuntu-latest,  python-version: '3.12', coverage: true }
+          - { os: ubuntu-latest,  python-version: '3.13' }
+          - { os: windows-latest, python-version: '3.12' }
+          - { os: macos-latest,   python-version: '3.12' }
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install Linux audio + Qt headless dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libportaudio2 portaudio19-dev \
@@ -61,14 +64,19 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-qt pytest-cov pytest-mock
 
-      - name: Run test suite with coverage
+      - name: Verify package imports
+        run: python -c "import mlrvp, mlrvp.app; print('mlrvp', mlrvp.__version__)"
+
+      - name: Run test suite
         env:
           QT_QPA_PLATFORM: offscreen
-        run: |
-          pytest --cov=mlrvp --cov-report=term-missing --cov-report=xml -v
+        run: >-
+          pytest -v
+          ${{ matrix.coverage && '--cov=mlrvp --cov-report=term-missing --cov-report=xml' || '' }}
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        if: matrix.coverage
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage.xml

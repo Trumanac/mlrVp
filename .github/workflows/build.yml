@@ -4,13 +4,33 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:     # Manual trigger from GitHub UI
+  workflow_dispatch:     # Manual trigger from GitHub UI (builds artifacts, no release)
 
 permissions:
-  contents: write        # Needed for creating releases
+  contents: read
 
 jobs:
+  checks:
+    # Same lint + test matrix as pull requests — never ship a red build.
+    uses: ./.github/workflows/pr_check.yml
+
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag must match mlrvp.__version__
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          ver=$(python3 -c "import re; print(re.search(r'__version__ = \"([^\"]+)\"', open('mlrvp/__init__.py').read()).group(1))")
+          echo "mlrvp.__version__ = ${ver}, tag = ${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_NAME}" != "v${ver}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match mlrvp.__version__ (${ver}). Bump the version or re-tag."
+            exit 1
+          fi
+
   build:
+    needs: [checks, version]
     strategy:
       matrix:
         include:
@@ -27,10 +47,10 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -44,7 +64,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller>=6.0
+          pip install "pyinstaller>=6.0"
 
       - name: Build with PyInstaller
         run: python build.py
@@ -67,7 +87,7 @@ jobs:
         run: cd dist && zip -r ${{ matrix.zip_name }} mlrVp
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.zip_name }}
@@ -76,18 +96,22 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write        # create the GitHub release
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
-      - name: Create Release
+      - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*.zip
-          draft: false
+          # Draft: review the notes and assets, then press "Publish" on GitHub.
+          draft: true
+          generate_release_notes: true
           body: |
             ## Downloads
 
@@ -101,6 +125,10 @@ jobs:
             1. Download the zip for your platform above
             2. Extract to a folder of your choice
             3. Run `mlrVp.exe` (Windows), `mlrVp.app` (macOS), or `./mlrVp` (Linux)
+
+            Updating from an older version? Your presets and settings now live outside the app folder — use
+            **File → Import Data from Previous Version…** once to bring them across
+            (see [Where your files are stored](https://github.com/${{ github.repository }}#where-your-files-are-stored)).
 
             > **macOS**: If you see "unidentified developer", right-click `mlrVp.app` → **Open** and click Open in the dialog. Or remove the quarantine flag via Terminal:
             > ```

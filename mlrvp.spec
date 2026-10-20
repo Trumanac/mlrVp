@@ -7,8 +7,14 @@ Build with:
 Produces a self-contained executable for Windows, macOS, or Linux.
 """
 
+import re
 import sys
 from pathlib import Path
+
+# Single source of truth for the version: mlrvp/__init__.py
+VERSION = re.search(
+    r'__version__\s*=\s*"([^"]+)"', Path('mlrvp/__init__.py').read_text(encoding='utf-8')
+).group(1)
 
 block_cipher = None
 
@@ -93,8 +99,8 @@ if sys.platform == 'darwin':
         info_plist={
             'CFBundleName': 'mlrVp',
             'CFBundleDisplayName': 'mlrVp',
-            'CFBundleVersion': '0.6.9.24',
-            'CFBundleShortVersionString': '0.6.9.24',
+            'CFBundleVersion': VERSION,
+            'CFBundleShortVersionString': VERSION,
             'NSHighResolutionCapable': True,
             'NSMicrophoneUsageDescription':
                 'mlrVp needs microphone access for audio recording.',

@@ -20,6 +20,13 @@ SPEC = ROOT / "mlrvp.spec"
 ICON_ICO = ROOT / "mlrvp" / "resources" / "icon.ico"
 
 
+def read_version() -> str:
+    """Single source of truth for the version: mlrvp/__init__.py."""
+    import re
+    text = (ROOT / "mlrvp" / "__init__.py").read_text(encoding="utf-8")
+    return re.search(r'__version__\s*=\s*"([^"]+)"', text).group(1)
+
+
 def ensure_pyinstaller():
     """Make sure PyInstaller is installed."""
     try:
@@ -94,10 +101,10 @@ def build_installer():
     """Build + create Inno Setup Windows installer."""
     build_folder()
 
+    # Always regenerate: the script embeds the version (and is gitignored)
     iss_path = ROOT / "installer.iss"
-    if not iss_path.exists():
-        print("Generating Inno Setup script...")
-        generate_inno_script(iss_path)
+    print("Generating Inno Setup script...")
+    generate_inno_script(iss_path)
 
     iscc = shutil.which("ISCC")
     if not iscc:
@@ -128,7 +135,7 @@ def generate_inno_script(path: Path):
     content = f"""; mlrVp Inno Setup Script
 [Setup]
 AppName=mlrVp
-AppVersion=0.6.9.24
+AppVersion={read_version()}
 AppPublisher=monome community
 AppPublisherURL=https://github.com/trentgill/mlrv2
 DefaultDirName={{autopf}}\\mlrVp

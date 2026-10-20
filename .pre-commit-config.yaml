@@ -1,0 +1,7 @@
+# Run `pip install pre-commit && pre-commit install` once; ruff then checks
+# staged files on every commit (same rules as CI — see [tool.ruff] in pyproject.toml).
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - id: ruff

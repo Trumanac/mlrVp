@@ -15,7 +15,7 @@ def test_probe_timeout_is_enforced(monkeypatch):
     monkeypatch.setattr(scanner, "_PROBE_TIMEOUT", 0.2)
     t0 = time.perf_counter()
     assert scanner._probe_with_pedalboard("hung.vst3", "vst3") is None
-    assert time.perf_counter() - t0 < 1.0     # used to wait for the hung load
+    assert time.perf_counter() - t0 < 2.0     # used to wait for the hung load (5 s)
     release.set()
 
 

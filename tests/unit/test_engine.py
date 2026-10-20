@@ -284,7 +284,6 @@ class TestFXChain:
         engine.config.delay.enabled = True
         engine.load_sample(0, sine_sample)
         engine.channels[0].state.group = 0
-        engine.mixer._group_audio  # sanity touch
         engine.trigger_channel(0, column=0, columns=16)
         for _ in range(10):
             out = run_block(engine)

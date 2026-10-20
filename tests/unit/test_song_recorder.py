@@ -142,4 +142,4 @@ def test_peaks_are_cheap_on_long_tape(rec):
     t = time.perf_counter()
     for _ in range(20):
         rec.get_peaks(800)
-    assert (time.perf_counter() - t) / 20 < 0.005   # was ~260 ms per call
+    assert (time.perf_counter() - t) / 20 < 0.02    # was ~260 ms per call

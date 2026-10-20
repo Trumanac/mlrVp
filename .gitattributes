@@ -1,0 +1,16 @@
+# Normalise line endings: LF in the repository, native line endings on checkout,
+# regardless of each contributor's core.autocrlf setting.
+* text=auto
+
+# Shell launchers must keep LF to run on macOS/Linux
+*.sh      text eol=lf
+*.command text eol=lf
+
+# Windows batch files need CRLF
+*.bat     text eol=crlf
+
+# Binary assets
+*.png  binary
+*.ico  binary
+*.icns binary
+*.wav  binary
