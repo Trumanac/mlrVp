@@ -28,7 +28,8 @@ Baseline: `c7319d2` (v0.6.9.24)
   - Both setters cache their last state (keyed incl. group color); cache cleared after MIDI-map mode and on manual Link clicks so a failed Link enable still reverts the button. 4 tests. — `5ccd7c3`
 - [x] **B2. Ableton Link tempo** from peers not pushed to engine / BPM display.
   - GUI timer follows `clock.link_tempo` through the normal tempo path (engine, delays, speed spinners, BPM box), with a 0.5 s hold-off after local changes so they aren't undone. Unit-tested; **needs a manual check with a real Link peer** (multicast blocked in the dev sandbox; also `aalink` isn't installed in the local .venv, so the Link button is disabled there — `pip install -r requirements.txt`). — `93f3af5`
-- [ ] **B3. Pan law −3 dB jump** just off center.
+- [x] **B3. Pan law −3 dB jump** just off center.
+  - Decision: balance law — centre unchanged (unity both sides), panning only attenuates the opposite side; no jump, no boost. 2 tests.
 - [ ] **B4. Plugin scan timeout ineffective** (executor `shutdown(wait=True)` blocks on hung plugin).
 - [ ] **B5. Renaming a preset breaks other setlists.**
 - [ ] **B6. serialosc elevation:** predictable `%TEMP%` script run elevated (use `-EncodedCommand`); service start mode changed and never restored.
@@ -36,7 +37,7 @@ Baseline: `c7319d2` (v0.6.9.24)
   - New `startup_settings` module: locked, merged, atomic writes. Worker saves a pending change even when the quit sentinel arrives in the same batch; `stop()` joins it.
 - [ ] **B8. Folder-delete safety check** uses string `startswith`.
 - [x] **B10. Audio settings never persist / never apply.** Output/input device, driver, sample rate and buffer size aren't saved anywhere; sample rate & buffer size are only read when the engine is created, so the "restart to apply" message can never come true. Persist (devices by name, not index) and apply. _(with B7/F5)_
-  - Saved in startup_settings.json (devices by name, resolved per launch with fallback + status notice); restored before the engine is created so sample rate/buffer size apply on next launch (verified end-to-end: 512 → 256 survives relaunch). Device/driver changes now reopen the stream immediately (debounced). Setup combos show the real values (buffer combo used to show 256 while running 512). 9 tests.
+  - Saved in startup_settings.json (devices by name, resolved per launch with fallback + status notice); restored before the engine is created so sample rate/buffer size apply on next launch (verified end-to-end: 512 → 256 survives relaunch). Device/driver changes now reopen the stream immediately (debounced). Setup combos show the real values (buffer combo used to show 256 while running 512). 9 tests. — `05b65cc`
 - [ ] **B9. Silent save failures** — surface preset/rack/export errors in the UI.
 
 ## C. Quality-of-life

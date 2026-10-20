@@ -1336,12 +1336,14 @@ class AudioEngine:
                 cf.set_hp(ch.state.ch_hp)
                 if ch.state.ch_lp > 0.01 or ch.state.ch_hp > 0.01:
                     audio = cf.process(audio)
-                # Apply per-channel pan (equal-power)
+                # Apply per-channel pan as a stereo balance: centre is unity
+                # on both sides and panning only attenuates the opposite side
+                # (continuous at centre, never boosts — samples are stereo).
                 _pan = ch.state.pan
-                if abs(_pan - 0.5) > 0.005:
-                    _pan_rad = _pan * np.float32(1.5707963)  # pi/2
+                if _pan != 0.5:
                     audio = audio * np.array(
-                        [np.cos(_pan_rad), np.sin(_pan_rad)], dtype=np.float32
+                        [min(1.0, 2.0 * (1.0 - _pan)), min(1.0, 2.0 * _pan)],
+                        dtype=np.float32,
                     )
                 if i == samp_row:
                     samp_row_audio = audio

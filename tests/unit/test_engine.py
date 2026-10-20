@@ -138,6 +138,29 @@ class TestChannelTriggerPipeline:
             out = run_block(engine)
         assert rms(out[:, 1]) < rms(out[:, 0]) * 0.05
 
+    @staticmethod
+    def _levels_at_pan(sample, pan):
+        engine = make_engine()
+        engine.load_sample(0, sample)
+        engine.channels[0].state.pan = pan
+        engine.trigger_channel(0, column=0, columns=16)
+        for _ in range(3):
+            out = run_block(engine)
+        return rms(out[:, 0]), rms(out[:, 1])
+
+    def test_channel_pan_is_continuous_at_centre(self, sine_sample):
+        # Used to drop ~3 dB the moment the knob left 0.5 (pan law switch).
+        centre = self._levels_at_pan(sine_sample, 0.5)
+        nudged = self._levels_at_pan(sine_sample, 0.51)
+        assert nudged[0] == pytest.approx(centre[0], rel=0.03)
+        assert nudged[1] == pytest.approx(centre[1], rel=0.03)
+
+    def test_channel_pan_only_attenuates_opposite_side(self, sine_sample):
+        centre = self._levels_at_pan(sine_sample, 0.5)
+        right = self._levels_at_pan(sine_sample, 0.75)
+        assert right[1] == pytest.approx(centre[1], rel=0.01)    # near side unchanged
+        assert right[0] == pytest.approx(centre[0] * 0.5, rel=0.02)
+
     def test_channel_lp_filter_reduces_high_frequency_energy(self):
         engine_clean = make_engine()
         engine_filtered = make_engine()
