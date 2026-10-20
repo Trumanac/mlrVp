@@ -76,7 +76,8 @@ Baseline: `c7319d2` (v0.6.9.24)
   - Decision: accept. main + all tags are clean; the only personal data (Windows username + one song filename in an old preset) was in the deleted stale branch and remains reachable only through the permanent refs of merged PRs #1/#2.
 - [ ] **D10.** After public: protect `main` (PR + passing checks, no force-push).
 - [x] **D13.** macOS CI job queued/cancelled at times — GitHub macOS arm64 *capacity* (annotation: "longer queue times"), not billing. When it runs it passes (~1.5 min). Keeping it.
-- [ ] **D11.** Known distribution gaps (document or address): unsigned Windows exe, ad-hoc-signed un-notarized macOS, arm64-only mac build.
+- [x] **D11.** Known distribution gaps (document or address): unsigned Windows exe, ad-hoc-signed un-notarized macOS, arm64-only mac build.
+  - Documented in README + release body: SmartScreen prompt, Gatekeeper workaround, Apple-Silicon-only macOS download (universal2 not viable: numba/llvmlite). Real signing/notarization needs paid certificates — post-1.0. — `d36b6fe`
 - [ ] **D12.** Tag v1.0.0.
 
 ## Found during fixes
