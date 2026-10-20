@@ -1,6 +1,7 @@
 """Tools view — Record + Sample Slice tabs for mlrVp."""
 
 import os
+import sys
 import math
 import logging
 import threading
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QProgressBar, QListWidget, QAbstractItemView,
     QTreeWidget, QTreeWidgetItem, QStackedWidget, QSlider,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QMimeData, QUrl, QThread
+from PySide6.QtCore import Qt, Signal, QTimer, QMimeData, QUrl, QThread, QFile
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QMouseEvent, QWheelEvent, QDrag
 )
@@ -29,6 +30,53 @@ from mlrvp.gui.widgets.fader import HorizontalFader
 from mlrvp.gui.main_thread import run_on_main_thread
 
 log = logging.getLogger("mlrvp")
+
+
+TRASH_NAME = "Recycle Bin" if sys.platform == "win32" else "Trash"
+
+
+def _trash_files(paths, with_sidecars: bool = False) -> list[str]:
+    """Move files to the Recycle Bin / Trash instead of deleting them.
+
+    With *with_sidecars*, each file's ``.json`` metadata sidecar goes too.
+    Returns the paths that could not be moved (left untouched).
+    """
+    failed = []
+    for path in paths:
+        if os.path.exists(path) and not QFile.moveToTrash(path):
+            failed.append(path)
+            continue
+        if with_sidecars:
+            sidecar = os.path.splitext(path)[0] + ".json"
+            if os.path.isfile(sidecar):
+                QFile.moveToTrash(sidecar)
+    if failed:
+        log.warning("Could not move to %s: %s", TRASH_NAME, failed)
+    return failed
+
+
+def _confirm_trash(parent, title: str, paths) -> bool:
+    names = [os.path.basename(p) for p in paths]
+    msg = f"Move {len(names)} file(s) to the {TRASH_NAME}?\n\n" + "\n".join(names[:10])
+    if len(names) > 10:
+        msg += f"\n\u2026and {len(names) - 10} more"
+    reply = QMessageBox.question(
+        parent, title, msg,
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    return reply == QMessageBox.StandardButton.Yes
+
+
+def _warn_trash_failures(parent, failed) -> None:
+    if not failed:
+        return
+    names = "\n".join(os.path.basename(p) for p in failed[:10])
+    QMessageBox.warning(
+        parent, "Delete",
+        f"Couldn't move {len(failed)} file(s) to the {TRASH_NAME} \u2014 they were "
+        f"left in place:\n\n{names}",
+    )
 
 
 def _is_slices_subfolder(path: str) -> bool:
@@ -2341,19 +2389,13 @@ class _SliceLibraryRow(QWidget):
         drag.exec(Qt.DropAction.CopyAction)
 
     def _on_delete(self):
-        name = os.path.basename(self._filepath)
-        reply = QMessageBox.question(
-            self, "Delete Slice",
-            f"Delete '{name}'?\nThis will permanently remove the file.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            try:
-                os.remove(self._filepath)
-            except OSError:
-                pass
-            self.delete_requested.emit(self._filepath)
+        if not _confirm_trash(self, "Delete Slice", [self._filepath]):
+            return
+        failed = _trash_files([self._filepath], with_sidecars=True)
+        if failed:
+            _warn_trash_failures(self, failed)
+            return
+        self.delete_requested.emit(self._filepath)
 
 
 class SliceLibraryPanel(QFrame):
@@ -2794,13 +2836,7 @@ class SliceLibraryPanel(QFrame):
         self._scan_worker = None
 
     def _on_delete(self, filepath: str):
-        # Also remove metadata sidecar
-        meta = os.path.splitext(filepath)[0] + '.json'
-        if os.path.isfile(meta):
-            try:
-                os.remove(meta)
-            except OSError:
-                pass
+        # The row already moved the file and its sidecar to the trash.
         self.refresh()
 
     def _on_load_to_channel(self, filepath: str, ch_idx: int):
@@ -2841,29 +2877,10 @@ class SliceLibraryPanel(QFrame):
         selected = [r for r in self._rows if r.selected]
         if not selected:
             return
-        names = [os.path.basename(r._filepath) for r in selected]
-        msg = f"Delete {len(names)} slice(s)?\n" + "\n".join(names[:10])
-        if len(names) > 10:
-            msg += f"\n\u2026and {len(names) - 10} more"
-        reply = QMessageBox.question(
-            self, "Batch Delete",
-            msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        paths = [r._filepath for r in selected]
+        if not _confirm_trash(self, "Batch Delete", paths):
             return
-        for r in selected:
-            try:
-                os.remove(r._filepath)
-            except OSError:
-                pass
-            meta = os.path.splitext(r._filepath)[0] + '.json'
-            if os.path.isfile(meta):
-                try:
-                    os.remove(meta)
-                except OSError:
-                    pass
+        _warn_trash_failures(self, _trash_files(paths, with_sidecars=True))
         self.refresh()
 
     def add_file(self, filepath: str):
@@ -4028,30 +4045,10 @@ class _LibrarySlicesTab(_LibraryTableBase):
         self.refresh()
 
     def _on_disk_delete(self, paths: list[str]):
-        """Permanently delete slice files (and sidecars) from disk."""
-        names = [os.path.basename(p) for p in paths]
-        msg = (f"PERMANENTLY delete {len(paths)} slice(s) from disk?\n"
-               f"This cannot be undone.\n\n" + "\n".join(names[:10]))
-        if len(names) > 10:
-            msg += f"\n\u2026and {len(names) - 10} more"
-        reply = QMessageBox.warning(
-            self, "Delete Slices from Disk", msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        """Move slice files (and sidecars) to the Recycle Bin / Trash."""
+        if not paths or not _confirm_trash(self, "Delete Slices", paths):
             return
-        for p in paths:
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-            sidecar = os.path.splitext(p)[0] + ".json"
-            if os.path.isfile(sidecar):
-                try:
-                    os.remove(sidecar)
-                except OSError:
-                    pass
+        _warn_trash_failures(self, _trash_files(paths, with_sidecars=True))
         self.refresh()
 
     # ── Rename ────────────────────────────────────────────────────────
@@ -4139,24 +4136,19 @@ class _LibrarySlicesTab(_LibraryTableBase):
         self.refresh()
 
     def _on_delete_folder(self, dir_path: str):
-        import shutil
         # Safety: only ever delete a real subfolder of the slices folder
         if not _is_slices_subfolder(dir_path):
             return
         name = os.path.basename(dir_path)
-        reply = QMessageBox.warning(
+        reply = QMessageBox.question(
             self, "Delete Folder",
-            f"PERMANENTLY delete folder '{name}' and ALL its contents?\nThis cannot be undone.",
+            f"Move folder '{name}' and everything in it to the {TRASH_NAME}?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        try:
-            shutil.rmtree(dir_path)
-        except OSError as e:
-            QMessageBox.warning(self, "Delete Folder", str(e))
-            return
+        _warn_trash_failures(self, _trash_files([dir_path]))
         self.refresh()
 
     # ── Favorites + Tags + Recents helpers ───────────────────────────
@@ -5499,29 +5491,16 @@ class _LibrarySamplesTab(_LibraryTableBase):
         self.refresh()
 
     def _on_disk_delete(self, paths: list[str]):
-        """Permanently delete files from disk (explicit confirmation)."""
-        if not paths:
+        """Move files to the Recycle Bin / Trash (explicit confirmation)."""
+        if not paths or not _confirm_trash(self, "Delete Files", paths):
             return
-        names = [os.path.basename(p) for p in paths]
-        msg = (f"PERMANENTLY delete {len(paths)} file(s) from disk?\n"
-               f"This cannot be undone.\n\n" + "\n".join(names[:10]))
-        if len(names) > 10:
-            msg += f"\n\u2026and {len(names) - 10} more"
-        reply = QMessageBox.warning(
-            self, "Delete Files from Disk", msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
+        failed = _trash_files(paths)
         for p in paths:
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-            self._cache.pop(p, None)
+            if p not in failed:
+                self._cache.pop(p, None)
         self._save_cache()
         self.refresh()
+        _warn_trash_failures(self, failed)
 
 
 def _human_size(n: int) -> str:
@@ -5767,22 +5746,15 @@ class _LibrarySongsTab(_LibraryTableBase):
         fps = self._get_selected_filepaths()
         if not fps:
             return
-        from PySide6.QtWidgets import QMessageBox
-        reply = QMessageBox.question(
-            self, "Delete Songs",
-            f"Delete {len(fps)} file(s) from disk?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not _confirm_trash(self, "Delete Songs", fps):
             return
+        failed = _trash_files(fps)
         for p in fps:
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-            self._cache.pop(p, None)
+            if p not in failed:
+                self._cache.pop(p, None)
         self._save_cache()
         self.refresh()
+        _warn_trash_failures(self, failed)
 
     def _build_context_menu(self, menu: QMenu, filepaths: list[str]) -> None:
         load_act = menu.addAction("Load to Channel")
