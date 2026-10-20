@@ -207,6 +207,7 @@ class AppController:
         self.midi = MidiHandler()
         self.osc: Optional[OscHandler] = None
         self.presets = PresetManager()
+        self.presets.on_write_error = self._report_save_failure
         self.slicer_preview = SlicerPreviewService()
         self.patterns: list[PatternRecorder] = [
             PatternRecorder(i, length * 4)  # convert bars to beats
@@ -3184,6 +3185,7 @@ class AppController:
                     _atomic_write_json(_Path(path), payload, cls=_SafeFloatEncoder)
                 except Exception as e:
                     log.error("Failed to save preset file: %s", e)
+                    self._report_save_failure(f"preset file {path}", e)
 
             threading.Thread(target=_write, daemon=False).start()
             if self.window:
@@ -3206,6 +3208,7 @@ class AppController:
                     _atomic_write_json(path, data, cls=_SafeFloatEncoder)
                 except Exception as e:
                     log.error("Failed to save default: %s", e)
+                    self._report_save_failure(f"default '{name}'", e)
 
             threading.Thread(target=_write, daemon=False).start()
             if self.window:
@@ -5113,6 +5116,25 @@ class AppController:
             self.window.song_recorder_panel.set_filename(name)
             self.window.set_status(f"Song Recorder: saving to {path}…")
 
+    def _report_save_failure(self, what: str, error: Exception) -> None:
+        """Tell the user a background save failed.  Safe from any thread."""
+        run_on_main_thread(lambda: self._show_save_failure(what, error))
+
+    def _show_save_failure(self, what: str, error: Exception) -> None:
+        if not self.window:
+            return
+        from PySide6.QtWidgets import QMessageBox
+        msg = f"Could not save {what}: {error}"
+        self.window.set_status(f"\u26a0 {msg}")
+        # Non-modal: never blocks the UI (or the grid) mid-performance.
+        box = QMessageBox(QMessageBox.Icon.Warning, "Save failed",
+                          f"{msg}\n\nYour changes are still loaded. Check free disk "
+                          "space and folder permissions, then save again.",
+                          parent=self.window)
+        box.setModal(False)
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.show()
+
     def _after_song_recorder_export(self, ok: bool, target: str) -> None:
         """GUI-thread continuation of a background Song Recorder export."""
         if ok:
@@ -5405,9 +5427,13 @@ class AppController:
                 rack_manager.save_rack(name, modules)
             except Exception as e:
                 log.error("Rack save failed: %s", e)
-        threading.Thread(target=_do_save, daemon=True).start()
+                self._report_save_failure(f"rack '{name}'", e)
+                return
+            run_on_main_thread(
+                lambda: self.window and self.window.set_status(f"Saved rack: {name}"))
+        threading.Thread(target=_do_save, daemon=False).start()
         if self.window:
-            self.window.set_status(f"Saving rack: {name}")
+            self.window.set_status(f"Saving rack: {name}…")
 
     def _on_rack_load_requested(self, name: str, bus_suffix: str):
         """Replace the current rack tab with a saved profile.

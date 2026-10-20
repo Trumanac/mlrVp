@@ -12,7 +12,7 @@ import re
 import tempfile
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 
 class _SafeFloatEncoder(json.JSONEncoder):
@@ -197,8 +197,20 @@ class PresetManager:
         # Serialize file writes so background saves don't race.
         self._io_lock = threading.Lock()
 
+        # Called as on_write_error(what, exc) when a background write fails —
+        # from the writer thread, so the callee must marshal to the GUI.
+        self.on_write_error: Optional[Callable[[str, Exception], None]] = None
+
         self._ensure_dirs()
         self.load_setlist("Default")
+
+    def _report_write_error(self, what: str, error: Exception) -> None:
+        cb = self.on_write_error
+        if cb is not None:
+            try:
+                cb(what, error)
+            except Exception:
+                log.exception("on_write_error callback failed")
 
     def _ensure_dirs(self):
         """Create preset library and setlist directories if missing."""
@@ -249,6 +261,7 @@ class PresetManager:
                     _atomic_write_json(fp, data, cls=_SafeFloatEncoder)
             except Exception as e:
                 log.error("Preset save error: %s", e)
+                self._report_write_error(f"preset '{name}'", e)
 
         threading.Thread(target=_write, daemon=False).start()
 
@@ -396,6 +409,7 @@ class PresetManager:
                     _atomic_write_json(fp, data)
             except Exception as e:
                 log.error("Setlist save error: %s", e)
+                self._report_write_error(f"setlist '{_name}'", e)
 
         threading.Thread(target=_write, daemon=False).start()
 
@@ -409,6 +423,7 @@ class PresetManager:
                 _atomic_write_json(fp, data)
         except Exception as e:
             log.error("Create setlist error: %s", e)
+            self._report_write_error(f"setlist '{name}'", e)
 
     def rename_setlist(self, old_name: str, new_name: str):
         """Rename a setlist (background I/O)."""
@@ -430,6 +445,7 @@ class PresetManager:
                         old_fp.unlink()
                 except Exception as e:
                     log.error("Rename setlist I/O failed: %s", e)
+                    self._report_write_error(f"setlist '{new_name}'", e)
                     # Revert optimistic in-memory update since disk write failed
                     if self.setlist_name == new_name:
                         self.setlist_name = old_name

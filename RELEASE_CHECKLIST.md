@@ -42,7 +42,8 @@ Baseline: `c7319d2` (v0.6.9.24)
   - Strict resolved-path check (rejects the Slices folder itself, look-alike siblings, ../ escapes); applied to Rename too, which also rejects names containing / or \. 1 test. — `035dc0b`
 - [x] **B10. Audio settings never persist / never apply.** Output/input device, driver, sample rate and buffer size aren't saved anywhere; sample rate & buffer size are only read when the engine is created, so the "restart to apply" message can never come true. Persist (devices by name, not index) and apply. _(with B7/F5)_
   - Saved in startup_settings.json (devices by name, resolved per launch with fallback + status notice); restored before the engine is created so sample rate/buffer size apply on next launch (verified end-to-end: 512 → 256 survives relaunch). Device/driver changes now reopen the stream immediately (debounced). Setup combos show the real values (buffer combo used to show 256 while running 512). 9 tests. — `05b65cc`
-- [ ] **B9. Silent save failures** — surface preset/rack/export errors in the UI.
+- [x] **B9. Silent save failures** — surface preset/rack/export errors in the UI.
+  - PresetManager.on_write_error hook (presets, setlists, setlist create/rename) + the app's own writers (Save Preset File, Save Default, Save Rack) → status bar + non-modal warning dialog. Rack save now reports "Saved" only after the write; its thread is no longer a daemon. 2 tests.
 
 ## C. Quality-of-life
 
@@ -83,4 +84,5 @@ Baseline: `c7319d2` (v0.6.9.24)
   - — `4b5559d`
 - [x] **F8.** Preset recall set the engine tempo but never the clock: after loading a preset with a different BPM, beats/quantize/SEQ/patterns kept the old tempo while loops used the new one. _(fixed with B2)_
 - [ ] **F9.** Inno Setup publisher (`monome community`, mlrV2 URL) and macOS bundle id (`org.monome-community.mlrvp`) should be the project's own.
-- [ ] **F2.** Song Recorder "saved" status shown before the export ran / even on failure. Fixed for Song Recorder in A1; audit other save paths under B9.
+- [x] **F2.** Song Recorder "saved" status shown before the export ran / even on failure. Fixed for Song Recorder in A1; audit other save paths under B9.
+  - Song Recorder fixed in A1; remaining save paths covered by B9.
