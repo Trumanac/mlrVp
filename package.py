@@ -13,7 +13,6 @@ Usage:
 
 import os
 import sys
-import shutil
 import zipfile
 from pathlib import Path
 
@@ -51,8 +50,10 @@ SOURCE_EXCLUDE_NAMES = {
     ".egg-info",
 }
 SOURCE_EXCLUDE_EXTS = {".pyc", ".pyo"}
-# data/ subdirs that contain user-specific files should be shipped empty
-DATA_EXCLUDE_SUBDIRS = {"presets", "setlists", "slices", "songs"}
+# data/ holds only runtime/user files (settings, caches with machine-specific
+# paths, presets, racks, audio, logs) — ship the folder skeleton only.
+DATA_EXCLUDE_SUBDIRS = {"presets", "setlists", "slices", "songs",
+                        "defaults", "racks", "logs"}
 
 
 def make_source_zip():
@@ -87,6 +88,9 @@ def make_source_zip():
                             continue
                     for f in files:
                         if Path(f).suffix in SOURCE_EXCLUDE_EXTS:
+                            continue
+                        # Top-level data/ files are runtime state (ui_scale.txt, markers)
+                        if item == "data" and root_path == ROOT / "data" and f != ".gitkeep":
                             continue
                         full = root_path / f
                         rel = full.relative_to(ROOT)

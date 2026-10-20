@@ -1553,7 +1553,7 @@ class AppController:
             self._notify_live_state(row)
 
     def _on_live_export_requested(self, row: int):
-        """Export the currently-loaded LIVE loop to data/slices/Live/.
+        """Export the currently-loaded LIVE loop to <slices folder>/Live/.
 
         Prompts the user for a slice name (defaults to a timestamped name).
         The file is written into the dedicated Live/ subfolder so it appears
@@ -1579,9 +1579,9 @@ class AppController:
         import os as _os
         from PySide6.QtWidgets import QInputDialog
 
+        from mlrvp.config import get_slices_dir
         ch = self.engine.channels[row]
-        data_dir = getattr(self.config, "data_dir", None) or "data"
-        live_dir = _os.path.join(data_dir, "slices", "Live")
+        live_dir = str(get_slices_dir() / "Live")
         try:
             _os.makedirs(live_dir, exist_ok=True)
         except OSError as e:
@@ -1595,7 +1595,7 @@ class AppController:
         if prompt_name:
             text, ok = QInputDialog.getText(
                 self.window, "Export LIVE loop",
-                "Slice name (saved to data/slices/Live/):",
+                f"Slice name (saved to {live_dir}):",
                 text=default_name,
             )
             if not ok:
@@ -1633,7 +1633,7 @@ class AppController:
     def _on_live_to_slicer_requested(self, row: int):
         """Send the current LIVE loop to the Slicer tool.
 
-        Auto-saves a copy under data/slices/Live/ (no name prompt) and loads
+        Auto-saves a copy under <slices folder>/Live/ (no name prompt) and loads
         it into the Slice tab, switching the side-panel focus there.
         """
         if not self.engine or row >= len(self.engine.channels):
@@ -3293,7 +3293,7 @@ class AppController:
             self._save_startup_settings()
 
     def _save_startup_settings(self):
-        """Persist lightweight startup settings to data/defaults/startup_settings.json."""
+        """Persist lightweight startup settings to <data folder>/defaults/startup_settings.json."""
         import json
         from .config import get_defaults_dir
         try:
@@ -4777,13 +4777,14 @@ class AppController:
                 pass
 
     def _on_send_to_slice(self):
-        """Save the latest take to data/slices/ and open it in the Slice tab."""
+        """Save the latest take to the slices folder and open it in the Slice tab."""
         if not self._recorder_takes:
             return
         buf = self._recorder_takes[-1]
         import os
         import time as _time
-        slices_dir = os.path.join("data", "slices")
+        from mlrvp.config import get_slices_dir
+        slices_dir = str(get_slices_dir())
         try:
             os.makedirs(slices_dir, exist_ok=True)
         except Exception as e:
@@ -5259,7 +5260,7 @@ class AppController:
 
         Reads each effect's state dataclass from AppConfig (using the
         per-bus attribute suffix), serialises via dataclasses.asdict,
-        and writes to data/racks/<name>.json on a background thread.
+        and writes to <data folder>/racks/<name>.json on a background thread.
         """
         from dataclasses import asdict, is_dataclass
         from mlrvp.preset import rack_manager
@@ -7985,6 +7986,11 @@ def run_app(argv=None) -> int:
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
+
+    # Per-user data folders: one-time migration from the legacy location
+    # and factory-rack seeding — before anything reads presets/settings.
+    from mlrvp.datadirs import init_data_dirs
+    init_data_dirs()
 
     # Suppress harmless Qt font warning when using px units in stylesheets
     _original_handler = None

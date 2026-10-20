@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
 import json
+import os
+import sys
 
 
 class PlaybackMode(IntEnum):
@@ -1282,16 +1284,84 @@ class AppConfig:
     group_colors: list = field(default_factory=lambda: list(DEFAULT_GROUP_COLORS))
 
 
+APP_DIR_NAME = "mlrVp"
+DATA_DIR_ENV = "MLRVP_DATA_DIR"
+
+
 def get_project_root() -> Path:
     """Get the mlrVp project root directory."""
     return Path(__file__).resolve().parent.parent
 
 
+def _is_dev_checkout() -> bool:
+    """True when running from a source checkout (git clone / editable install).
+
+    Frozen builds and regular pip installs (no pyproject.toml beside the
+    package) store data in the per-user locations instead.
+    """
+    if getattr(sys, "frozen", False):
+        return False
+    root = get_project_root()
+    return (root / "pyproject.toml").is_file() and (root / "mlrvp").is_dir()
+
+
+def uses_local_data_dir() -> bool:
+    """True when all data, including audio, lives in one local data/ folder
+    (source checkout, or MLRVP_DATA_DIR set)."""
+    return bool(os.environ.get(DATA_DIR_ENV)) or _is_dev_checkout()
+
+
+def _standard_location(kind: str, fallback: Path) -> Path:
+    try:
+        from PySide6.QtCore import QStandardPaths
+        loc = getattr(QStandardPaths.StandardLocation, kind)
+        path = QStandardPaths.writableLocation(loc)
+        if path:
+            return Path(path)
+    except Exception:
+        pass
+    return fallback
+
+
+def legacy_data_dir() -> Path:
+    """Where releases before 0.6.9.25 stored data (next to the package)."""
+    return get_project_root() / "data"
+
+
 def get_config_dir() -> Path:
-    """Get the data directory within the project folder."""
-    config_dir = get_project_root() / "data"
+    """Directory for settings, presets, setlists, racks and logs.
+
+    - MLRVP_DATA_DIR if set
+    - the repo's data/ folder when running from a source checkout
+    - otherwise the per-user data folder:
+        Windows  %LOCALAPPDATA%\\mlrVp
+        macOS    ~/Library/Application Support/mlrVp
+        Linux    $XDG_DATA_HOME/mlrVp (~/.local/share/mlrVp)
+    """
+    override = os.environ.get(DATA_DIR_ENV)
+    if override:
+        config_dir = Path(override).expanduser()
+    elif _is_dev_checkout():
+        config_dir = legacy_data_dir()
+    else:
+        base = _standard_location(
+            "GenericDataLocation", Path.home() / ".local" / "share"
+        )
+        config_dir = base / APP_DIR_NAME
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
+
+
+def _user_audio_dir(name: str) -> Path:
+    """~/Music/mlrVp/<name> — where recordings and slices go for end users."""
+    music = _standard_location("MusicLocation", Path.home() / "Music")
+    return music / APP_DIR_NAME / name
+
+
+def get_logs_dir() -> Path:
+    d = get_config_dir() / "logs"
+    d.mkdir(exist_ok=True)
+    return d
 
 
 def get_presets_dir() -> Path:
@@ -1301,8 +1371,11 @@ def get_presets_dir() -> Path:
 
 
 def get_slices_dir() -> Path:
-    d = get_config_dir() / "slices"
-    d.mkdir(exist_ok=True)
+    if uses_local_data_dir():
+        d = get_config_dir() / "slices"
+    else:
+        d = _user_audio_dir("Slices")
+    d.mkdir(parents=True, exist_ok=True)
     return d
 
 
@@ -1567,8 +1640,11 @@ SONG_METADATA_CACHE_FILE = "song_metadata_cache.json"
 
 def get_songs_dir() -> Path:
     """Return (and create) the default songs output directory."""
-    d = get_config_dir() / "songs"
-    d.mkdir(exist_ok=True)
+    if uses_local_data_dir():
+        d = get_config_dir() / "songs"
+    else:
+        d = _user_audio_dir("Songs")
+    d.mkdir(parents=True, exist_ok=True)
     return d
 
 

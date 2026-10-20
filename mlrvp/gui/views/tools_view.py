@@ -929,7 +929,7 @@ class SlicePanel(QFrame):
         )
         self._slice_btn.clicked.connect(self._do_slice)
         self._slice_btn.setToolTip(
-            "Save the selected region as a WAV file to data/slices/.\n"
+            "Save the selected region as a WAV file to your Slices folder.\n"
             "With FIT enabled, the slice is resampled to an exact bar length."
         )
         slice_row.addWidget(self._slice_btn)
@@ -2110,7 +2110,7 @@ class SlicePanel(QFrame):
 
             if failed:
                 return f"\u26A0 {len(failed)} slices failed \u2014 {exported}/{len(regions)} exported"
-            return f"Exported {exported} slices to data/slices/"
+            return f"Exported {exported} slices to {out_dir}"
 
         def _run_export():
             # Always finish on the main thread so the EXPORT ALL button is
@@ -3627,7 +3627,7 @@ class _LibraryTableBase(QWidget):
 
 
 class _LibrarySlicesTab(_LibraryTableBase):
-    """SLICES sub-tab — scans data/slices/ with folder tree, favorites, tags, recents."""
+    """SLICES sub-tab — scans the slices folder with folder tree, favorites, tags, recents."""
 
     # Column indices: ▶ | Name | BPM | Key | Bars | Duration | Date | Tags
     COL_PLAY = 0
@@ -5519,7 +5519,7 @@ def _human_size(n: int) -> str:
 # ---------------------------------------------------------------------------
 
 class _LibrarySongsTab(_LibraryTableBase):
-    """SONGS sub-tab — scans user-defined song directories (default: data/songs/)."""
+    """SONGS sub-tab — scans user-defined song directories (default: the Songs folder)."""
 
     COL_PLAY = 0
     COL_DUR = 1

@@ -8,6 +8,8 @@ mlrVp is a standalone, cross-platform application that recreates the legendary m
 
 - [Downloads](#downloads)
   - [Installation](#installation)
+  - [Where your files are stored](#where-your-files-are-stored)
+  - [Updating from an older version](#updating-from-an-older-version)
 - [Link to original sourcecode](#link-to-original-sourcecode)
 - [Features](#features)
   - [Core](#core)
@@ -83,6 +85,27 @@ mlrVp is a standalone, cross-platform application that recreates the legendary m
 > **macOS:** If you get a security warning, go to System Settings → Privacy & Security → Allow.
 > **Linux:** You may need `chmod +x mlrVp` before running.
 
+### Where your files are stored
+
+mlrVp keeps your work outside the app folder, so updating never touches it:
+
+| What | Windows | macOS | Linux |
+|------|---------|-------|-------|
+| Presets, setlists, racks, settings, logs | `%LOCALAPPDATA%\mlrVp` | `~/Library/Application Support/mlrVp` | `~/.local/share/mlrVp` |
+| Recordings (Song Recorder) | `Music\mlrVp\Songs` | `~/Music/mlrVp/Songs` | `~/Music/mlrVp/Songs` |
+| Exported slices | `Music\mlrVp\Slices` | `~/Music/mlrVp/Slices` | `~/Music/mlrVp/Slices` |
+
+**File → Open Data Folder** jumps straight to the settings folder.
+Running from a source checkout keeps everything in the repo's `data/` folder instead, and setting the
+`MLRVP_DATA_DIR` environment variable puts everything in a folder of your choice (handy for a portable setup).
+
+### Updating from an older version
+
+Versions up to 0.6.9.24 stored data inside the app folder. To bring it across, open the new version and use
+**File → Import Data from Previous Version…**, then pick the folder you extracted the old version into.
+Nothing already in the new location is overwritten. (If you extracted the new version over the old folder,
+this happens automatically on first launch.)
+
 ## Link to original sourcecode:
 https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 
@@ -155,7 +178,7 @@ https://github.com/Monome-Community/mlrV2.2-serialosc-edition
 - **Master clock** (20–300 BPM) with beat/bar position tracking
 - **Quantized triggering**: None (immediate), 1/4, 1/8, 1/16 note, or 1 bar
 - **4 pattern recorders** (4/8/16/32 bars) for capturing and looping grid gestures
-- **Global preset library**: Save any number of named presets to `data/presets/` — each stores the full application state (channels, samples, effects, MIDI mappings, routing)
+- **Global preset library**: Save any number of named presets to your [presets folder](#where-your-files-are-stored) — each stores the full application state (channels, samples, effects, MIDI mappings, routing)
 - **Ordered setlists**: Build setlists from the preset library — reorder, add, remove presets without affecting the library
 - **Live preset recall**: Switch presets mid-performance with smart transitions — effects and mixer update instantly; playing channels keep their audio looping until retriggered
 - **Editable preset names**: Type directly in the preset combo box to name new presets
@@ -459,6 +482,7 @@ MLRVp/
 │   ├── main.py             # CLI entry point
 │   ├── app.py              # Application orchestrator
 │   ├── config.py           # Configuration + data classes
+│   ├── datadirs.py         # First-run data migration, import, factory racks
 │   ├── audio/              # Audio engine
 │   │   ├── engine.py       # Real-time audio callback + ring buffer
 │   │   ├── channel.py      # Per-row sample playback
@@ -481,7 +505,7 @@ MLRVp/
 │   │   └── handler.py      # OSC send/receive
 │   ├── preset/             # Preset management
 │   │   └── manager.py      # Save/load/recall + setlist
-│   ├── resources/          # Icons and assets
+│   ├── resources/          # Icons, assets, factory_racks/
 │   │   ├── arrow_down.svg  # Spinbox down-arrow icon
 │   │   ├── arrow_up.svg    # Spinbox up-arrow icon
 │   │   ├── icon.icns / .ico / .png
@@ -549,11 +573,12 @@ MLRVp/
 │           ├── stutter.py          # Broken Record — Stutter (1U)
 │           ├── dual_vu_meter.py    # Twin Peaks (1U)
 │           └── oscilloscope.py     # CRT:// Scope (1U)
-├── data/                   # Runtime data
+├── data/                   # Runtime data when running from source (see "Where your files are stored")
 │   ├── presets/            # Global preset library (JSON)
 │   ├── setlists/           # Setlist files (JSON)
+│   ├── racks/              # Saved FX racks (seeded from mlrvp/resources/factory_racks)
 │   ├── slices/             # Sliced samples (WAV)
-│   ├── defaults/           # Saved default states
+│   ├── defaults/           # Saved default states and caches
 │   └── ui_scale.txt        # UI scaling factor
 ├── requirements.txt        # pip dependencies
 ├── pyproject.toml          # PEP 621 package metadata
@@ -725,7 +750,7 @@ mlrVp uses a two-tier system: a **global preset library** and **ordered setlists
 
 #### Preset Library
 
-- Presets are standalone JSON files stored in `data/presets/`.
+- Presets are standalone JSON files stored in the `presets` folder of your [data folder](#where-your-files-are-stored).
 - Each preset captures the **complete application state**: all channel settings (samples, speed, mode, group, gain, selection, envelope), effects, mixer levels, FX routing, MIDI mappings, and transport settings.
 - Presets are **reusable** — the same preset can appear in multiple setlists.
 
@@ -966,7 +991,7 @@ The Slice tab in Tools provides a transient-aware slicer that produces perfectly
    - The **start** snaps to the nearest transient.
    - The **end** snaps to the nearest transient close to the ideal bar boundary.
    - Both ends are aligned to zero-crossings (no clicks).
-5. **Click SLICE + SAVE** — the segment is resampled to the **exact** sample count for the selected bar length, then saved as a WAV in `data/slices/`.
+5. **Click SLICE + SAVE** — the segment is resampled to the **exact** sample count for the selected bar length, then saved as a WAV in your [Slices folder](#where-your-files-are-stored).
 
 **Why this matters:**
 - Every slice at the same BPM and bar count will be **exactly the same duration** — they loop seamlessly at 1.0× speed.
@@ -977,7 +1002,7 @@ The Slice tab in Tools provides a transient-aware slicer that produces perfectly
 
 #### Slices Library
 
-At the bottom of the Slice tab is a scrollable **SLICES** library panel listing every WAV saved in `data/slices/`:
+At the bottom of the Slice tab is a scrollable **SLICES** library panel listing every WAV saved in your [Slices folder](#where-your-files-are-stored):
 
 - **Drag any entry** from the library onto a channel strip waveform to load it for playback.
 - **Drag any entry** onto the slicer waveform to open it in the Slice editor.
@@ -1020,7 +1045,7 @@ The slicer can automatically divide a sample into regions for batch export:
    - **BPM Grid** — divides at beat boundaries using the BPM from the spinbox or auto-detect.
 2. **Click CHOP** to run the algorithm. Regions appear as alternating shaded bands in the waveform.
 3. **Click any band** to audition it through the cue device. Use `←`/`→` arrow keys to step through regions.
-4. **Click EXPORT ALL** to save every region as a separate WAV file in `data/slices/`. FIT-mode resampling is applied per-slice if FIT is checked.
+4. **Click EXPORT ALL** to save every region as a separate WAV file in your [Slices folder](#where-your-files-are-stored). FIT-mode resampling is applied per-slice if FIT is checked.
 5. A metadata `.json` sidecar is written alongside each exported WAV containing source filename, BPM, bar count, FIT flag, and timestamp.
 
 #### Precision Editing
@@ -1200,7 +1225,7 @@ The **root offset** (PITCH spinner, −24 to +24 st) shifts every column’s pit
 
 ### UI Scale and View Options
 
-The entire interface can be resized via **View → UI Scale** in the menu bar. Choose from 50% to 200% — the setting persists across sessions (saved to `data/ui_scale.txt`).
+The entire interface can be resized via **View → UI Scale** in the menu bar. Choose from 50% to 200% — the setting persists across sessions (saved to `ui_scale.txt` in your [data folder](#where-your-files-are-stored)).
 
 The **View** menu also provides two global options for floating control value overlays (the labels that appear when you drag a knob or fader):
 

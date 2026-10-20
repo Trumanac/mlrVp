@@ -329,7 +329,7 @@ class RecorderPanel(QFrame):
         self._send_slice_btn.setEnabled(False)
         self._send_slice_btn.clicked.connect(self.send_to_slice.emit)
         self._send_slice_btn.setToolTip(
-            "Save the latest take as a WAV in data/slices/ and open it\n"
+            "Save the latest take as a WAV in your Slices folder and open it\n"
             "in the Slice tab for chopping"
         )
         layout.addWidget(self._send_slice_btn)

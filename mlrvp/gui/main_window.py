@@ -3,12 +3,12 @@
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QTabWidget, QStatusBar,
-    QFileDialog, QDialog,
+    QFileDialog, QDialog, QMessageBox,
     QTextBrowser, QPushButton, QButtonGroup, QLabel, QSlider,
     QDialogButtonBox,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPixmap
+from PySide6.QtCore import Qt, Signal, QTimer, QUrl
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPixmap, QDesktopServices
 import logging
 
 _log = logging.getLogger(__name__)
@@ -445,6 +445,20 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        import_data_action = QAction("&Import Data from Previous Version…", self)
+        import_data_action.setToolTip(
+            "Copy presets, setlists, racks, settings and recordings from an "
+            "older mlrVp folder (existing files are never overwritten)")
+        import_data_action.triggered.connect(self._on_import_data)
+        file_menu.addAction(import_data_action)
+
+        open_data_action = QAction("Open &Data Folder", self)
+        open_data_action.setToolTip("Show where presets, setlists, racks and settings are stored")
+        open_data_action.triggered.connect(self._on_open_data_folder)
+        file_menu.addAction(open_data_action)
+
+        file_menu.addSeparator()
+
         restart_action = QAction("&Restart", self)
         restart_action.triggered.connect(self._on_restart)
         file_menu.addAction(restart_action)
@@ -555,6 +569,47 @@ class MainWindow(QMainWindow):
 
     def _on_restart(self):
         self.restart_requested.emit()
+
+    def _on_open_data_folder(self):
+        from mlrvp.config import get_config_dir
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(get_config_dir())))
+
+    def _on_import_data(self):
+        from pathlib import Path
+        from mlrvp.datadirs import import_data_from
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select the folder of your previous mlrVp version")
+        if not folder:
+            return
+        try:
+            found, copied = import_data_from(Path(folder))
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Import Data",
+                f"Import stopped part-way:\n{e}\n\nFiles copied so far were kept.")
+            return
+        if found is None:
+            QMessageBox.information(
+                self, "Import Data",
+                "No mlrVp data was found in that folder.\n\n"
+                "Pick the folder you extracted the old version into "
+                "(the one containing mlrVp.exe, mlrVp.app or mlrVp).")
+            return
+        if copied == 0:
+            QMessageBox.information(
+                self, "Import Data",
+                "Nothing new to import — everything in that folder is already here.")
+            return
+        reply = QMessageBox.question(
+            self, "Import Data",
+            f"Imported {copied} file(s) from:\n{found}\n\n"
+            "Existing files were not overwritten.\n"
+            "Restart mlrVp now to load everything?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._on_restart()
 
     def _on_scale(self, factor: float):
         """Emit a scale change request.  The controller applies it live."""

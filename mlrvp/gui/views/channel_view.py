@@ -959,7 +959,7 @@ class ChannelStrip(QFrame):
             f"QPushButton:hover {{ color: {ACCENT_GOLD}; border-color: {ACCENT_GOLD}; }}"
         )
         self._live_export_btn.setToolTip(
-            "Export current loop \u2014 prompts for a name, saves to data/slices/Live/"
+            "Export current loop \u2014 prompts for a name, saves to your Slices folder (Live/)"
         )
         self._live_export_btn.clicked.connect(
             lambda: self.live_export_requested.emit(self._row)
@@ -972,7 +972,7 @@ class ChannelStrip(QFrame):
         bind_fixed_size(self._live_to_slicer_btn, 28, 20)
         self._live_to_slicer_btn.setStyleSheet(self._live_export_btn.styleSheet())
         self._live_to_slicer_btn.setToolTip(
-            "Send the current loop to the Slicer tool (auto-saves a copy in data/slices/Live/)"
+            "Send the current loop to the Slicer tool (auto-saves a copy in your Slices folder, Live/)"
         )
         self._live_to_slicer_btn.clicked.connect(
             lambda: self.live_to_slicer_requested.emit(self._row)
