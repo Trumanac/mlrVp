@@ -26,6 +26,7 @@ Usage pattern::
 """
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QCheckBox, QStyle, QStyleOptionButton
 
 
 class BasePage:
@@ -38,7 +39,18 @@ class BasePage:
 
     def click(self, button, wait_ms: int = 0):
         """Click a QAbstractButton (or anything with a .click() method)."""
-        self.qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
+        if isinstance(button, QCheckBox):
+            # QCheckBox only reacts to clicks on its indicator/label, and the
+            # widget's center can miss both when the label renders narrower
+            # than the widget (e.g. Fusion style + Linux fonts in CI).
+            opt = QStyleOptionButton()
+            button.initStyleOption(opt)
+            rect = button.style().subElementRect(
+                QStyle.SubElement.SE_CheckBoxIndicator, opt, button
+            )
+            self.qtbot.mouseClick(button, Qt.MouseButton.LeftButton, pos=rect.center())
+        else:
+            self.qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
         if wait_ms:
             self.qtbot.wait(wait_ms)
 

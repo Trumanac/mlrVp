@@ -66,8 +66,10 @@ class TestLoadSample:
         import mlrvp.audio.sample as sample_mod
         real_stat = sample_mod.Path.stat
 
-        def fake_stat(self):
-            result = real_stat(self)
+        # Accept follow_symlinks etc.: Path.exists() passes it on 3.12, and
+        # pytest's own path handling goes through this patched method too.
+        def fake_stat(self, *args, **kwargs):
+            result = real_stat(self, *args, **kwargs)
             if self.name == "tone.wav":
                 class _Big:
                     st_size = 999 * 1024 * 1024
