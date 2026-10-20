@@ -64,13 +64,16 @@ Baseline: `c7319d2` (v0.6.9.24)
   - Ubuntu 3.11/3.12/3.13 + Windows 3.12 + macOS 3.12; ruff (correctness rules in pyproject) replaces pyflakes; .pre-commit-config.yaml. — `4b5559d`
 - [x] **D4.** Pinned/constraints file for release builds.
   - requirements-lock.txt (uv universal lock, Python 3.12) used by build.yml; PR checks test latest. — `da6f6e1`
-- [ ] **D5.** Close/merge the 4 stale Dependabot PRs; bump actions; delete `copilot/*` branches.
+- [x] **D5.** Close/merge the 4 stale Dependabot PRs; bump actions; delete `copilot/*` branches.
+  - Closed Dependabot PRs #4/#5/#7/#8 as superseded by 4b5559d; deleted local copilot/* branches and remote copilot/remove-duplicate-branches (old pre-rewrite history). Only main remains.
   - Actions bumped in the workflows (supersedes the PRs) — PRs still to close; `copilot/*` branches need a decision (two hold unmerged commits).
 - [x] **D6.** Add `CHANGELOG.md`; adopt semver from 1.0.0.
   - CHANGELOG.md (Keep a Changelog) with an Unreleased section covering this review's changes.
 - [x] **D7.** Remove test rack `data/racks/Updated Names.json`; gitignore user racks; stop tracking runtime-written `startup_settings.json`. _(done with A5; local copies kept as untracked user files)_
-- [ ] **D8.** Repo settings: enable Discussions (or drop link), private vulnerability reporting, topics, auto-delete merged branches.
-- [ ] **D9.** Decide on history scrub (personal paths in deleted presets) before going public.
+- [~] **D8.** Repo settings: enable Discussions (or drop link), private vulnerability reporting, topics, auto-delete merged branches.
+  - Done: Discussions enabled, auto-delete merged branches, topics added. **After going public:** enable private vulnerability reporting (SECURITY.md links to it).
+- [x] **D9.** Decide on history scrub (personal paths in deleted presets) before going public.
+  - Decision: accept. main + all tags are clean; the only personal data (Windows username + one song filename in an old preset) was in the deleted stale branch and remains reachable only through the permanent refs of merged PRs #1/#2.
 - [ ] **D10.** After public: protect `main` (PR + passing checks, no force-push).
 - [x] **D13.** macOS CI job queued/cancelled at times — GitHub macOS arm64 *capacity* (annotation: "longer queue times"), not billing. When it runs it passes (~1.5 min). Keeping it.
 - [ ] **D11.** Known distribution gaps (document or address): unsigned Windows exe, ad-hoc-signed un-notarized macOS, arm64-only mac build.
@@ -87,7 +90,8 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **F7.** Add `.gitattributes` for consistent line endings across platforms.
   - — `4b5559d`
 - [x] **F8.** Preset recall set the engine tempo but never the clock: after loading a preset with a different BPM, beats/quantize/SEQ/patterns kept the old tempo while loops used the new one. _(fixed with B2)_
-- [ ] **F9.** Inno Setup publisher (`monome community`, mlrV2 URL) and macOS bundle id (`org.monome-community.mlrvp`) should be the project's own.
+- [x] **F9.** Inno Setup publisher (`monome community`, mlrV2 URL) and macOS bundle id (`org.monome-community.mlrvp`) should be the project's own.
+  - Decision: keep "monome community" publisher and org.monome-community.mlrvp bundle id.
 - [x] **F10.** CI abort (SIGABRT) on Ubuntu/py3.11: Qt widgets collected by the GC on a worker thread. run_on_main_thread now uses a queued signal; engine's periodic GC runs on the GUI thread; tests collect on the main thread. — `99ffcce`
 - [x] **F11.** Engine disables automatic GC and only ever collects generation 0, so cyclic garbage that survives one collection is never freed (slow memory growth in long sessions). Needs a safe schedule for gen-1/2 collections.
   - gc.freeze() after startup (full collect 60 ms → 2 ms); schedule gen-0/2 s, gen-1/30 s, full/5 min on the GUI thread. — `13e6d42`
