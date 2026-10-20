@@ -36,7 +36,7 @@ from mlrvp.config import (
 )
 from mlrvp.audio.engine import AudioEngine
 from mlrvp.audio.slicer_preview import SlicerPreviewService
-from mlrvp.audio.sample import load_sample, get_waveform_overview
+from mlrvp.audio.sample import load_sample, read_sample, SampleLoadError, get_waveform_overview
 from mlrvp.transport.clock import MasterClock
 from mlrvp.transport.pattern import PatternRecorder
 from mlrvp.grid.controller import GridController
@@ -5118,6 +5118,15 @@ class AppController:
             self.window.song_recorder_panel.set_filename(name)
             self.window.set_status(f"Song Recorder: saving to {path}…")
 
+    def _report_sample_load_failure(self, filepath: str, error) -> None:
+        """Status-bar message saying which sample failed to load and why."""
+        import os
+        reason = str(error) if error else "unknown error"
+        log.warning("Could not load sample %s: %s", filepath, reason)
+        if self.window:
+            self.window.set_status(
+                f"\u26a0 Couldn't load {os.path.basename(filepath)}: {reason}")
+
     def _report_save_failure(self, what: str, error: Exception) -> None:
         """Tell the user a background save failed.  Safe from any thread."""
         run_on_main_thread(lambda: self._show_save_failure(what, error))
@@ -7605,8 +7614,10 @@ class AppController:
         """Load a sample into a channel, preserving the preset's stored speed
         instead of auto-calculating from tempo."""
         try:
-            sample = load_sample(filepath, self.config.sample_rate)
-            if sample is None:
+            try:
+                sample = read_sample(filepath, self.config.sample_rate)
+            except SampleLoadError as e:
+                self._report_sample_load_failure(filepath, e)
                 return
             if self.engine:
                 saved_speed = self.config.channels[row].speed
@@ -7684,16 +7695,18 @@ class AppController:
         gen = ech._load_gen if ech else 0
 
         def _io_thread():
-            sample = load_sample(filepath, sr)
+            try:
+                sample = read_sample(filepath, sr)
+            except SampleLoadError as e:
+                sample = e      # delivered to the GUI thread as the failure reason
             worker._loaded.emit(row, filepath, sample, preserve_speed, gen)
 
         threading.Thread(target=_io_thread, daemon=True).start()
 
     def _on_bg_sample_loaded(self, row: int, filepath: str, sample, preserve_speed: bool, gen: int):
         """Main-thread callback when a background sample load completes."""
-        if sample is None:
-            if self.window:
-                self.window.set_status(f"Failed to load: {filepath}")
+        if sample is None or isinstance(sample, SampleLoadError):
+            self._report_sample_load_failure(filepath, sample)
             return
         if not self.engine or row >= len(self.engine.channels):
             return

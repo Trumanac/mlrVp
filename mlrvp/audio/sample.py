@@ -1,5 +1,7 @@
 """Sample loading and buffer management for mlrVp."""
 
+import logging
+
 import numpy as np
 import soundfile as sf
 from pathlib import Path
@@ -7,6 +9,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 from mlrvp.config import SAMPLE_RATE
+
+log = logging.getLogger("mlrvp")
+
+
+class SampleLoadError(Exception):
+    """A sample couldn't be loaded; str(error) is a user-facing reason."""
 
 
 @dataclass
@@ -28,43 +36,57 @@ class SampleBuffer:
 def load_sample(filepath: str, target_sr: int = SAMPLE_RATE) -> Optional[SampleBuffer]:
     """Load an audio file and resample to target sample rate.
 
+    Returns None if it can't be loaded (the reason is logged); use
+    read_sample() to get the reason.
+    """
+    try:
+        return read_sample(filepath, target_sr)
+    except SampleLoadError as e:
+        log.warning("Could not load sample %s: %s", filepath, e)
+        return None
+
+
+def read_sample(filepath: str, target_sr: int = SAMPLE_RATE) -> SampleBuffer:
+    """Load an audio file and resample to target sample rate.
+
     Supports WAV, AIFF, FLAC, OGG, MP3 (via soundfile/libsndfile).
+    Raises SampleLoadError with a user-facing reason on failure.
     """
     path = Path(filepath)
     if not path.exists():
-        return None
+        raise SampleLoadError("file not found")
 
     # Guard against absurdly large files that would exhaust RAM
     _MAX_FILE_BYTES = 500 * 1024 * 1024  # 500 MB compressed
     _MAX_DECOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB decompressed
     try:
         if path.stat().st_size > _MAX_FILE_BYTES:
-            return None
-    except OSError:
-        return None
+            raise SampleLoadError("file is larger than 500 MB")
+    except OSError as e:
+        raise SampleLoadError(f"can't read file ({e.strerror or e})") from e
 
     # Check decompressed size before reading (compressed formats like FLAC
     # can decompress to many times their on-disk size)
     try:
         info = sf.info(str(path))
         decompressed = info.frames * info.channels * 4  # float32 = 4 bytes
-        if decompressed > _MAX_DECOMPRESSED_BYTES:
-            return None
     except Exception:
-        pass  # If sf.info fails, let sf.read handle the error
+        decompressed = 0  # If sf.info fails, let sf.read handle the error
+    if decompressed > _MAX_DECOMPRESSED_BYTES:
+        raise SampleLoadError("audio is too long (over 2 GB once decoded)")
 
     try:
         data, sr = sf.read(str(path), dtype='float32', always_2d=True)
-    except Exception:
-        return None
+    except Exception as e:
+        raise SampleLoadError(f"unsupported or damaged audio file ({e})") from e
 
     # Validate sample rate
     if sr <= 0 or target_sr <= 0:
-        return None
+        raise SampleLoadError(f"invalid sample rate ({sr} Hz)")
 
     # Resample if needed
     if len(data) == 0:
-        return None
+        raise SampleLoadError("file contains no audio")
     if sr != target_sr:
         try:
             import resampy

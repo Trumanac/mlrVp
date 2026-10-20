@@ -1,5 +1,6 @@
 """Tests for mlrvp.audio.sample — SampleBuffer, file loading, waveform overview."""
 import numpy as np
+import pytest
 import soundfile as sf
 
 from mlrvp.audio.sample import (
@@ -111,3 +112,30 @@ class TestWaveformOverview:
         assert overview[:, 1].max() > 0.9
         # min <= max in every segment
         assert np.all(overview[:, 0] <= overview[:, 1])
+
+
+class TestReadSampleReasons:
+    """read_sample() explains failures so the UI can tell the user why."""
+
+    def test_missing_file(self, tmp_path):
+        from mlrvp.audio.sample import read_sample, SampleLoadError
+        with pytest.raises(SampleLoadError, match="not found"):
+            read_sample(str(tmp_path / "nope.wav"))
+
+    def test_not_audio(self, tmp_path):
+        from mlrvp.audio.sample import read_sample, SampleLoadError
+        bad = tmp_path / "notes.wav"
+        bad.write_text("this is not audio")
+        with pytest.raises(SampleLoadError, match="unsupported or damaged"):
+            read_sample(str(bad))
+
+    def test_empty_audio(self, tmp_path):
+        import soundfile as sf
+        from mlrvp.audio.sample import read_sample, SampleLoadError
+        empty = tmp_path / "empty.wav"
+        sf.write(str(empty), np.zeros((0, 2), dtype=np.float32), 44100)
+        with pytest.raises(SampleLoadError, match="no audio"):
+            read_sample(str(empty))
+
+    def test_load_sample_still_returns_none(self, tmp_path):
+        assert load_sample(str(tmp_path / "nope.wav")) is None
