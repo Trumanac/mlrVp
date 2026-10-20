@@ -740,6 +740,12 @@ class AudioEngine:
         # can surface a warning instead of silently dropping audio.
         self._dsp_error_count: int = 0
         self._dsp_last_error: Optional[str] = None
+        self._dsp_error_logged_at: float = -1e9
+        # Per-effect failures are rate-limited in the log (a broken effect
+        # raises on every block) and surfaced once to the GUI.
+        self._fx_error_logged_at: dict[tuple[str, str], float] = {}
+        self._fx_error_suppressed: dict[tuple[str, str], int] = {}
+        self._fx_error_notice: Optional[str] = None
 
         # Double-buffered input for recording — input callback writes to one
         # buffer while the DSP worker reads from the other, avoiding torn reads.
@@ -942,6 +948,41 @@ class AudioEngine:
         self._dsp_error_count = 0
         self._dsp_last_error = None
         return (count, msg)
+
+    def poll_fx_error_notice(self) -> Optional[str]:
+        """Return a user-facing message if an effect started failing, else None.
+
+        Call from the GUI refresh timer.  Cleared once read.
+        """
+        msg = self._fx_error_notice
+        if msg is not None:
+            self._fx_error_notice = None
+        return msg
+
+    _ERROR_LOG_INTERVAL = 10.0  # seconds between repeated tracebacks
+    _BUS_DISPLAY = {'a': 'FX1', 'b': 'FX2', 'c': 'FX3', 'd': 'FX4', 'm': 'Master'}
+
+    def _report_fx_error(self, fx_type: str, bus_key: str) -> None:
+        """Log an effect exception (call from its except block), rate-limited."""
+        key = (bus_key, fx_type)
+        now = time.monotonic()
+        if now - self._fx_error_logged_at.get(key, -1e9) < self._ERROR_LOG_INTERVAL:
+            self._fx_error_suppressed[key] = self._fx_error_suppressed.get(key, 0) + 1
+            return
+        repeats = self._fx_error_suppressed.pop(key, 0)
+        first = key not in self._fx_error_logged_at
+        self._fx_error_logged_at[key] = now
+        log.warning(
+            "FX '%s' on bus '%s' raised an exception — bypassed%s",
+            fx_type, bus_key,
+            f" ({repeats} repeats in the last {self._ERROR_LOG_INTERVAL:.0f}s)" if repeats else "",
+            exc_info=True,
+        )
+        if first:
+            rack = self._BUS_DISPLAY.get(bus_key, bus_key)
+            self._fx_error_notice = (
+                f"⚠ Effect '{fx_type}' on {rack} is failing and was bypassed — see log"
+            )
 
     def set_profiling(self, enabled: bool):
         """Toggle DSP profiling at runtime."""
@@ -1736,11 +1777,13 @@ class AudioEngine:
                 self._process_block(frames, slot)
                 self._dsp_error_count = 0  # reset on success
             except Exception as exc:
-                import traceback
-                traceback.print_exc()
                 slot[:] = 0
                 self._dsp_error_count += 1
                 self._dsp_last_error = str(exc)
+                now = time.monotonic()
+                if now - self._dsp_error_logged_at >= self._ERROR_LOG_INTERVAL:
+                    self._dsp_error_logged_at = now
+                    log.error("DSP block failed (output silenced): %s", exc, exc_info=True)
 
             # Advance write pointer
             new_w = (w + 1) % n
@@ -1810,8 +1853,7 @@ class AudioEngine:
             except Exception:
                 # A single bad effect must not kill the entire bus chain.
                 # Skip this effect and continue with the current audio.
-                log.warning("FX '%s' on bus '%s' raised an exception — skipping",
-                            fx_type, bus_key, exc_info=True)
+                self._report_fx_error(fx_type, bus_key)
         return bus_audio
 
     # --- Thread-safe control methods ---

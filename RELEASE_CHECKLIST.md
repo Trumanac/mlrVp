@@ -15,11 +15,12 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **A3. Song Recorder waveform peaks recomputed every 50 ms** (130 ms/call at 5 min, 488 ms at 20 min) → UI freeze / audio dropouts.
   - Cached envelope (1 peak / 512 frames), built once per finished tape and extended incrementally while recording; `stop()` seeds the cache. Now ~0.04 ms/poll (20-min tape), ≤0.4 ms/poll while recording. 3 tests incl. reference comparison. — `b076168`
 - [x] **A4. No log file in release builds.** Windowed exe has no console; add rotating log file + "Show logs" menu item; update bug template.
-  - Rotating `logs/mlrvp.log` (2 MB × 4) in the data folder; console only when present; `sys.excepthook` + `threading.excepthook` log uncaught errors (incl. Qt slots); `faulthandler` → `logs/crash.log`; startup banner with versions; `MLRVP_DEBUG=1` now actually shows DEBUG/profiler output. Help → Open Log Folder / Report a Bug…; version in window title; bug template asks for the log. 2 tests.
+  - Rotating `logs/mlrvp.log` (2 MB × 4) in the data folder; console only when present; `sys.excepthook` + `threading.excepthook` log uncaught errors (incl. Qt slots); `faulthandler` → `logs/crash.log`; startup banner with versions; `MLRVP_DEBUG=1` now actually shows DEBUG/profiler output. Help → Open Log Folder / Report a Bug…; version in window title; bug template asks for the log. 2 tests. — `b2b12d8`
 - [x] **A5. User data stored inside the app / site-packages.** Move to per-user data dir, migrate existing `data/`, bundle factory racks/defaults read-only.
   - Decision: settings/presets/racks/logs → OS user-data folder (`%LOCALAPPDATA%\mlrVp`, `~/Library/Application Support/mlrVp`, `~/.local/share/mlrVp`); audio → `Music/mlrVp/{Songs,Slices}`; source checkouts keep repo `data/`; `MLRVP_DATA_DIR` override.
   - One-time never-overwrite migration from the in-place legacy folder; **File → Import Data from Previous Version…** for users who extract new versions to a new folder; **File → Open Data Folder**. Factory racks shipped in `mlrvp/resources/factory_racks`, seeded once. README "Where your files are stored" + "Updating" sections. Verified end-to-end launch/migrate/shutdown in simulated end-user mode. 14 tests. — `293e1e1`
-- [ ] **A6. Effects fail at buffer ≥1024.** Tape Delay (≥1024), Shimmer Reverb (2048). Also rate-limit per-block FX exception logging.
+- [x] **A6. Effects fail at buffer ≥1024.** Tape Delay (≥1024), Shimmer Reverb (2048). Also rate-limit per-block FX exception logging.
+  - Tape Delay grows its scratch buffer; Shimmer processes in sub-blocks ≤ shortest comb. Failing effects now log once per 10 s (with repeat count) and show a status-bar notice; whole-block DSP failures likewise rate-limited into the log (was `print_exc` every block). `BUFFER_SIZE_CHOICES` shared by Setup + a test running every effect at every size.
 
 ## B. Bugs
 
@@ -31,13 +32,14 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [ ] **B6. serialosc elevation:** predictable `%TEMP%` script run elevated (use `-EncodedCommand`); service start mode changed and never restored.
 - [ ] **B7. Settings worker** can drop the last change on quit; non-atomic write; thread not joined.
 - [ ] **B8. Folder-delete safety check** uses string `startswith`.
+- [ ] **B10. Audio settings never persist / never apply.** Output/input device, driver, sample rate and buffer size aren't saved anywhere; sample rate & buffer size are only read when the engine is created, so the "restart to apply" message can never come true. Persist (devices by name, not index) and apply. _(with B7/F5)_
 - [ ] **B9. Silent save failures** — surface preset/rack/export errors in the UI.
 
 ## C. Quality-of-life
 
 - [ ] **C1.** Library "Delete from disk" → move to Recycle Bin/Trash (`QFile.moveToTrash`); don't drop entries whose delete failed.
 - [ ] **C2.** Show a reason when a sample fails to load.
-- [ ] **C3.** Buffer-size options: keep all effects working at every offered size (or cap the list).
+- [x] **C3.** Buffer-size options: keep all effects working at every offered size (or cap the list). _(done with A6, guarded by test)_
 - [ ] **C4.** Ableton Link phase/beat sync (beyond tempo) — stretch goal.
 
 ## D. Git / CI / release process

@@ -7918,6 +7918,9 @@ class AppController:
             self.window.statusBar().showMessage(
                 f"⚠ DSP error ({count}x): {msg}", 5000
             )
+        fx_err = self.engine.poll_fx_error_notice()
+        if fx_err is not None:
+            self.window.statusBar().showMessage(fx_err, 10000)
 
         # Group meter levels
         levels = self._latest_levels

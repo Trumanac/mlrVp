@@ -711,6 +711,10 @@ class TapeDelay:
         # Read from all active heads and sum
         mode_idx = max(0, min(self.state.head_mode, len(self._HEAD_MODES) - 1))
         active_heads = self._HEAD_MODES[mode_idx]
+        if n > len(self._delayed_sum):
+            # Buffer sizes above the construction-time default (Setup offers
+            # up to 2048) — grow once instead of slicing a too-short buffer.
+            self._delayed_sum = np.zeros((n, 2), dtype=np.float32)
         delayed_sum = self._delayed_sum[:n]
         delayed_sum[:] = 0
 
@@ -4736,6 +4740,15 @@ class ShimmerReverbProcessor:
             return data
 
         n = len(data)
+        # The vectorised comb bank needs every comb delay to be longer than
+        # the block; split larger audio buffers (e.g. 2048) into sub-blocks.
+        max_block = min(self._comb_lens)
+        if n > max_block:
+            out = np.empty_like(data)
+            for start in range(0, n, max_block):
+                out[start:start + max_block] = self.process(data[start:start + max_block])
+            return out
+
         decay    = max(0.0, min(1.0, st.decay))
         shimmer  = max(0.0, min(1.0, st.shimmer))
         damping  = max(0.0, min(1.0, st.damping))

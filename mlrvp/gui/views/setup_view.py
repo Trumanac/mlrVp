@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 
 from mlrvp.config import (
+    BUFFER_SIZE_CHOICES,
     MAX_ROWS,
     MAX_COLUMNS,
     NUM_GROUPS,
@@ -96,7 +97,7 @@ class AudioSetupPanel(QFrame):
 
         # Buffer size
         self._buf_combo = QComboBox()
-        self._buf_combo.addItems(["64", "128", "256", "512", "1024", "2048"])
+        self._buf_combo.addItems([str(b) for b in BUFFER_SIZE_CHOICES])
         self._buf_combo.setCurrentText("256")
         self._buf_combo.currentTextChanged.connect(
             lambda v: self.setting_changed.emit("buffer_size", int(v))

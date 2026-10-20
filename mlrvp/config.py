@@ -80,6 +80,8 @@ NUM_PRESETS = 32
 NUM_SETLIST_SLOTS = 32
 SAMPLE_RATE = 44100
 BUFFER_SIZE = 512
+# Audio buffer sizes offered in Setup — every effect must work at each of these.
+BUFFER_SIZE_CHOICES = (64, 128, 256, 512, 1024, 2048)
 MONOME_BACKEND_AUTO = "auto"
 MONOME_BACKEND_SERIALOSC = "serialosc"
 MONOME_BACKEND_40H_DIRECT = "40h-direct"
