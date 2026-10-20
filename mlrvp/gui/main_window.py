@@ -862,31 +862,18 @@ class WelcomeDialog(QDialog):
         layout.addWidget(buttons)
 
 
-def maybe_show_welcome(parent, startup_settings_path: str) -> None:
+def maybe_show_welcome(parent) -> None:
     """Show WelcomeDialog on first run.
 
     Uses a ``welcome_shown`` flag inside startup_settings.json so the dialog
-    doesn't re-appear after the user has seen it — even when the file ships
-    pre-populated as a default.
+    doesn't re-appear after the user has seen it.
     """
-    import json
-    import os
-    path = startup_settings_path
-    # Read existing settings (if any) and check the welcome_shown flag.
-    data: dict = {}
-    if os.path.exists(path):
-        try:
-            data = json.loads(open(path, encoding="utf-8").read())
-        except Exception:
-            pass
-    if data.get("welcome_shown"):
+    from mlrvp import startup_settings
+    if startup_settings.load().get("welcome_shown"):
         return
     dlg = WelcomeDialog(parent)
     dlg.exec()
-    # Persist the flag so the dialog doesn't appear again.
-    data["welcome_shown"] = True
     try:
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
-    except Exception:
-        pass
+        startup_settings.update({"welcome_shown": True})
+    except OSError as e:
+        _log.warning("Could not save welcome_shown flag: %s", e)

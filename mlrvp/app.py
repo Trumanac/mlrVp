@@ -180,6 +180,13 @@ class AppController:
         # signal fires more than once before the current process exits.
         self._restart_pending: bool = False
 
+        # Persisted audio device names (devices are saved by name, not index)
+        self._audio_device_names: dict[str, str] = {"output": "", "input": ""}
+        # Messages to show in the status bar once the window exists
+        self._startup_notices: list[str] = []
+        # Debounce for restarting the audio stream after a device change
+        self._audio_restart_timer: Optional[QTimer] = None
+
         # Load lightweight startup settings (monome_backend etc.) persisted from
         # last session.  Must happen before GridController is created so that
         # the correct backend is active when grid.connect() fires in init_grid().
@@ -542,14 +549,14 @@ class AppController:
         self.window.show()
         self.window.set_status("mlrVp — Ready")
         log.info("GUI initialized")
+        # Problems found while restoring settings (e.g. a missing audio device)
+        for notice in self._startup_notices:
+            self.window.set_status(notice)
+        self._startup_notices.clear()
         # First-run onboarding: show welcome dialog if this is a fresh install
         from mlrvp.gui.main_window import maybe_show_welcome
-        from mlrvp.config import get_defaults_dir
-        _settings_path = get_defaults_dir() / "startup_settings.json"
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(
-            300, lambda: maybe_show_welcome(self.window, str(_settings_path))
-        )
+        QTimer.singleShot(300, lambda: maybe_show_welcome(self.window))
 
     # ------------------------------------------------------------------ #
     #  Startup / Shutdown                                                 #
@@ -603,8 +610,9 @@ class AppController:
             except Exception:
                 pass
         self._live_long_press_timers.clear()
-        # Signal the settings save worker to shut down cleanly
+        # Signal the settings save worker to finish any pending write and exit
         self._settings_save_queue.put(None)
+        self._settings_save_thread.join(timeout=2.0)
         if self.clock:
             self.clock.stop()
         if self.engine:
@@ -3237,12 +3245,14 @@ class AppController:
         affect which hardware backend is used for grid discovery).  They are
         written by _save_startup_settings() whenever a relevant setting changes.
         """
-        import json
-        from .config import get_defaults_dir, MONOME_BACKENDS
+        from .config import MONOME_BACKENDS
+        from mlrvp import startup_settings
         try:
-            path = get_defaults_dir() / "startup_settings.json"
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
+            data = startup_settings.load()
+            if data:
+                audio = data.get("audio")
+                if isinstance(audio, dict):
+                    self._restore_audio_settings(audio)
                 backend = data.get("monome_backend", "")
                 if backend in MONOME_BACKENDS:
                     self.config.monome_backend = backend
@@ -3300,6 +3310,69 @@ class AppController:
         except Exception as e:
             log.warning("Could not load startup settings: %s", e)
 
+    _PERSISTED_AUDIO_KEYS = frozenset({
+        "sample_rate", "buffer_size", "host_api",
+        "output_device", "input_device", "multichannel_output",
+    })
+
+    @staticmethod
+    def _find_audio_device(name: str, host_api: str, kind: str) -> int:
+        """sounddevice index of the *kind* ("output"/"input") device called
+        *name* (on *host_api* if given), or -1 if it isn't present."""
+        try:
+            devices = AudioEngine.get_devices()[kind]
+        except Exception as e:
+            log.warning("Could not enumerate audio devices: %s", e)
+            return -1
+        for d in devices:
+            if d["name"] == name and (not host_api or d["host_api"] == host_api):
+                return d["index"]
+        return -1
+
+    @staticmethod
+    def _audio_device_name(index: int) -> str:
+        if index is None or index < 0:
+            return ""
+        try:
+            import sounddevice as sd
+            return str(sd.query_devices(index)["name"])
+        except Exception:
+            return ""
+
+    def _restore_audio_settings(self, audio: dict) -> None:
+        """Apply saved audio settings (before the engine is created).
+
+        Devices are stored by name because PortAudio indices change when
+        devices are plugged in or removed.
+        """
+        from .config import SAMPLE_RATE_CHOICES, BUFFER_SIZE_CHOICES
+        if audio.get("sample_rate") in SAMPLE_RATE_CHOICES:
+            self.config.sample_rate = int(audio["sample_rate"])
+        if audio.get("buffer_size") in BUFFER_SIZE_CHOICES:
+            self.config.buffer_size = int(audio["buffer_size"])
+        self.config.multichannel_output = bool(audio.get("multichannel_output", False))
+        self.config.host_api = str(audio.get("host_api") or "")
+        for kind in ("output", "input"):
+            name = str(audio.get(f"{kind}_device") or "")
+            # Keep the saved name even if the device is absent this session,
+            # so it isn't forgotten until the user picks a different one.
+            self._audio_device_names[kind] = name
+            if not name:
+                continue
+            idx = self._find_audio_device(name, self.config.host_api, kind)
+            setattr(self.config, f"{kind}_device", idx)
+            if idx < 0:
+                msg = f"Saved {kind} device '{name}' not found — using the system default"
+                log.warning(msg)
+                self._startup_notices.append(msg)
+        log.info(
+            "Audio settings restored: %s Hz, buffer %d, driver %s, out=%r, in=%r",
+            self.config.sample_rate, self.config.buffer_size,
+            self.config.host_api or "any",
+            self._audio_device_names["output"] or "default",
+            self._audio_device_names["input"] or "default",
+        )
+
     def _settings_save_worker(self):
         """Drain the settings-save queue on a persistent background thread.
 
@@ -3313,16 +3386,21 @@ class AppController:
             if item is None:  # sentinel — exit
                 break
             # Drain any pending duplicates so we only write once per burst
+            stop = False
             while not q.empty():
-                extra = q.get_nowait()
-                if extra is None:
-                    return
-            self._save_startup_settings()
+                if q.get_nowait() is None:
+                    stop = True
+            self._save_startup_settings()  # even when stopping — don't drop it
+            if stop:
+                return
 
     def _save_startup_settings(self):
-        """Persist lightweight startup settings to <data folder>/defaults/startup_settings.json."""
-        import json
-        from .config import get_defaults_dir
+        """Persist lightweight startup settings to <data folder>/defaults/startup_settings.json.
+
+        Merges into the file so keys written elsewhere (e.g. welcome_shown)
+        are kept.
+        """
+        from mlrvp import startup_settings
         try:
             data = {
                 "monome_backend": self.config.monome_backend,
@@ -3334,9 +3412,16 @@ class AppController:
                     "monome_row": self.config.control_row.monome_row,
                     "assignments": self.config.control_row.assignments,
                 },
+                "audio": {
+                    "host_api": self.config.host_api,
+                    "output_device": self._audio_device_names["output"],
+                    "input_device": self._audio_device_names["input"],
+                    "sample_rate": self.config.sample_rate,
+                    "buffer_size": self.config.buffer_size,
+                    "multichannel_output": bool(getattr(self.config, "multichannel_output", False)),
+                },
             }
-            path = get_defaults_dir() / "startup_settings.json"
-            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            startup_settings.update(data)
         except Exception as e:
             log.warning("Could not save startup settings: %s", e)
 
@@ -5570,6 +5655,14 @@ class AppController:
 
     def _gui_audio_setting(self, key: str, value):
         setattr(self.config, key, value)
+        if key in ("output_device", "input_device"):
+            self._audio_device_names[key.split("_")[0]] = self._audio_device_name(value)
+        if key in self._PERSISTED_AUDIO_KEYS:
+            self._settings_save_queue.put(True)
+        if key in ("output_device", "input_device", "host_api"):
+            # A driver change also emits output/input resets — restart once.
+            self._schedule_audio_restart()
+            return
         if key == "multichannel_output":
             # Requires engine restart to take effect — do it automatically
             # so the user doesn't need to toggle the DAC button.
@@ -5623,7 +5716,32 @@ class AppController:
                             self.window.set_status(f"Audio restart failed: {e2}")
             return
         if self.window:
-            self.window.set_status(f"Audio: {key} = {value} (restart to apply)")
+            self.window.set_status(f"Audio: {key} = {value} — saved, restart mlrVp to apply")
+
+    def _schedule_audio_restart(self):
+        if self._audio_restart_timer is None:
+            self._audio_restart_timer = QTimer()
+            self._audio_restart_timer.setSingleShot(True)
+            self._audio_restart_timer.setInterval(300)
+            self._audio_restart_timer.timeout.connect(self._restart_audio_stream)
+        self._audio_restart_timer.start()
+
+    def _restart_audio_stream(self):
+        """Reopen the audio streams on the newly selected devices."""
+        out_name = self._audio_device_names["output"] or "default output"
+        if not self.engine or not self.engine._running:
+            if self.window:
+                self.window.set_status(f"Audio device: {out_name} (audio is off)")
+            return
+        self.engine.stop()
+        try:
+            self.engine.start()
+            msg = f"Audio device: {out_name}"
+        except Exception as e:
+            log.error("Audio restart on new device failed: %s", e)
+            msg = f"Could not open {out_name}: {e}"
+        if self.window:
+            self.window.set_status(msg)
 
     def _gui_grid_setting(self, key: str, value):
         if key == "monome_backend":
@@ -5798,10 +5916,14 @@ class AppController:
             getattr(self.config, "osc_meter_output", True)
         )
 
-        # Audio panel — multi-channel output checkbox
+        # Audio panel — multi-channel output checkbox, sample rate, buffer size
         self.window.setup_view.audio_panel.set_multichannel_output_state(
             getattr(self.config, "multichannel_output", False)
         )
+        self.window.setup_view.audio_panel.set_audio_format(
+            self.config.sample_rate, self.config.buffer_size
+        )
+
 
         # Ableton Link — restore saved state and update Setup > Audio button
         if self.clock:

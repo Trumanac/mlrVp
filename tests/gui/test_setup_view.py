@@ -40,9 +40,9 @@ class TestAudioPanelBasics:
     def test_buffer_size_change_emits_setting_changed(self, qtbot):
         page = SetupPage(qtbot)
         blocker = page.run_and_capture_signal(
-            page.widget.audio_setting_changed, lambda: page.set_buffer_size("512")
+            page.widget.audio_setting_changed, lambda: page.set_buffer_size("1024")
         )
-        assert tuple(blocker.args) == ("buffer_size", 512)
+        assert tuple(blocker.args) == ("buffer_size", 1024)
 
     def test_multichannel_checkbox_emits_setting_changed(self, qtbot):
         page = SetupPage(qtbot)
@@ -328,3 +328,18 @@ class TestLinkStateCaching:
         page.widget.set_link_state(False, 0)     # ...controller reports failure
         assert not page.audio._link_btn.isChecked()
         assert page.audio._link_btn.text() == "—"
+
+
+class TestAudioFormatDisplay:
+    def test_combos_default_to_engine_defaults(self, qtbot):
+        from mlrvp.config import BUFFER_SIZE, SAMPLE_RATE
+        page = SetupPage(qtbot)
+        assert page.audio._buf_combo.currentText() == str(BUFFER_SIZE)
+        assert page.audio._sr_combo.currentText() == str(SAMPLE_RATE)
+
+    def test_set_audio_format_shows_values_without_emitting(self, qtbot):
+        page = SetupPage(qtbot)
+        with qtbot.assertNotEmitted(page.widget.audio_setting_changed):
+            page.audio.set_audio_format(48000, 256)
+        assert page.audio._sr_combo.currentText() == "48000"
+        assert page.audio._buf_combo.currentText() == "256"

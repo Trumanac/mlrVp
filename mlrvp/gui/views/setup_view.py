@@ -11,7 +11,9 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 
 from mlrvp.config import (
+    BUFFER_SIZE,
     BUFFER_SIZE_CHOICES,
+    SAMPLE_RATE_CHOICES,
     MAX_ROWS,
     MAX_COLUMNS,
     NUM_GROUPS,
@@ -84,7 +86,7 @@ class AudioSetupPanel(QFrame):
 
         # Sample rate
         self._sr_combo = QComboBox()
-        self._sr_combo.addItems(["44100", "48000", "88200", "96000"])
+        self._sr_combo.addItems([str(r) for r in SAMPLE_RATE_CHOICES])
         self._sr_combo.currentTextChanged.connect(
             lambda v: self.setting_changed.emit("sample_rate", int(v))
         )
@@ -98,7 +100,7 @@ class AudioSetupPanel(QFrame):
         # Buffer size
         self._buf_combo = QComboBox()
         self._buf_combo.addItems([str(b) for b in BUFFER_SIZE_CHOICES])
-        self._buf_combo.setCurrentText("256")
+        self._buf_combo.setCurrentText(str(BUFFER_SIZE))
         self._buf_combo.currentTextChanged.connect(
             lambda v: self.setting_changed.emit("buffer_size", int(v))
         )
@@ -294,6 +296,13 @@ class AudioSetupPanel(QFrame):
     @property
     def rescan_button(self) -> QPushButton:
         return self._rescan_btn
+
+    def set_audio_format(self, sample_rate: int, buffer_size: int):
+        """Show the configured sample rate / buffer size without firing signals."""
+        for combo, value in ((self._sr_combo, sample_rate), (self._buf_combo, buffer_size)):
+            combo.blockSignals(True)
+            combo.setCurrentText(str(value))
+            combo.blockSignals(False)
 
     def set_multichannel_output_state(self, enabled: bool):
         """Sync the multi-channel output checkbox without firing the signal."""
