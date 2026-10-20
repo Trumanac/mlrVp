@@ -640,7 +640,11 @@ class AppController:
             box.show()
 
     def stop(self):
-        """Stop all subsystems cleanly."""
+        """Stop all subsystems cleanly.  Safe to call more than once (the
+        window's quit signal and run_app() both call it)."""
+        if getattr(self, "_stopped", False):
+            return
+        self._stopped = True
         if self._ui_timer:
             self._ui_timer.stop()
         if self._recorder_poll_timer:
