@@ -29,8 +29,9 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **B2. Ableton Link tempo** from peers not pushed to engine / BPM display.
   - GUI timer follows `clock.link_tempo` through the normal tempo path (engine, delays, speed spinners, BPM box), with a 0.5 s hold-off after local changes so they aren't undone. Unit-tested; **needs a manual check with a real Link peer** (multicast blocked in the dev sandbox; also `aalink` isn't installed in the local .venv, so the Link button is disabled there — `pip install -r requirements.txt`). — `93f3af5`
 - [x] **B3. Pan law −3 dB jump** just off center.
-  - Decision: balance law — centre unchanged (unity both sides), panning only attenuates the opposite side; no jump, no boost. 2 tests.
-- [ ] **B4. Plugin scan timeout ineffective** (executor `shutdown(wait=True)` blocks on hung plugin).
+  - Decision: balance law — centre unchanged (unity both sides), panning only attenuates the opposite side; no jump, no boost. 2 tests. — `a1f0954`
+- [x] **B4. Plugin scan timeout ineffective** (executor `shutdown(wait=True)` blocks on hung plugin).
+  - Daemon probe thread + join(timeout): scan moves on after the timeout and a permanently hung plugin no longer blocks app exit. 2 tests.
 - [ ] **B5. Renaming a preset breaks other setlists.**
 - [ ] **B6. serialosc elevation:** predictable `%TEMP%` script run elevated (use `-EncodedCommand`); service start mode changed and never restored.
 - [x] **B7. Settings worker** can drop the last change on quit; non-atomic write; thread not joined.

@@ -7,7 +7,7 @@ import platform
 import tempfile
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+import threading
 import re as _re
 from dataclasses import dataclass, asdict, fields as _dc_fields
 from pathlib import Path
@@ -361,32 +361,39 @@ def _probe_with_pedalboard(path: str, fmt: str) -> Optional[PluginInfo]:
     Plugin name comes from the filename since pedalboard's __getattr__
     intercepts attribute access and triggers slow parameter enumeration.
     """
-    def _load():
-        from pedalboard import load_plugin
-        with suppress_plugin_dialogs():
-            plugin = load_plugin(path)
-        # Don't access plugin.name or .manufacturer — __getattr__ intercepts
-        # those and triggers full parameter enumeration which can hang.
-        del plugin
-        return True
+    outcome: dict = {}
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_load)
+    def _load():
         try:
-            future.result(timeout=_PROBE_TIMEOUT)
-            # Plugin loaded successfully — use filename for display
-            return PluginInfo(
-                name=Path(path).stem,
-                vendor="(verified)",
-                path=path,
-                fmt=fmt,
-            )
-        except FuturesTimeout:
-            log.debug("Probe timed out for %s (>%ds)", path, _PROBE_TIMEOUT)
-            return None
+            from pedalboard import load_plugin
+            with suppress_plugin_dialogs():
+                plugin = load_plugin(path)
+            # Don't access plugin.name or .manufacturer — __getattr__ intercepts
+            # those and triggers full parameter enumeration which can hang.
+            del plugin
+            outcome["ok"] = True
         except Exception as exc:
-            log.debug("Pedalboard probe error for %s: %s", path, exc)
-            return None
+            outcome["error"] = exc
+
+    # A plain daemon thread, not a ThreadPoolExecutor: leaving an executor's
+    # `with` block waits for the worker, so a hung plugin defeated the
+    # timeout, and its non-daemon worker would also block app exit.
+    t = threading.Thread(target=_load, daemon=True, name="plugin-probe")
+    t.start()
+    t.join(_PROBE_TIMEOUT)
+    if t.is_alive():
+        log.warning("Plugin probe timed out for %s (>%ss) — skipped", path, _PROBE_TIMEOUT)
+        return None
+    if "error" in outcome:
+        log.debug("Pedalboard probe error for %s: %s", path, outcome["error"])
+        return None
+    # Plugin loaded successfully — use filename for display
+    return PluginInfo(
+        name=Path(path).stem,
+        vendor="(verified)",
+        path=path,
+        fmt=fmt,
+    )
 
 
 # ---------------------------------------------------------------------------
