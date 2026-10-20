@@ -8,6 +8,7 @@ Usage:
 """
 
 import os
+import re
 import subprocess
 import sys
 import shutil
@@ -27,6 +28,86 @@ def read_version() -> str:
     return re.search(r'__version__\s*=\s*"([^"]+)"', text).group(1)
 
 
+LICENSES_DIR = ROOT / "licenses"
+NOTICES = ROOT / "THIRD_PARTY_LICENSES.txt"   # generated, gitignored
+_LICENSE_FILE = re.compile(r"(^|/)(LICEN[CS]E|COPYING|NOTICE)[^/]*$", re.I)
+_QT_NOTICE = """\
+Qt and Qt for Python (PySide6, shiboken6) are licensed under the GNU Lesser
+General Public License v3 (LGPL-3.0-only; also available under GPL-2.0/3.0).
+Full texts: licenses/LGPL-3.0.txt and licenses/GPL-3.0.txt.
+The Qt libraries are shipped as separate shared libraries in this folder and
+may be replaced with compatible versions you build yourself.
+Source code: https://code.qt.io/cgit/pyside/pyside-setup.git/ and
+https://download.qt.io/official_releases/qt/
+"""
+
+
+def _bundled_distributions() -> list[str]:
+    """Names of the packages a release bundles: everything in the lock file."""
+    names = []
+    for line in (ROOT / "requirements-lock.txt").read_text(encoding="utf-8").splitlines():
+        m = re.match(r"([A-Za-z0-9][A-Za-z0-9._-]*)==", line)
+        if m:
+            names.append(m.group(1))
+    return names
+
+
+def write_third_party_licenses(path: Path = NOTICES) -> Path:
+    """Write the licenses of Python and every bundled package (that is
+    installed in this environment) into one notices file."""
+    from importlib import metadata
+
+    rule = "=" * 78
+    parts = [
+        "mlrVp bundles the following third-party software. Each component is\n"
+        "distributed under its own license, reproduced below.\n",
+    ]
+    py_license = Path(sys.base_prefix) / "LICENSE.txt"
+    parts.append(f"{rule}\nPython {platform.python_version()} (PSF-2.0)\n{rule}\n")
+    if py_license.is_file():
+        parts.append(py_license.read_text(encoding="utf-8", errors="replace"))
+    for name in sorted(set(_bundled_distributions()), key=str.lower):
+        try:
+            dist = metadata.distribution(name)
+        except metadata.PackageNotFoundError:
+            continue    # e.g. a platform-specific package for another OS
+        meta = dist.metadata
+        lic = meta.get("License-Expression") or ", ".join(
+            c.split(" :: ")[-1] for c in meta.get_all("Classifier") or []
+            if c.startswith("License ::"))
+        if not lic:
+            first = (meta.get("License") or "").strip().splitlines()
+            lic = first[0][:60] if first else ""
+        url = meta.get("Home-page") or next(
+            (u.split(",", 1)[-1].strip() for u in meta.get_all("Project-URL") or []), "")
+        parts.append(f"\n{rule}\n{meta['Name']} {dist.version}  ({lic or 'see below'})\n"
+                     f"{url}\n{rule}\n")
+        if name.lower().startswith(("pyside6", "shiboken6")):
+            parts.append(_QT_NOTICE)
+            continue
+        texts = []
+        for f in dist.files or []:
+            if _LICENSE_FILE.search(str(f)):
+                try:
+                    texts.append(f"\n--- {f.name} ---\n"
+                                 + Path(dist.locate_file(f)).read_text(encoding="utf-8",
+                                                                       errors="replace"))
+                except OSError:
+                    pass
+        # No license file in the wheel: use the license text from its metadata
+        parts.extend(texts or [meta.get("License") or ""])
+    path.write_text("\n".join(parts), encoding="utf-8")
+    print(f"Wrote {path}")
+    return path
+
+
+def copy_license_files(dest: Path) -> None:
+    """Put mlrVp's license and the third-party notices next to the executable."""
+    shutil.copy2(ROOT / "LICENSE", dest / "LICENSE.txt")
+    shutil.copy2(NOTICES, dest / NOTICES.name)
+    shutil.copytree(LICENSES_DIR, dest / "licenses", dirs_exist_ok=True)
+
+
 def ensure_pyinstaller():
     """Make sure PyInstaller is installed."""
     try:
@@ -39,10 +120,13 @@ def ensure_pyinstaller():
 def build_folder():
     """Build using the spec file (folder mode)."""
     ensure_pyinstaller()
-    cmd = [sys.executable, "-m", "PyInstaller", "--clean", str(SPEC)]
+    write_third_party_licenses()
+    cmd = [sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm", str(SPEC)]
     print(f"Building mlrVp for {platform.system()}...")
     subprocess.run(cmd, check=True, cwd=str(ROOT))
     out = DIST / "mlrVp"
+    if platform.system() != "Darwin":     # macOS: bundled in Contents/Resources
+        copy_license_files(out)
     print(f"\nBuild complete! Output in {out}")
     return out
 
@@ -50,13 +134,18 @@ def build_folder():
 def build_onefile():
     """Build as a single executable file."""
     ensure_pyinstaller()
+    write_third_party_licenses()
     args = [
         sys.executable, "-m", "PyInstaller",
         "--clean",
+        "--noconfirm",
         "--onefile",
         "--windowed",
         "--name", "mlrVp",
         "--add-data", f"mlrvp/resources{os.pathsep}mlrvp/resources",
+        "--add-data", f"LICENSE{os.pathsep}.",
+        "--add-data", f"{NOTICES.name}{os.pathsep}.",
+        "--add-data", f"licenses{os.pathsep}licenses",
         "--hidden-import", "sounddevice",
         "--hidden-import", "soundfile",
         "--hidden-import", "numpy",
