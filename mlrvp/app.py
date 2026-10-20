@@ -567,6 +567,12 @@ class AppController:
 
     def start(self):
         """Start all subsystems."""
+        # Freeze long-lived startup objects (widgets, effects, buffers) out of
+        # the cyclic GC so the engine's periodic full collections stay ~2 ms
+        # instead of ~60 ms — before audio starts, so this one pass is free.
+        import gc
+        gc.collect()
+        gc.freeze()
         if self.engine:
             self.engine.start()
         if self.clock:

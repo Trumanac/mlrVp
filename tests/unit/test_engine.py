@@ -691,3 +691,11 @@ class TestEventBudget:
         run_block(engine)
         run_block(engine)  # second block drains the overflow
         assert any(ch.playing for ch in engine.channels)
+
+
+def test_gc_schedule_includes_older_generations():
+    from mlrvp.audio.engine import _gc_generation_for_tick
+    gens = [_gc_generation_for_tick(t) for t in range(1, 301)]
+    assert gens.count(2) == 2                 # every 5 min
+    assert gens.count(1) == 20 - 2            # every 30 s, except when full
+    assert gens[0] == 0

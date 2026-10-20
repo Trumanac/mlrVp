@@ -77,8 +77,20 @@ except ImportError:
     _HAS_NUMBA = False
 
 
-def _collect_young() -> None:
-    gc.collect(0)
+# Periodic collection schedule (in 2 s ticks).  Automatic GC is disabled
+# while the engine runs; gen-0 alone would never free cycles that survive
+# one pass.  Full collections stay cheap because the app gc.freeze()s its
+# long-lived startup objects (~2 ms vs ~60 ms unfrozen).
+_GC_GEN1_EVERY = 15     # 30 s
+_GC_GEN2_EVERY = 150    # 5 min
+
+
+def _gc_generation_for_tick(tick: int) -> int:
+    if tick % _GC_GEN2_EVERY == 0:
+        return 2
+    if tick % _GC_GEN1_EVERY == 0:
+        return 1
+    return 0
 
 
 class AudioEngine:
@@ -1171,7 +1183,8 @@ class AudioEngine:
     gc_scheduler: Optional[Callable[[Callable[[], None]], None]] = None
 
     def _gc_loop(self):
-        """Background thread that runs gen-0 GC collection every 2 seconds.
+        """Background thread that schedules a GC collection every 2 seconds
+        (gen-0; gen-1 every 30 s; full every 5 min — see _gc_generation_for_tick).
 
         Uses a simple loop instead of threading.Timer to avoid creating
         a new Thread object every second — those objects can't be collected
@@ -1186,12 +1199,16 @@ class AudioEngine:
         # Set gen-1/gen-2 very high so only cheap gen-0 runs automatically.
         gc.set_threshold(700, 50, 50)
         stop = self._gc_stop
+        tick = 0
         while not stop.wait(2.0):
+            tick += 1
+            gen = _gc_generation_for_tick(tick)
+            collect = lambda g=gen: gc.collect(g)  # noqa: E731
             scheduler = self.gc_scheduler
             if scheduler is not None:
-                scheduler(_collect_young)
+                scheduler(collect)
             else:
-                _collect_young()
+                collect()
 
     def _input_callback(self, indata, frames, time_info, status):
         """Capture input audio for recording (double-buffered)."""
