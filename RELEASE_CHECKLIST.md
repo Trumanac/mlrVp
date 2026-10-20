@@ -87,6 +87,7 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **F8.** Preset recall set the engine tempo but never the clock: after loading a preset with a different BPM, beats/quantize/SEQ/patterns kept the old tempo while loops used the new one. _(fixed with B2)_
 - [ ] **F9.** Inno Setup publisher (`monome community`, mlrV2 URL) and macOS bundle id (`org.monome-community.mlrvp`) should be the project's own.
 - [x] **F10.** CI abort (SIGABRT) on Ubuntu/py3.11: Qt widgets collected by the GC on a worker thread. run_on_main_thread now uses a queued signal; engine's periodic GC runs on the GUI thread; tests collect on the main thread. — `99ffcce`
-- [ ] **F11.** Engine disables automatic GC and only ever collects generation 0, so cyclic garbage that survives one collection is never freed (slow memory growth in long sessions). Needs a safe schedule for gen-1/2 collections.
+- [x] **F11.** Engine disables automatic GC and only ever collects generation 0, so cyclic garbage that survives one collection is never freed (slow memory growth in long sessions). Needs a safe schedule for gen-1/2 collections.
+  - gc.freeze() after startup (full collect 60 ms → 2 ms); schedule gen-0/2 s, gen-1/30 s, full/5 min on the GUI thread. — `13e6d42`
 - [x] **F2.** Song Recorder "saved" status shown before the export ran / even on failure. Fixed for Song Recorder in A1; audit other save paths under B9.
   - Song Recorder fixed in A1; remaining save paths covered by B9.
