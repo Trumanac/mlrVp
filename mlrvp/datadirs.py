@@ -7,6 +7,7 @@
 """
 
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -88,6 +89,32 @@ def migrate_legacy_data() -> int:
     if copied:
         log.info("Migrated %d file(s) from %s to %s", copied, legacy, data_dir)
     return copied
+
+
+def relocate_sample_path(path: str) -> Optional[str]:
+    """New location of a sample that lived in an older install's data folder.
+
+    Presets store absolute paths.  Files under a legacy ``data/slices`` or
+    ``data/songs`` folder were copied to the current Slices / Songs folders,
+    so look for the same relative path there.  Returns None if *path* isn't
+    in such a folder or the file isn't at the new location either.
+    """
+    parts = re.split(r"[\\/]+", path)
+    for i in range(len(parts) - 2, 0, -1):
+        if parts[i - 1].lower() != "data":
+            continue
+        kind = parts[i].lower()
+        if kind == "slices":
+            base = config.get_slices_dir()
+        elif kind == "songs":
+            base = config.get_songs_dir()
+        else:
+            continue
+        candidate = base.joinpath(*parts[i + 1:])
+        if candidate.is_file():
+            return str(candidate)
+        return None
+    return None
 
 
 def find_legacy_data_dir(folder: Path) -> Optional[Path]:

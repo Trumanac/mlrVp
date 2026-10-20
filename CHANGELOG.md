@@ -28,6 +28,11 @@ project uses [Semantic Versioning](https://semver.org/).
   previously had no way to see errors.
 - The version number is shown in the window title.
 - A status-bar notice when an effect fails and is bypassed.
+- A warning when a background save (preset, setlist, rack, default) fails — previously
+  only visible in the log.
+- **Delete from disk** in the Samples, Slices and Songs libraries moves files to the
+  Recycle Bin / Trash instead of deleting them permanently.
+- When a sample can't be loaded, the status bar says why (not found, too large, damaged…).
 
 ### Fixed
 - OSC remote control did nothing; File → Open Preset never applied the preset; Slice
@@ -54,6 +59,13 @@ project uses [Semantic Versioning](https://semver.org/).
 - Folder delete/rename in the Slices library could act on the Slices folder itself or
   outside it.
 - Reduced GUI-thread stalls from restyling buttons on every UI frame.
+- A preset whose sample file is missing showed "(loading...)" on that row forever; the
+  row now says "(missing)" and the status bar lists the files. Presets from older
+  versions find samples that were moved to the new Slices / Songs folders.
+- mlrVp no longer fails to start when the saved audio device is unavailable or rejects
+  the saved sample rate / buffer size — it falls back to the default output, or starts
+  with audio off and explains why.
+- Memory slowly grew during long sessions (some objects were never garbage-collected).
 
 ### Security
 - Elevated serialosc commands are passed inline instead of via a script file in the

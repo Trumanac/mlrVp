@@ -119,3 +119,29 @@ def test_import_finds_old_install_data(end_user_mode, layout):
 def test_import_from_unrelated_folder_finds_nothing(end_user_mode, tmp_path):
     (tmp_path / "random").mkdir()
     assert datadirs.import_data_from(tmp_path / "random") == (None, 0)
+
+
+def test_relocate_sample_follows_migrated_slices(end_user_mode):
+    tmp, legacy = end_user_mode
+    moved = config.get_slices_dir() / "Live" / "loop.wav"
+    moved.parent.mkdir(parents=True)
+    moved.write_bytes(b"RIFF")
+    old = str(legacy / "slices" / "Live" / "loop.wav")
+    assert datadirs.relocate_sample_path(old) == str(moved)
+    # Windows-style separators and the old relative form both resolve
+    assert datadirs.relocate_sample_path(old.replace("/", "\\")) == str(moved)
+    assert datadirs.relocate_sample_path("data/slices/Live/loop.wav") == str(moved)
+
+
+def test_relocate_sample_follows_migrated_songs(end_user_mode):
+    tmp, legacy = end_user_mode
+    moved = config.get_songs_dir() / "take.wav"
+    moved.write_bytes(b"RIFF")
+    assert datadirs.relocate_sample_path(str(legacy / "songs" / "take.wav")) == str(moved)
+
+
+def test_relocate_sample_leaves_other_paths_alone(end_user_mode):
+    tmp, _ = end_user_mode
+    assert datadirs.relocate_sample_path(str(tmp / "Samples" / "kick.wav")) is None
+    assert datadirs.relocate_sample_path(str(tmp / "data" / "slices" / "gone.wav")) is None
+    assert datadirs.relocate_sample_path("") is None

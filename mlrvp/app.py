@@ -3036,20 +3036,22 @@ class AppController:
 
         # ── 4. Load samples — all disk I/O in background threads ──
         if self.engine:
-            import os
+            missing: list[str] = []
             for i, ch_cfg in enumerate(self.config.channels[:self.config.row_count]):
                 ech = self.engine.channels[i]
                 ech._load_gen += 1
                 ech._pending_sample_path = None
                 ech._pending_sample_buffer = None
-                if ch_cfg.filename and os.path.isfile(ch_cfg.filename):
-                    self._load_sample_bg(i, ch_cfg.filename, preserve_speed=True)
+                path = self._resolve_config_sample(i, missing)
+                if path:
+                    self._load_sample_bg(i, path, preserve_speed=True)
                 elif not ch_cfg.filename:
                     # Ensure the row is fully cleared
                     ech.sample = None
                     if self.window:
                         strip = self.window.channel_view.get_strip(i)
                         strip._sample_name.setText("(no sample)")
+            self._report_missing_samples(missing)
 
         # ── 5. Restore MIDI mappings ──
         midi_maps = data.get("midi_mappings", [])
@@ -7904,13 +7906,50 @@ class AppController:
 
         Uses background threads so disk I/O doesn't block the main thread.
         """
-        import os
         if self.engine:
             for i in range(self.config.row_count):
                 self.engine.channels[i]._load_gen += 1
-        for i, ch in enumerate(self.config.channels[:self.config.row_count]):
-            if ch.filename and os.path.isfile(ch.filename):
-                self._load_sample_bg(i, ch.filename)
+        missing: list[str] = []
+        for i in range(self.config.row_count):
+            path = self._resolve_config_sample(i, missing)
+            if path:
+                self._load_sample_bg(i, path)
+        self._report_missing_samples(missing)
+
+    def _resolve_config_sample(self, row: int, missing: list) -> Optional[str]:
+        """File to load for config row *row*, or None.
+
+        Follows samples that moved from an older version's data folder to
+        the per-user Slices/Songs folders (updating the stored path).  A
+        file that can't be found is labelled on its row and its name is
+        appended to *missing*.
+        """
+        import os
+        from mlrvp.datadirs import relocate_sample_path
+        ch = self.config.channels[row]
+        path = ch.filename
+        if not path or os.path.isfile(path):
+            return path or None
+        moved = relocate_sample_path(path)
+        if moved:
+            log.info("Row %d sample moved: %s -> %s", row + 1, path, moved)
+            ch.filename = moved
+            return moved
+        name = os.path.basename(path)
+        missing.append(name)
+        log.warning("Row %d sample not found: %s", row + 1, path)
+        if self.window:
+            strip = self.window.channel_view.get_strip(row)
+            strip._sample_name.setText(f"(missing) {name}")
+            strip._sample_name.setToolTip(f"Sample not found:\n{path}")
+        return None
+
+    def _report_missing_samples(self, missing: list) -> None:
+        if not missing or not self.window:
+            return
+        names = ", ".join(missing[:3]) + ("…" if len(missing) > 3 else "")
+        self.window.set_status(
+            f"⚠ {len(missing)} sample(s) not found: {names} — reload them on their rows")
 
     def _apply_config_to_gui(self):
         """Push current config to the GUI after preset recall."""
