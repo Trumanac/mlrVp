@@ -574,7 +574,7 @@ class AppController:
         gc.collect()
         gc.freeze()
         if self.engine:
-            self.engine.start()
+            self._start_audio_at_launch()
         if self.clock:
             self.clock.start()
         if self.osc:
@@ -599,6 +599,45 @@ class AppController:
         self._recorder_poll_timer.start(50)
 
         log.info("All subsystems started")
+
+    def _start_audio_at_launch(self) -> None:
+        """Start the engine without letting a bad saved device stop the app.
+
+        Audio settings persist across launches, so an output device that is
+        busy or rejects the saved sample rate / buffer size must not crash
+        startup every time.  Falls back to the system default output device,
+        then to running with audio off and a warning.
+        """
+        try:
+            self.engine.start()
+            return
+        except Exception as e:
+            first_error = e
+        if self.config.output_device >= 0:
+            name = self._audio_device_names["output"] or f"device {self.config.output_device}"
+            self.config.output_device = -1
+            try:
+                self.engine.start()
+                msg = f"⚠ Couldn't open {name} ({first_error}) — using the system default output"
+                log.warning(msg)
+                if self.window:
+                    self.window.set_status(msg)
+                return
+            except Exception as e:
+                first_error = e
+        log.error("Starting with audio off: %s", first_error)
+        if self.window:
+            from PySide6.QtWidgets import QMessageBox
+            self.window.set_status("⚠ Audio is off — couldn't open the output device")
+            box = QMessageBox(
+                QMessageBox.Icon.Warning, "Audio is off",
+                f"mlrVp couldn't open the audio output:\n{first_error}\n\n"
+                "Choose another device, sample rate or buffer size in "
+                "Setup → Audio, then restart mlrVp.",
+                parent=self.window)
+            box.setModal(False)
+            box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            box.show()
 
     def stop(self):
         """Stop all subsystems cleanly."""
