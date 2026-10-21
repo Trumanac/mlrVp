@@ -97,6 +97,20 @@ Baseline: `c7319d2` (v0.6.9.24)
 - Verified clean: OSC binds 127.0.0.1 and is off by default; preset/rack keys are whitelisted (no arbitrary attribute writes); no eval/pickle; packaged Windows build launches, seeds racks, logs correctly.
 - Note: the local `origin` URL uses old casing (`trumanac/mlrVp`); pushes work via redirect — `git remote set-url origin https://github.com/Trumanac/mlrVp.git` to silence the notice.
 
+## H. Third full review (pre-tag)
+
+- [x] **H1.** Mute/solo, group mute, channel gain and master volume switched level instantly → clicks up to ~24× the waveform's normal step on playing loops. Constant-rate gain ramp in the channel kernel (+ numpy fallback), group mute via the volume ramp, master volume ramp. — `4d4a0b2`
+- [x] **H2.** PITCH mode built up to 16 full-length pitch-shifted copies per row (GBs of RAM, minutes of CPU for a whole track). Samples > 30 s use speed-based pitch. — `60251e5`
+- [x] **H3.** Tempo limits disagreed (presets 999, clock/UI 300, Link unclamped) → clock and loops on different tempos; NaN over OSC became 300 BPM. One TEMPO_MIN/MAX applied everywhere. — `1342e86`
+- [x] **H4.** Welcome dialog, How-to and README told users to click a nonexistent "Start Engine"; README missed the new File/Help menu items; About now has project link + licenses. — `83b6c87`
+- [x] **H5. Latency.** The DSP worker renders 7 blocks ahead and applies grid triggers when rendering → ~81 ms from press to sound at 512 (comment claimed triggers were unaffected). New Setup → Audio → Latency (Low/Medium/High = 2/4/7 blocks; High = old behaviour). Measured: no underruns at Low with 16 rows + grid-mode/tab stress. — `3aa5852`
+  - [ ] **Decision:** default latency (currently High). Recommendation: Medium (~46 ms at 512).
+- [x] **H6.** File dialogs opened in the working directory (install folder) and never remembered folders; MP3 missing from Load dialogs. — `b87afc0`
+- [x] **H7.** Quit → Save → cancelling the name/setlist prompt quit anyway (changes lost). — `5297976`
+- [x] **H8.** Saving a preset didn't save in-memory SAMP/LIVE/studio recordings — reloaded the row's *previous* sample. Now written to Slices/Recordings on save. — `de26bd9`
+- [x] **H9.** Only channel/group edits marked the preset unsaved; effects, tempo, quantize, master and recordings were discarded on quit without asking. — `fab3e86`
+- Post-1.0 ideas: sample-accurate trigger timing (triggers land on block boundaries, ±1 block jitter); undo for destructive grid/preset actions; per-row "save recording" button.
+
 ## Found during fixes
 
 - [x] **F1.** CI test job failed on first run: `test_rejects_oversized_file` crashed pytest on Python 3.12 (Path.stat patch missing `follow_symlinks`); checkbox click missed hit area on Linux. — `bf142b0`
