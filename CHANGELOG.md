@@ -73,6 +73,8 @@ project uses [Semantic Versioning](https://semver.org/).
   malformed MIDI/tilt mappings, non-UTF-8 text) could abort loading part-way; bad values
   are now skipped. Renaming a
   rack to change only its capitalisation failed on Windows/macOS.
+- Muting, soloing or unmuting a playing channel, muting a group, and jumps in channel
+  gain or master volume clicked (the level switched instantly); they now fade over ~6 ms.
 - Memory slowly grew during long sessions (some objects were never garbage-collected).
 
 ### Security

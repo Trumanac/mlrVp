@@ -99,8 +99,29 @@ class TestLoopPlayback:
         ch.trigger(column=0, total_columns=8)
         ch.process(64)  # let envelope open
         ch.state.mute = True
+        for _ in range(Channel.GAIN_RAMP // 64):   # fade-out (no click)
+            ch.process(64)
         out = ch.process(64)
         assert np.all(out == 0.0)
+
+    def test_mute_and_unmute_fade_instead_of_stepping(self, jit_enabled):
+        from mlrvp.audio.sample import SampleBuffer
+        level = np.full((4000, 2), 0.5, dtype=np.float32)   # constant: any step is a click
+        ch = Channel(index=0)
+        ch.load_sample(SampleBuffer(data=level, sample_rate=44100, num_channels=2,
+                                    num_frames=4000, duration_sec=4000 / 44100))
+        ch.state.attack = 0.0
+        ch.trigger(column=0, total_columns=8)
+        ch.process(64)
+        ch.state.mute = True
+        fade_out = np.concatenate([ch.process(64)[:, 0].copy() for _ in range(6)])
+        max_step = 0.5 / Channel.GAIN_RAMP * 1.01
+        assert fade_out[0] > 0.49 and fade_out[-1] == 0.0
+        assert np.abs(np.diff(fade_out)).max() <= max_step
+        ch.state.mute = False
+        fade_in = np.concatenate([ch.process(64)[:, 0].copy() for _ in range(6)])
+        assert fade_in[0] <= max_step and fade_in[-1] == pytest.approx(0.5)
+        assert np.abs(np.diff(fade_in)).max() <= max_step
 
     def test_gain_scales_output_linearly(self, ramp_sample, jit_enabled):
         ch_full = make_channel(ramp_sample)

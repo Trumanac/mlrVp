@@ -216,7 +216,9 @@ def channel_process_kernel(
     is_releasing,      # bool
     attack_samples,    # float64 — attack time in samples
     release_samples,   # float64 — release time in samples
-    gain,              # float64 — gain * velocity
+    gain_from,         # float64 — smoothed gain at block start
+    gain_to,           # float64 — target gain (gain * velocity, 0 when muted)
+    gain_step,         # float64 — max per-sample gain change (click-free ramp)
     # ── Crossfade tail (mixed into output in same pass) ──
     xfade_buf,         # float32[XLEN, 2] — pre-rendered xfade tail
     xfade_pos,         # int — current read position in xfade_buf
@@ -225,13 +227,12 @@ def channel_process_kernel(
     fade_in_ramp,      # float32[XLEN] — sin-based 0→1 ramp
     fade_in_offset,    # int — how far into the ramp we are (XLEN - remaining)
     fade_in_remaining, # int — samples left of fade-in (0 = inactive)
-    mute,              # bool
 ):
-    """Process one channel: position, interpolation, envelope, gain,
-    crossfade-tail mix, fade-in ramp, and mute — all in one native pass.
+    """Process one channel: position, interpolation, envelope, smoothed
+    gain (incl. mute), crossfade-tail mix and fade-in ramp in one native pass.
 
     Returns (new_position, new_envelope, active_frames, stopped,
-             new_xfade_pos, new_fade_in_remaining).
+             new_xfade_pos, new_fade_in_remaining, new_gain).
     """
     is_stereo = num_channels >= 2
     max_pos = float(num_sample_frames - 1)
@@ -245,7 +246,7 @@ def channel_process_kernel(
                 output[i, 0] += xfade_buf[xf_p + i, 0]
                 output[i, 1] += xfade_buf[xf_p + i, 1]
             xf_p += n
-        return position, env, 0, True, xf_p, 0
+        return position, env, 0, True, xf_p, 0, gain_to
 
     att_rate = 1.0 / attack_samples if attack_samples > 0.0 else 1.0
     rel_rate = 1.0 / release_samples if release_samples > 0.0 else 1.0
@@ -255,6 +256,7 @@ def channel_process_kernel(
     fi_off = fade_in_offset
     fi_rem = fade_in_remaining
     xf_p = xfade_pos
+    g = gain_from
 
     for i in range(num_frames):
         # ── Envelope ──
@@ -305,17 +307,18 @@ def channel_process_kernel(
 
         inv_frac = 1.0 - frac
         s_l = sample_data[idx, 0] * inv_frac + sample_data[idx1, 0] * frac
-        eg = env * gain
+        # ── Gain ramp toward target (mute / solo / fader changes) ──
+        if g < gain_to:
+            g = min(g + gain_step, gain_to)
+        elif g > gain_to:
+            g = max(g - gain_step, gain_to)
+        eg = env * g
 
-        if mute:
-            o_l = 0.0
-            o_r = 0.0
+        o_l = s_l * eg
+        if is_stereo:
+            o_r = (sample_data[idx, 1] * inv_frac + sample_data[idx1, 1] * frac) * eg
         else:
-            o_l = s_l * eg
-            if is_stereo:
-                o_r = (sample_data[idx, 1] * inv_frac + sample_data[idx1, 1] * frac) * eg
-            else:
-                o_r = o_l
+            o_r = o_l
 
         # ── Fade-in ramp ──
         if fi_rem > 0:
@@ -350,7 +353,7 @@ def channel_process_kernel(
         else:
             new_pos = loop_end - ((loop_end - new_pos) % loop_len)
 
-    return new_pos, env, active, stopped, xf_p, fi_rem
+    return new_pos, env, active, stopped, xf_p, fi_rem, g
 
 
 # ── Crossfade tail snapshot (for retrigger / pitch swap) ─────────────

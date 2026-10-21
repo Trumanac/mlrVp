@@ -30,6 +30,9 @@ class Channel:
 
     # Crossfade length in samples (~5.8ms at 44100 — eliminates click on retrigger)
     XFADE_LEN = 256
+    # A full 0↔1 gain change (mute/solo, fader jumps) ramps over this many
+    # samples instead of stepping, which would click
+    GAIN_RAMP = 256
 
     def __init__(self, index: int, sample_rate: int = SAMPLE_RATE):
         self.index = index
@@ -42,6 +45,8 @@ class Channel:
         self._playing: bool = False
         self._envelope: float = 0.0  # current envelope level (0-1)
         self._releasing: bool = False
+        # Smoothed output gain (gain * velocity, 0 when muted) — see GAIN_RAMP
+        self._cur_gain: float = 1.0
         # Crossfade state for glitch-free retriggering / pitch changes
         self._xfade_buf = np.zeros((self.XFADE_LEN, 2), dtype=np.float32)
         self._xfade_tmp = np.zeros((self.XFADE_LEN, 2), dtype=np.float32)
@@ -213,6 +218,9 @@ class Channel:
         """Stage pitch-scale cache removal from any thread."""
         self._pending_psc_entries.append(self._PSC_CLEAR)
 
+    def _target_gain(self) -> float:
+        return 0.0 if self.state.mute else self.state.gain * self.state.velocity
+
     def _effective_speed(self) -> float:
         """Combined playback rate including mode-specific pitch.
 
@@ -255,6 +263,8 @@ class Channel:
             # volume fight between attack ramp and crossfade.
         else:
             self._envelope = 0.0  # first trigger: normal attack from zero
+            # The attack ramps from silence, so the gain needn't glide
+            self._cur_gain = self._target_gain()
 
         # Non-PITCH modes: clear any stale pitch-mode audio selection
         # so _get_audio_data() returns the correct source.
@@ -338,7 +348,7 @@ class Channel:
         if self.state.reverse or self.state.mode == PlaybackMode.REVERSE:
             speed = -speed
 
-        env_gain = self._envelope * self.state.gain * self.state.velocity
+        env_gain = self._envelope * self._cur_gain
 
         if _HAS_CH_JIT:
             _xfade_jit(
@@ -569,6 +579,12 @@ class Channel:
         shot_hold_loops = (_mode == PlaybackMode.ONESHOT and self.state.shot_hold and self._shot_held)
         do_loop = not (_mode in (PlaybackMode.ONESHOT, PlaybackMode.SEQ, PlaybackMode.PITCH, PlaybackMode.STEP) and not pitch_loops and not shot_hold_loops)
 
+        gain_from = self._cur_gain
+        gain_to = self._target_gain()
+        # Constant rate (full scale per GAIN_RAMP samples), so a ramp that
+        # spans several small blocks still finishes on time
+        gain_step = max(1.0, gain_from, gain_to) / self.GAIN_RAMP
+
         # ── Numba JIT path ──────────────────────────────────────────
         if _HAS_CH_JIT:
             # Gather crossfade / fade-in state (kernel handles both)
@@ -577,17 +593,17 @@ class Channel:
             fi_off = self.XFADE_LEN - self._fade_in_remaining
             fi_rem = self._fade_in_remaining
 
-            new_pos, new_env, active_frames, stopped, new_xf_pos, new_fi_rem = _ch_jit(
+            (new_pos, new_env, active_frames, stopped, new_xf_pos, new_fi_rem,
+             self._cur_gain) = _ch_jit(
                 sample_data, num_sample_frames, num_channels,
                 output, num_frames,
                 self._position, speed,
                 loop_start, loop_end, do_loop,
                 self._envelope, self._releasing,
                 attack_samples, release_samples,
-                self.state.gain * self.state.velocity,
+                gain_from, gain_to, gain_step,
                 self._xfade_buf, xf_pos, xf_len,
                 self._fade_in_ramp, fi_off, fi_rem,
-                self.state.mute,
             )
 
             self._envelope = new_env
@@ -730,15 +746,26 @@ class Channel:
             output[:active_frames, 0] += samp_b
             output[:active_frames, 1] += samp_b
 
-        # Apply envelope and gain (zero-alloc)
-        gain = self.state.gain * self.state.velocity
-        if env is not None:
-            env_gain = self._env_gain_buf[:active_frames]
-            np.multiply(env, gain, out=env_gain)
-            output[:active_frames, 0] *= env_gain
-            output[:active_frames, 1] *= env_gain
+        # Apply envelope and gain (zero-alloc); the gain ramps toward its
+        # target like the JIT kernel does (mute/solo/fader changes)
+        env_gain = self._env_gain_buf[:active_frames]
+        if gain_to != gain_from:
+            np.add(self._arange_f32[:active_frames], 1.0, out=env_gain)
+            env_gain *= gain_step
+            if gain_to > gain_from:
+                env_gain += gain_from
+                np.minimum(env_gain, gain_to, out=env_gain)
+            else:
+                np.subtract(gain_from, env_gain, out=env_gain)
+                np.maximum(env_gain, gain_to, out=env_gain)
+            self._cur_gain = float(env_gain[-1])
         else:
-            output[:active_frames] *= gain
+            env_gain[:] = gain_to
+            self._cur_gain = gain_to
+        if env is not None:
+            env_gain *= env
+        output[:active_frames, 0] *= env_gain
+        output[:active_frames, 1] *= env_gain
 
         # Apply fade-in ramp after pitch cache swap / retrigger (new audio
         # 0→1 while crossfade tail handles old audio 1→0)
@@ -779,10 +806,6 @@ class Channel:
         if stop_after:
             self._playing = False
             self.state.playing = False
-
-        # Apply mute (zero entire buffer including crossfade tail)
-        if self.state.mute:
-            output[:num_frames] = 0
 
         return output
 

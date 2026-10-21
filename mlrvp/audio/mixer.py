@@ -48,8 +48,11 @@ class Mixer:
         # Volume smoothing: DSP-side current gain per group (ramps toward group.volume)
         # Prevents clicks when volume jumps suddenly (e.g. grid button press in mix mode)
         self._smooth_volumes = [1.0] * NUM_GROUPS
+        # Same for the master volume
+        self._smooth_master = 1.0
         # Pre-allocated 1-D ramp buffer — reused each callback, avoids allocation
         self._vol_ramp = np.zeros(_MAX_BUF, dtype=np.float32)
+        self._ramp_index = np.arange(_MAX_BUF, dtype=np.float32)
 
     def process_groups(self, channel_outputs: list[tuple[int, np.ndarray]],
                        num_frames: int) -> list:
@@ -79,6 +82,8 @@ class Mixer:
             self._route_tmp = np.zeros((num_frames, 2), dtype=np.float32)
             self._abs_tmp = np.zeros((num_frames, 2), dtype=np.float32)
             self._group_bus_views = [gb[:num_frames] for gb in self._group_buses]
+            self._vol_ramp = np.zeros(num_frames, dtype=np.float32)
+            self._ramp_index = np.arange(num_frames, dtype=np.float32)
 
         # Update pre-allocated view list (no list allocation)
         group_buses = self._group_bus_views
@@ -106,7 +111,11 @@ class Mixer:
             group_buses[g] += audio
 
         for i, (bus, group) in enumerate(zip(group_buses, self.groups)):
-            if group.mute:
+            current_vol = self._smooth_volumes[i]
+            # Muting fades the group out through the volume ramp (a hard cut
+            # clicks); once silent it's skipped.
+            target_vol = 0.0 if group.mute else group.volume
+            if group.mute and current_vol == 0.0:
                 self.group_peaks[i] = self.group_peaks[i] * 0.95
                 self._group_audio[i][:num_frames] = 0
                 continue
@@ -114,8 +123,6 @@ class Mixer:
             # Apply group volume — ramp from previous value to target over this
             # buffer so sudden jumps (e.g. mix-mode button press) don't click.
             scaled = self._group_audio[i][:num_frames]
-            current_vol = self._smooth_volumes[i]
-            target_vol = group.volume
             if abs(target_vol - current_vol) < 1e-4:
                 # Stable — fast scalar multiply
                 self._smooth_volumes[i] = target_vol
@@ -124,7 +131,7 @@ class Mixer:
                 # Ramp linearly from current to target over this buffer
                 ramp = self._vol_ramp[:num_frames]
                 step = (target_vol - current_vol) / max(num_frames - 1, 1)
-                np.multiply(np.arange(num_frames, dtype=np.float32), step, out=ramp)
+                np.multiply(self._ramp_index[:num_frames], step, out=ramp)
                 ramp += current_vol
                 np.multiply(bus, ramp[:, np.newaxis], out=scaled)
                 self._smooth_volumes[i] = target_vol
@@ -192,7 +199,8 @@ class Mixer:
         value instead of gliding from the previous preset's volumes.
         """
         for i, grp in enumerate(self.groups):
-            self._smooth_volumes[i] = grp.volume
+            self._smooth_volumes[i] = 0.0 if grp.mute else grp.volume
+        self._smooth_master = self.master_volume
 
     def apply_master(self, main_bus: np.ndarray, aux_return: np.ndarray) -> np.ndarray:
         """Apply master volume and sum in aux return.
@@ -210,8 +218,19 @@ class Mixer:
             tmp = self._route_tmp[:n]
             np.multiply(aux_return, self.aux_volume, out=tmp)
             main_bus += tmp
-        main_bus *= self.master_volume
+        target = self.master_volume
+        current = self._smooth_master
+        if abs(target - current) < 1e-4:
+            main_bus *= target
+        else:
+            # Ramp over the block so master volume jumps don't click
+            n = len(main_bus)
+            ramp = self._vol_ramp[:n]
+            np.multiply(self._ramp_index[:n], (target - current) / max(n - 1, 1), out=ramp)
+            ramp += current
+            main_bus *= ramp[:, np.newaxis]
+        self._smooth_master = target
 
-        # Soft clip to prevent harsh clipping
+        # Hard clip at 0 dBFS so overs can't exceed the output range
         np.clip(main_bus, -1.0, 1.0, out=main_bus)
         return main_bus

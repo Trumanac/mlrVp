@@ -45,6 +45,8 @@ class TestMute:
         mx = Mixer()
         mx.groups[0].mute = True
         outputs = [(0, const_audio(64, 1.0))]
+        first, *_ = mx.process_groups(outputs, 64)
+        assert first[0, 0] > 0.9 and first[-1, 0] == 0.0   # fades out, no click
         main, *_ = mx.process_groups(outputs, 64)
         assert np.all(main == 0.0)
 
@@ -162,9 +164,13 @@ class TestApplyMaster:
     def test_master_volume_scales_output(self):
         mx = Mixer()
         mx.master_volume = 0.5
-        main = const_audio(64, 0.4)
         aux_return = np.zeros((64, 2), dtype=np.float32)
-        out = mx.apply_master(main, aux_return)
+        ramp = mx.apply_master(const_audio(64, 0.4), aux_return)
+        # Ramps from the previous volume over one block (no click) ...
+        assert ramp[0, 0] == pytest.approx(0.4) and ramp[-1, 0] == pytest.approx(0.2)
+        assert np.all(np.diff(ramp[:, 0]) <= 0)
+        # ... then holds the new level
+        out = mx.apply_master(const_audio(64, 0.4), aux_return)
         np.testing.assert_allclose(out, const_audio(64, 0.2), atol=1e-5)
 
     def test_output_is_clipped_to_unit_range(self):
