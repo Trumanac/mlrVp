@@ -7570,6 +7570,8 @@ class AppController:
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
 
+    _PITCH_SCALE_MAX_SECONDS = 30.0
+
     def _build_pitch_scale_cache_async(self, row: int, source_override=None):
         """Pre-compute duration-preserving pitch shifts for each scale semitone.
 
@@ -7604,6 +7606,17 @@ class AppController:
         else:
             source = sample.data
 
+        # One full-length copy per semitone: for long samples (whole tracks)
+        # that's gigabytes of RAM and minutes of CPU, so they use PITCH
+        # mode's speed-based fallback (pitch also changes length).
+        if source.shape[0] > sr * self._PITCH_SCALE_MAX_SECONDS:
+            msg = (f"Row {row + 1}: sample is longer than "
+                   f"{self._PITCH_SCALE_MAX_SECONDS:.0f} s — PITCH mode uses "
+                   "speed-based pitch (length changes with pitch)")
+            log.info(msg)
+            run_on_main_thread(lambda: self.window and self.window.set_status(msg))
+            return
+
         # Only compute semitones for columns that actually exist on the grid.
         num_cols = self.config.grid_columns
         num_scale = min(num_cols, len(scale))
@@ -7631,8 +7644,9 @@ class AppController:
                     if ech.sample is not sample:
                         return  # sample changed
                     if semitone == 0:
-                        # Identity: no pitch shift needed
-                        shifted_data = source.copy()
+                        # Identity: no pitch shift needed (playback only
+                        # reads it, so no copy)
+                        shifted_data = source
                     else:
                         shifted_channels = []
                         for c in range(source.shape[1]):

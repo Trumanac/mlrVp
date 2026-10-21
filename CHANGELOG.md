@@ -75,6 +75,9 @@ project uses [Semantic Versioning](https://semver.org/).
   rack to change only its capitalisation failed on Windows/macOS.
 - Muting, soloing or unmuting a playing channel, muting a group, and jumps in channel
   gain or master volume clicked (the level switched instantly); they now fade over ~6 ms.
+- PITCH mode on a long sample (e.g. a whole track) built up to 16 full-length
+  pitch-shifted copies — gigabytes of RAM and minutes of CPU. Samples over 30 s now use
+  speed-based pitch, with a status message.
 - Memory slowly grew during long sessions (some objects were never garbage-collected).
 
 ### Security
