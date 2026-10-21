@@ -52,6 +52,8 @@ project uses [Semantic Versioning](https://semver.org/).
 - Tape Delay and Shimmer Reverb stopped working at buffer sizes of 1024/2048.
 - Loading a preset with a different BPM left beats, quantize, SEQ and pattern recorders
   at the old tempo.
+- A preset or Link peer above 300 BPM (or a NaN tempo over OSC) left the clock and the
+  loops on different tempos; one 20–300 BPM range now applies everywhere.
 - Ableton Link tempo changes from other peers weren't applied to loops, delays or the BPM
   display.
 - The welcome dialog reappeared after changing grid or control-row settings.

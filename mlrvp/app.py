@@ -4,6 +4,7 @@ Wires together all subsystems: audio engine, grid controller,
 transport clock, MIDI, OSC, preset manager, and GUI.
 """
 
+import math
 import os
 import sys
 import logging
@@ -32,7 +33,7 @@ from mlrvp.config import (
     LIVE_SOURCE_GRP_BASE, LIVE_SOURCE_FX_BASE,
     MONOME_BACKEND_AUTO, MONOME_BACKEND_SERIALOSC,
     MONOME_BACKEND_40H_DIRECT, MONOME_BACKEND_LEGACY_OSC,
-    SEQ_STEP_DIV_BEATS,
+    SEQ_STEP_DIV_BEATS, TEMPO_MIN, TEMPO_MAX,
 )
 from mlrvp.audio.engine import AudioEngine
 from mlrvp.audio.slicer_preview import SlicerPreviewService
@@ -2600,7 +2601,12 @@ class AppController:
         if not self.clock or not self.config.link_enabled:
             return
         link_bpm = self.clock.link_tempo
-        if link_bpm is None or abs(link_bpm - self.config.tempo) < 0.01:
+        if link_bpm is None:
+            return
+        # Link allows up to 999 BPM; compare the clamped value so a peer
+        # outside our range isn't re-applied every frame
+        link_bpm = max(TEMPO_MIN, min(TEMPO_MAX, link_bpm))
+        if abs(link_bpm - self.config.tempo) < 0.01:
             return
         if time.monotonic() - self._local_tempo_changed_at < self._LINK_FOLLOW_HOLDOFF:
             return
@@ -2609,6 +2615,12 @@ class AppController:
             self.window.transport.set_tempo(link_bpm)
 
     def _apply_tempo(self, bpm: float):
+        # Every tempo change passes here: keep clock, engine and UI on the
+        # same value (the clock clamps on its own) and ignore NaN/inf from
+        # OSC or MIDI
+        if not math.isfinite(bpm):
+            return
+        bpm = max(TEMPO_MIN, min(TEMPO_MAX, float(bpm)))
         if self.clock:
             self.clock.set_tempo(bpm)
         if self.engine:

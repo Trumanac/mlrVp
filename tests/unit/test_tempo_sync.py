@@ -65,3 +65,29 @@ def test_clock_link_tempo_reads_session_tempo():
     clock._link_enabled = True
     clock._link_bridge = SimpleNamespace(tempo=133.0)
     assert clock.link_tempo == 133.0
+
+
+def test_link_peer_above_range_is_clamped_and_applied_once():
+    ctrl, applied = _controller(link_tempo=400.0)
+    AppController._follow_link_tempo(ctrl)
+    assert applied == [300.0]
+    ctrl.config.tempo = 300.0
+    AppController._follow_link_tempo(ctrl)
+    assert applied == [300.0]          # not re-applied every frame
+
+
+@pytest.mark.parametrize("bpm, expected", [
+    (500.0, 300.0), (5.0, 20.0), (float("nan"), None), (float("inf"), None),
+])
+def test_apply_tempo_clamps_and_rejects_non_finite(bpm, expected):
+    ctrl = SimpleNamespace(clock=_FakeClock(), engine=None,
+                           config=SimpleNamespace(tempo=120.0),
+                           _notify_automation=lambda *a: None)
+    AppController._apply_tempo(ctrl, bpm)
+    assert ctrl.clock.calls == ([] if expected is None else [(expected, False)])
+
+
+def test_preset_tempo_uses_the_same_range(preset_manager):
+    from mlrvp.config import AppConfig
+    cfg = preset_manager.apply_preset({"config": {"tempo": 500}}, AppConfig())
+    assert cfg.tempo == 300.0

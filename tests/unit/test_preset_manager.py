@@ -217,9 +217,10 @@ class TestPresetSaveLoad:
 
 class TestApplyPresetClamping:
     def test_tempo_is_clamped_to_valid_range(self, app_config, preset_manager):
+        from mlrvp.config import TEMPO_MAX
         data = {"config": {"tempo": 9999.0}}
         result = preset_manager.apply_preset(data, app_config)
-        assert result.tempo == 999.0
+        assert result.tempo == TEMPO_MAX
 
     def test_invalid_mode_value_is_ignored(self, app_config, preset_manager):
         data = {"config": {"channels": [{"mode": "not-a-valid-mode"}]}}

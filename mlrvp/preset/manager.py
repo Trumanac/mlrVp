@@ -43,7 +43,7 @@ from mlrvp.config import (
     AppConfig,
     PlaybackMode, QuantizeMode,
     MONOME_BACKENDS, MONOME_BACKEND_AUTO,
-    get_presets_dir, get_setlists_dir, NUM_SETLIST_SLOTS, NUM_GROUPS
+    get_presets_dir, get_setlists_dir, NUM_SETLIST_SLOTS, NUM_GROUPS, TEMPO_MIN, TEMPO_MAX,
 )
 
 log = logging.getLogger("mlrvp")
@@ -541,7 +541,7 @@ class PresetManager:
 
         # Tempo
         try:
-            config.tempo = max(20.0, min(999.0, float(cfg_data.get("tempo", config.tempo))))
+            config.tempo = max(TEMPO_MIN, min(TEMPO_MAX, float(cfg_data.get("tempo", config.tempo))))
         except (ValueError, TypeError, OverflowError):
             pass
         try:

@@ -9,7 +9,7 @@ import logging
 import threading
 from typing import Callable, Optional
 
-from mlrvp.config import QuantizeMode
+from mlrvp.config import QuantizeMode, TEMPO_MIN, TEMPO_MAX
 
 log = logging.getLogger("mlrvp")
 
@@ -286,7 +286,7 @@ class MasterClock:
 
     def set_tempo(self, tempo: float, immediate: bool = False):
         """Set tempo. If not immediate, change happens on next beat."""
-        tempo = max(20.0, min(300.0, tempo))
+        tempo = max(TEMPO_MIN, min(TEMPO_MAX, tempo))
         # Propagate to Ableton Link session if active
         if self._link_enabled and self._link_bridge is not None:
             self._link_bridge.tempo = tempo
@@ -442,7 +442,7 @@ class MasterClock:
                 self._link_poll_counter += 1
                 if self._link_poll_counter >= 50:
                     self._link_poll_counter = 0
-                    link_tempo = self._link_bridge.tempo
+                    link_tempo = max(TEMPO_MIN, min(TEMPO_MAX, self._link_bridge.tempo))
                     if abs(link_tempo - self.tempo) > 0.05:
                         log.debug(
                             "Link tempo change: %.2f -> %.2f BPM",
