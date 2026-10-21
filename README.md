@@ -809,8 +809,11 @@ To configure your audio hardware, open **Setup → Audio**:
 2. Choose your **Output Device** from the filtered list (or leave at Default).
 3. Choose your **Input Device** if you plan to record audio.
 4. Set **Sample Rate** and **Buffer Size** — lower buffer sizes reduce latency at the cost of increased CPU load.
-5. Click **Start Engine** to open the audio stream. The status label shows the active device and sample rate.
-6. Click **Restart** (File → Restart) at any time to reinitialize the audio engine with the current settings.
+
+Audio starts automatically when mlrVp opens. Device and driver changes apply immediately; sample rate and
+buffer size are saved and take effect after **File → Restart**. All audio settings are remembered between
+sessions — if the saved device is missing, mlrVp falls back to the system default and says so in the status bar.
+The **DAC** button in the mixer turns audio off and on.
 
 > **Windows tip**: Use the Driver Type filter to select **ASIO** for lowest latency. If no ASIO devices appear, install [ASIO4ALL](https://www.asio4all.org/) for onboard audio.
 
@@ -1258,8 +1261,19 @@ You can also **right-click** any individual knob or fader to permanently latch o
 | **File → Open Preset File…** | Load a preset from any location on disk (same as Ctrl+O). |
 | **File → Save Preset File…** | Export the current state as a standalone JSON preset file (same as Ctrl+S). |
 | **File → Restart** | Reinitialize the audio engine and reload all settings — useful after changing audio device settings or recovering from an audio dropout. |
+| **File → Import Data from Previous Version…** | Copy presets, setlists, racks, settings and recordings from an older mlrVp folder (nothing is overwritten). |
+| **File → Open Data Folder** | Show the folder holding your presets, setlists, racks and settings. |
 | **File → Stop All Audio** | Immediately stop all playing channels and pattern recorders. |
 | **File → Quit** | Close mlrVp (same as Ctrl+Q). |
+
+### Help Menu
+
+| Action | Description |
+|--------|-------------|
+| **Help → How to Use** | The built-in user guide. |
+| **Help → Open Log Folder** | Show `mlrvp.log` (and `crash.log`) — attach these to bug reports. |
+| **Help → Report a Bug…** | Open the GitHub issue form. |
+| **Help → About mlrVp** | Version and credits. |
 
 ---
 

@@ -13,7 +13,8 @@ import logging
 
 _log = logging.getLogger(__name__)
 
-ISSUES_URL = "https://github.com/Trumanac/mlrVp/issues/new/choose"
+PROJECT_URL = "https://github.com/Trumanac/mlrVp"
+ISSUES_URL = f"{PROJECT_URL}/issues/new/choose"
 
 from mlrvp.gui.views.channel_view import ChannelView
 from mlrvp.gui.views.mixer_view import MixerView
@@ -687,8 +688,13 @@ class MainWindow(QMainWindow):
             "trent gill &amp; friends at monome.org</p>"
             "<p style='margin:0 0 4px 0'>Rebuilt with PySide6, sounddevice, and numpy.</p>"
             f"<p><b>Version {_ver}</b></p>"
+            f"<p style='margin:0 0 4px 0'><a href='{PROJECT_URL}'>{PROJECT_URL[8:]}</a></p>"
+            "<p style='margin:0; font-size:small'>Free software — MIT License with Commons "
+            "Clause (no selling). Uses Qt (LGPL-3.0) and other open-source libraries; "
+            "see LICENSE.txt and THIRD_PARTY_LICENSES.txt in the app folder.</p>"
         )
         text_label.setWordWrap(True)
+        text_label.setOpenExternalLinks(True)
         text_label.setAlignment(Qt.AlignmentFlag.AlignTop)
         outer.addWidget(text_label, 1)
 
@@ -842,8 +848,8 @@ class WelcomeDialog(QDialog):
             "<h2>Welcome to mlrVp!</h2>"
             "<p>mlrVp is a grid-based live sampler. Here's how to get started:</p>"
             "<ol>"
-            "<li><b>Setup → Audio</b> — choose your audio output device and click "
-            "<b>Start Engine</b>.</li>"
+            "<li>Audio is already running on your default output — pick another "
+            "device in <b>Setup → Audio</b> if you need to.</li>"
             "<li><b>Drag a WAV/AIFF/FLAC file</b> onto any channel row's waveform "
             "area to load a sample.</li>"
             "<li>Click a cell on the <b>virtual grid</b> (or a hardware button) to "
