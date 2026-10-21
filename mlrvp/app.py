@@ -875,6 +875,9 @@ class AppController:
 
         Called on the main thread whenever a continuous parameter changes.
         """
+        # Every effect / tempo / mixer edit passes here, so this is also
+        # where they count as unsaved changes (offered for saving on quit)
+        self._preset_dirty = True
         if not self.clock:
             return
         beat = self.clock.beat_position
@@ -1377,6 +1380,7 @@ class AppController:
         # for the next block; loading now is safe).
         try:
             self.engine.load_sample(row, buffer)
+            self._mark_preset_dirty()    # new recording: offer to save it on quit
             if self.window:
                 try:
                     overview = get_waveform_overview(buffer, num_points=800)
@@ -1470,6 +1474,7 @@ class AppController:
         ch = self.engine.channels[row]
         try:
             self.engine.load_sample(row, buffer)
+            self._mark_preset_dirty()    # new recording: offer to save it on quit
             ch.state.live.loop_state = LIVE_STATE_PLAYING
             self.engine.trigger_channel(row, 0, max(1, self.config.grid_columns))
             if self.window:
@@ -2677,6 +2682,7 @@ class AppController:
     def _gui_quantize_changed(self, idx: int):
         from mlrvp.config import QuantizeMode
         self.config.quantize = QuantizeMode(idx)
+        self._mark_preset_dirty()
         if self.clock:
             self.clock.quantize = QuantizeMode(idx)
 
@@ -4173,6 +4179,7 @@ class AppController:
 
     def _gui_master_volume(self, vol: float):
         self.config.master_volume = vol
+        self._mark_preset_dirty()
         if self.engine:
             self.engine.set_master_volume(vol)
 
@@ -4196,6 +4203,7 @@ class AppController:
         """Master HP trim: knob 0.0=20Hz (off), 1.0=500Hz (max trim)."""
         freq = 20.0 + val * 480.0  # 20-500 Hz range
         self.config.master_hp = freq
+        self._mark_preset_dirty()
         if self.engine:
             self.engine.set_master_hp(freq)
         if self.window:
@@ -4205,6 +4213,7 @@ class AppController:
         """Master LP trim: knob 0.0=20kHz (off), 1.0=200Hz (max trim)."""
         freq = 20000.0 - val * 19800.0  # 20000-200 Hz range
         self.config.master_lp = freq
+        self._mark_preset_dirty()
         if self.engine:
             self.engine.set_master_lp(freq)
         if self.window:
@@ -4894,6 +4903,7 @@ class AppController:
         try:
             self.engine.load_sample(target, buf)
             self.config.channels[target].filename = f"<recorded {buf.duration_sec:.2f}s>"
+            self._mark_preset_dirty()    # new recording: offer to save it on quit
             self.config.channels[target].steps = self.config.grid_columns
             if self.window:
                 try:

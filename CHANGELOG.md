@@ -91,6 +91,9 @@ project uses [Semantic Versioning](https://semver.org/).
 - Saving a preset with a SAMP resample, LIVE loop or studio-recorder take on a row didn't
   save the recording: the preset reloaded with the row's previous sample (or nothing).
   Such recordings are now written to `Slices/Recordings` when the preset is saved.
+- Quitting only offered to save after channel or mixer edits: changed effects, tempo,
+  quantize, master volume/filters or a new LIVE/SAMP/studio recording were discarded
+  without asking.
 - Memory slowly grew during long sessions (some objects were never garbage-collected).
 
 ### Security
