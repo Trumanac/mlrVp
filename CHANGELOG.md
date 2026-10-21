@@ -88,6 +88,9 @@ project uses [Semantic Versioning](https://semver.org/).
   speed-based pitch, with a status message.
 - Quitting with unsaved changes and choosing **Save**, then cancelling the preset-name or
   setlist prompt, quit anyway and lost the changes; it now keeps mlrVp open.
+- Saving a preset with a SAMP resample, LIVE loop or studio-recorder take on a row didn't
+  save the recording: the preset reloaded with the row's previous sample (or nothing).
+  Such recordings are now written to `Slices/Recordings` when the preset is saved.
 - Memory slowly grew during long sessions (some objects were never garbage-collected).
 
 ### Security

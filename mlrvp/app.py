@@ -1693,6 +1693,8 @@ class AppController:
             self.config.channels[row].live.exported_path = out_path
             # Make the exported file the channel's filename so preset save records it
             self.config.channels[row].filename = out_path
+            # ...and mark the loaded buffer as that file (see _persist_recorded_samples)
+            ch.sample.filename = _os.path.basename(out_path)
         log.info("LIVE: exported row %d to %s", row, out_path)
         return out_path
 
@@ -2940,6 +2942,46 @@ class AppController:
         if self.window:
             self.window.set_status("New preset — all channels cleared")
 
+    def _persist_recorded_samples(self, label: str) -> int:
+        """Write rows whose audio isn't their configured file to disk.
+
+        SAMP/LIVE recordings and studio-recorder takes live only in memory
+        (the row's filename is a placeholder, empty, or still the previous
+        file), so a preset saved now would reload without them.  Writes each
+        to <Slices>/Recordings and points the row at it.  Returns the count.
+        """
+        import os
+        import re
+        import soundfile as sf
+        from mlrvp.config import get_slices_dir
+        if not self.engine:
+            return 0
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        safe_label = re.sub(r'[<>:"/\\|?*]', "_", label).strip() or "preset"
+        written = 0
+        for i, cfg_ch in enumerate(self.config.channels[:self.config.row_count]):
+            sample = self.engine.channels[i].sample
+            if sample is None or sample.data is None:
+                continue
+            path = cfg_ch.filename
+            if (path and not path.startswith("<") and os.path.isfile(path)
+                    and sample.filename == os.path.basename(path)):
+                continue    # the row plays its configured file
+            out_dir = get_slices_dir() / "Recordings"
+            out = out_dir / f"{safe_label}_row{i + 1:02d}_{stamp}.wav"
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                sf.write(str(out), sample.data, sample.sample_rate, subtype="FLOAT")
+            except Exception as e:
+                log.error("Could not save the recording on row %d: %s", i + 1, e)
+                self._report_save_failure(f"the recording on row {i + 1}", e)
+                continue
+            cfg_ch.filename = str(out)
+            sample.filename = out.name
+            written += 1
+            log.info("Saved row %d recording to %s", i + 1, out)
+        return written
+
     def _gui_save_preset(self, name: str) -> bool:
         """Save current state to the preset library and add to setlist.
 
@@ -2977,6 +3019,10 @@ class AppController:
                 return False
             name = name.strip()
 
+        # Recordings that exist only in memory go to disk first, so the
+        # preset reloads with them
+        recordings = self._persist_recorded_samples(name)
+
         # Save to library (async write — errors logged in bg thread)
         self.presets.save_preset(
             name, self.config,
@@ -3000,7 +3046,8 @@ class AppController:
         self._refresh_setlist_ui()
         self._clear_preset_dirty()
         if self.window:
-            self.window.set_status(f"Saved: {name}")
+            extra = f" (+{recordings} recording(s) saved to Slices/Recordings)" if recordings else ""
+            self.window.set_status(f"Saved: {name}{extra}")
             self.window.transport.flash_save_button()
         return True
 
@@ -3226,6 +3273,7 @@ class AppController:
         from pathlib import Path as _Path
         from mlrvp.preset.manager import _atomic_write_json, _SafeFloatEncoder, CURRENT_PRESET_VERSION
         try:
+            self._persist_recorded_samples(_Path(path).stem)
             data = self.presets._serialize_config(self.config)
             payload = {
                 "version": CURRENT_PRESET_VERSION,
