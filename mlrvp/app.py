@@ -709,8 +709,9 @@ class AppController:
         result = msg.exec()
 
         if result == QMessageBox.StandardButton.Save:
-            self._gui_save_preset(name)
-            if self.window:
+            # Cancelling the setlist/name prompt aborts the quit, so the
+            # changes the user chose to save aren't lost
+            if self._gui_save_preset(name) and self.window:
                 self.window.confirm_close()
         elif result == QMessageBox.StandardButton.Discard:
             if self.window:
@@ -2939,7 +2940,7 @@ class AppController:
         if self.window:
             self.window.set_status("New preset — all channels cleared")
 
-    def _gui_save_preset(self, name: str):
+    def _gui_save_preset(self, name: str) -> bool:
         """Save current state to the preset library and add to setlist.
 
         Flow:
@@ -2947,6 +2948,8 @@ class AppController:
           then prompt the user to name the preset before saving.
         - If name is '<new>' or empty → prompt the user to name the preset.
         - Otherwise save directly with the given name.
+
+        Returns False if the user cancelled a prompt (nothing was saved).
         """
         from PySide6.QtWidgets import QInputDialog
 
@@ -2959,19 +2962,19 @@ class AppController:
             sl_name = dlg.open_for_new_setlist()
             if sl_name == "Default":
                 # User cancelled the new-setlist prompt — don't save
-                return
+                return False
             # Let user manage the editor (add presets, reorder, etc.)
             dlg.exec()
             # Re-check in case user navigated back to Default inside the editor
             if self.presets.setlist_name == "Default":
-                return
+                return False
 
         # If no preset name or placeholder, prompt for one
         if not name or name == "<new>":
             name, ok = QInputDialog.getText(
                 self.window, "Save Preset", "Preset name:")
             if not ok or not name.strip():
-                return
+                return False
             name = name.strip()
 
         # Save to library (async write — errors logged in bg thread)
@@ -2999,6 +3002,7 @@ class AppController:
         if self.window:
             self.window.set_status(f"Saved: {name}")
             self.window.transport.flash_save_button()
+        return True
 
     def _gui_live_recall_preset(self, idx: int):
         """Recall a preset from the setlist.
