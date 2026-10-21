@@ -29,6 +29,9 @@ project uses [Semantic Versioning](https://semver.org/).
 - A log file (`logs/mlrvp.log`, plus `crash.log` for native crashes) — release builds
   previously had no way to see errors.
 - The version number is shown in the window title.
+- **Setup → Audio → Latency** (Low / Medium / High): how far ahead mlrVp renders audio.
+  The old fixed setting (High) added ~80 ms between a grid press and the sound at a
+  512 buffer; Low adds ~23 ms. Shown in milliseconds, applies immediately.
 - Release downloads include mlrVp's license and the licenses of all bundled third-party
   software (`THIRD_PARTY_LICENSES.txt`, `licenses/`).
 - A status-bar notice when an effect fails and is bypassed.

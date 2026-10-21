@@ -3365,7 +3365,7 @@ class AppController:
 
     _PERSISTED_AUDIO_KEYS = frozenset({
         "sample_rate", "buffer_size", "host_api",
-        "output_device", "input_device", "multichannel_output",
+        "output_device", "input_device", "multichannel_output", "latency",
     })
 
     @staticmethod
@@ -3398,7 +3398,9 @@ class AppController:
         Devices are stored by name because PortAudio indices change when
         devices are plugged in or removed.
         """
-        from .config import SAMPLE_RATE_CHOICES, BUFFER_SIZE_CHOICES
+        from .config import SAMPLE_RATE_CHOICES, BUFFER_SIZE_CHOICES, LATENCY_QUEUE_BLOCKS
+        if audio.get("latency") in LATENCY_QUEUE_BLOCKS:
+            self.config.latency = audio["latency"]
         if audio.get("sample_rate") in SAMPLE_RATE_CHOICES:
             self.config.sample_rate = int(audio["sample_rate"])
         if audio.get("buffer_size") in BUFFER_SIZE_CHOICES:
@@ -3472,6 +3474,7 @@ class AppController:
                     "sample_rate": self.config.sample_rate,
                     "buffer_size": self.config.buffer_size,
                     "multichannel_output": bool(getattr(self.config, "multichannel_output", False)),
+                    "latency": self.config.latency,
                 },
             }
             startup_settings.update(data)
@@ -5744,8 +5747,9 @@ class AppController:
             self._audio_device_names[key.split("_")[0]] = self._audio_device_name(value)
         if key in self._PERSISTED_AUDIO_KEYS:
             self._settings_save_queue.put(True)
-        if key in ("output_device", "input_device", "host_api"):
+        if key in ("output_device", "input_device", "host_api", "latency"):
             # A driver change also emits output/input resets — restart once.
+            # Latency resizes the render-ahead queue, which start() allocates.
             self._schedule_audio_restart()
             return
         if key == "multichannel_output":
@@ -6008,6 +6012,7 @@ class AppController:
         self.window.setup_view.audio_panel.set_audio_format(
             self.config.sample_rate, self.config.buffer_size
         )
+        self.window.setup_view.audio_panel.set_latency(self.config.latency)
 
 
         # Ableton Link — restore saved state and update Setup > Audio button

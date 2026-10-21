@@ -52,6 +52,7 @@ def test_app_save_keeps_welcome_flag_and_stores_audio(monkeypatch):
     ctrl = _controller(monkeypatch)
     ctrl.config.sample_rate, ctrl.config.buffer_size = 48000, 256
     ctrl.config.host_api = "ASIO"
+    ctrl.config.latency = "Low"
     ctrl._audio_device_names = {"output": "Focusrite USB ASIO", "input": ""}
 
     AppController._save_startup_settings(ctrl)
@@ -61,6 +62,7 @@ def test_app_save_keeps_welcome_flag_and_stores_audio(monkeypatch):
     assert data["audio"] == {
         "host_api": "ASIO", "output_device": "Focusrite USB ASIO", "input_device": "",
         "sample_rate": 48000, "buffer_size": 256, "multichannel_output": False,
+        "latency": "Low",
     }
 
 
@@ -85,9 +87,17 @@ def test_restore_missing_device_falls_back_and_keeps_name(monkeypatch):
 
 def test_restore_ignores_unsupported_values(monkeypatch):
     ctrl = _controller(monkeypatch)
-    AppController._restore_audio_settings(ctrl, {"sample_rate": 12345, "buffer_size": 333})
+    AppController._restore_audio_settings(ctrl, {"sample_rate": 12345, "buffer_size": 333,
+                                                 "latency": "Ludicrous"})
     assert ctrl.config.sample_rate == config.SAMPLE_RATE
     assert ctrl.config.buffer_size == config.BUFFER_SIZE
+    assert ctrl.config.latency == config.DEFAULT_LATENCY
+
+
+def test_restore_latency(monkeypatch):
+    ctrl = _controller(monkeypatch)
+    AppController._restore_audio_settings(ctrl, {"latency": "Low"})
+    assert ctrl.config.latency == "Low"
 
 
 def test_worker_saves_pending_request_before_stopping():

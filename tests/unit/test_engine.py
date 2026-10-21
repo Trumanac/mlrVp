@@ -699,3 +699,25 @@ def test_gc_schedule_includes_older_generations():
     assert gens.count(2) == 2                 # every 5 min
     assert gens.count(1) == 20 - 2            # every 30 s, except when full
     assert gens[0] == 0
+
+
+class TestLatencySetting:
+    @pytest.mark.parametrize("latency, blocks", [("Low", 2), ("Medium", 4), ("High", 7)])
+    def test_ring_queues_the_configured_number_of_blocks(self, latency, blocks):
+        from mlrvp.config import AppConfig
+        cfg = AppConfig()
+        cfg.latency = latency
+        eng = AudioEngine(cfg)
+        assert eng._ring_blocks == blocks + 1     # + the slot the worker leaves free
+        assert eng._ring_buf.shape[0] == blocks + 1
+
+    def test_unknown_latency_falls_back_to_default(self):
+        from mlrvp.config import AppConfig, LATENCY_QUEUE_BLOCKS, DEFAULT_LATENCY
+        cfg = AppConfig()
+        cfg.latency = "bogus"
+        assert AudioEngine(cfg)._ring_blocks == LATENCY_QUEUE_BLOCKS[DEFAULT_LATENCY] + 1
+
+    def test_latency_ms(self):
+        from mlrvp.config import latency_ms
+        assert round(latency_ms("High", 44100, 512)) == 81    # pre-1.0 behaviour
+        assert round(latency_ms("Low", 48000, 256)) == 11

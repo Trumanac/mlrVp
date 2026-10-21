@@ -14,6 +14,9 @@ from mlrvp.config import (
     BUFFER_SIZE,
     BUFFER_SIZE_CHOICES,
     SAMPLE_RATE_CHOICES,
+    LATENCY_QUEUE_BLOCKS,
+    DEFAULT_LATENCY,
+    latency_ms,
     MAX_ROWS,
     MAX_COLUMNS,
     NUM_GROUPS,
@@ -110,6 +113,29 @@ class AudioSetupPanel(QFrame):
         )
         grid.addWidget(QLabel("Buffer Size:"), 4, 0)
         grid.addWidget(self._buf_combo, 4, 1)
+
+        # Latency (render-ahead queue depth)
+        self._latency_combo = QComboBox()
+        self._latency_combo.addItems(list(LATENCY_QUEUE_BLOCKS))
+        self._latency_combo.setCurrentText(DEFAULT_LATENCY)
+        self._latency_combo.currentTextChanged.connect(self._on_latency_changed)
+        self._latency_combo.setToolTip(
+            "How far ahead mlrVp renders audio.\n"
+            "Low = tightest feel when playing the grid; High = most protection\n"
+            "against dropouts when the computer is busy (preset loads, heavy UI).\n"
+            "Try Low or Medium — move up if you hear clicks or dropouts.\n"
+            "Applies immediately."
+        )
+        self._latency_info = QLabel()
+        self._latency_info.setStyleSheet(f"color: {TEXT_SECONDARY};")
+        latency_row = QHBoxLayout()
+        latency_row.addWidget(self._latency_combo, 1)
+        latency_row.addWidget(self._latency_info)
+        grid.addWidget(QLabel("Latency:"), 5, 0)
+        grid.addLayout(latency_row, 5, 1)
+        self._sr_combo.currentTextChanged.connect(self._update_latency_info)
+        self._buf_combo.currentTextChanged.connect(self._update_latency_info)
+        self._update_latency_info()
 
         layout.addLayout(grid)
 
@@ -303,6 +329,29 @@ class AudioSetupPanel(QFrame):
             combo.blockSignals(True)
             combo.setCurrentText(str(value))
             combo.blockSignals(False)
+        self._update_latency_info()
+
+    def set_latency(self, latency: str):
+        """Show the configured Latency setting without firing signals."""
+        self._latency_combo.blockSignals(True)
+        self._latency_combo.setCurrentText(latency)
+        self._latency_combo.blockSignals(False)
+        self._update_latency_info()
+
+    def _on_latency_changed(self, latency: str):
+        self._update_latency_info()
+        self.setting_changed.emit("latency", latency)
+
+    def _update_latency_info(self, *_):
+        try:
+            sr, buf = int(self._sr_combo.currentText()), int(self._buf_combo.currentText())
+        except ValueError:
+            return
+        added = latency_ms(self._latency_combo.currentText(), sr, buf)
+        self._latency_info.setText(f"+{added:.0f} ms")
+        self._latency_info.setToolTip(
+            f"Extra delay from grid press to sound at {buf} samples / {sr} Hz,\n"
+            "on top of the audio device's own latency.")
 
     def set_multichannel_output_state(self, enabled: bool):
         """Sync the multi-channel output checkbox without firing the signal."""

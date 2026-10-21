@@ -86,6 +86,18 @@ SAMPLE_RATE_CHOICES = (44100, 48000, 88200, 96000)
 BUFFER_SIZE = 512
 # Audio buffer sizes offered in Setup — every effect must work at each of these.
 BUFFER_SIZE_CHOICES = (64, 128, 256, 512, 1024, 2048)
+# Audio blocks the DSP worker renders ahead of the output device.  Each adds
+# one buffer of latency (grid press -> sound) but rides out longer stalls
+# (preset loads, heavy GUI work) without dropouts.  "High" is the pre-1.0
+# behaviour.
+LATENCY_QUEUE_BLOCKS = {"Low": 2, "Medium": 4, "High": 7}
+DEFAULT_LATENCY = "High"
+
+
+def latency_ms(latency: str, sample_rate: int, buffer_size: int) -> float:
+    """Latency the render-ahead queue adds for *latency* at this format."""
+    blocks = LATENCY_QUEUE_BLOCKS.get(latency, LATENCY_QUEUE_BLOCKS[DEFAULT_LATENCY])
+    return blocks * buffer_size / sample_rate * 1000.0
 MONOME_BACKEND_AUTO = "auto"
 MONOME_BACKEND_SERIALOSC = "serialosc"
 MONOME_BACKEND_40H_DIRECT = "40h-direct"
@@ -966,6 +978,7 @@ class AppConfig:
     # Audio
     sample_rate: int = SAMPLE_RATE
     buffer_size: int = BUFFER_SIZE
+    latency: str = DEFAULT_LATENCY    # key of LATENCY_QUEUE_BLOCKS
     output_device: int = -1  # -1 = default
     input_device: int = -1
     host_api: str = ""  # empty = show all drivers

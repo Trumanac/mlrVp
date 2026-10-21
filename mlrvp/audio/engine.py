@@ -30,7 +30,7 @@ log = logging.getLogger("mlrvp")
 
 from mlrvp.config import (
     AppConfig, BUFFER_SIZE, MAX_ROWS, NUM_GROUPS,
-    PlaybackMode
+    PlaybackMode, LATENCY_QUEUE_BLOCKS, DEFAULT_LATENCY,
 )
 from mlrvp.audio.channel import Channel
 from mlrvp.audio.mixer import Mixer
@@ -822,12 +822,11 @@ class AudioEngine:
 
         # ── Ring buffer for decoupled audio output ──
         # The DSP worker fills this ahead of time; the sounddevice callback
-        # just copies the next block out.  8 blocks ≈ 93 ms of lookahead at
-        # 512 frames / 44.1 kHz.  Doubled from 4 → 8 to absorb the GIL
-        # contention spike caused by Qt setStyleSheet + paintEvent when the
-        # user switches grid modes (mix ↔ grid) on the main thread.
-        # Trigger latency is unaffected (still single-block).
-        self._ring_blocks = 8
+        # just copies the next block out.  The worker keeps all but one slot
+        # filled, so every queued block absorbs one block of GIL stall but
+        # also delays grid triggers by one block: the depth is the user's
+        # Latency setting (config.latency, see LATENCY_QUEUE_BLOCKS).
+        self._ring_blocks = self._ring_blocks_for_config()
         # _out_channels is set to 2 now and recomputed in start() when
         # multi-channel output is enabled.
         self._out_channels: int = 2
@@ -965,6 +964,12 @@ class AudioEngine:
         self._dsp_last_error = None
         return (count, msg)
 
+    def _ring_blocks_for_config(self) -> int:
+        """Ring size for the Latency setting: the queued blocks plus the
+        one slot the worker always leaves free."""
+        latency = getattr(self.config, "latency", DEFAULT_LATENCY)
+        return LATENCY_QUEUE_BLOCKS.get(latency, LATENCY_QUEUE_BLOCKS[DEFAULT_LATENCY]) + 1
+
     def poll_fx_error_notice(self) -> Optional[str]:
         """Return a user-facing message if an effect started failing, else None.
 
@@ -1074,6 +1079,9 @@ class AudioEngine:
                 self._out_channels = 2
 
             # Re-allocate the ring buffer to match the new channel count
+            # and the current Latency setting
+            self._ring_blocks = self._ring_blocks_for_config()
+            self._prof_ring_min = self._ring_blocks
             self._ring_buf = np.zeros(
                 (self._ring_blocks, self.buffer_size, self._out_channels),
                 dtype=np.float32,

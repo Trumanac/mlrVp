@@ -343,3 +343,20 @@ class TestAudioFormatDisplay:
             page.audio.set_audio_format(48000, 256)
         assert page.audio._sr_combo.currentText() == "48000"
         assert page.audio._buf_combo.currentText() == "256"
+
+    def test_latency_change_emits_and_shows_added_ms(self, qtbot):
+        page = SetupPage(qtbot)
+        page.audio.set_audio_format(44100, 512)
+        blocker = page.run_and_capture_signal(
+            page.widget.audio_setting_changed,
+            lambda: page.audio._latency_combo.setCurrentText("Low"))
+        assert tuple(blocker.args) == ("latency", "Low")
+        assert page.audio._latency_info.text() == "+23 ms"     # 2 blocks of 512
+        page.audio.set_audio_format(44100, 128)
+        assert page.audio._latency_info.text() == "+6 ms"
+
+    def test_set_latency_shows_value_without_emitting(self, qtbot):
+        page = SetupPage(qtbot)
+        with qtbot.assertNotEmitted(page.widget.audio_setting_changed):
+            page.audio.set_latency("Medium")
+        assert page.audio._latency_combo.currentText() == "Medium"
