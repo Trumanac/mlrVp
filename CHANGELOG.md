@@ -29,6 +29,9 @@ project uses [Semantic Versioning](https://semver.org/).
 - A log file (`logs/mlrvp.log`, plus `crash.log` for native crashes) — release builds
   previously had no way to see errors.
 - The version number is shown in the window title.
+- File dialogs remember the last folder you used (samples, presets, library folders) and
+  start in Music / your presets folder the first time, instead of the app's install folder.
+  MP3 files can be picked in the Load dialogs (they could already be dragged in).
 - **Setup → Audio → Latency** (Low / Medium / High): how far ahead mlrVp renders audio.
   The old fixed setting (High) added ~80 ms between a grid press and the sound at a
   512 buffer; Low adds ~23 ms. Shown in milliseconds, applies immediately.

@@ -16,6 +16,7 @@ _log = logging.getLogger(__name__)
 PROJECT_URL = "https://github.com/Trumanac/mlrVp"
 ISSUES_URL = f"{PROJECT_URL}/issues/new/choose"
 
+from mlrvp.gui import file_dialogs
 from mlrvp.gui.views.channel_view import ChannelView
 from mlrvp.gui.views.mixer_view import MixerView
 from mlrvp.gui.views.effects_view import EffectsView
@@ -566,18 +567,14 @@ class MainWindow(QMainWindow):
             self._grid_window.hide()
 
     def _on_open_preset(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open Preset File", "",
-            "mlrVp Presets (*.json);;All Files (*)"
-        )
+        path = file_dialogs.open_file(self, "Open Preset File", "presets",
+                                      file_dialogs.PRESET_FILTER)
         if path:
             self.preset_file_open_requested.emit(path)
 
     def _on_save_preset(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Preset File", "",
-            "mlrVp Presets (*.json);;All Files (*)"
-        )
+        path = file_dialogs.save_file(self, "Save Preset File", "presets",
+                                      file_dialogs.PRESET_FILTER)
         if path:
             self.preset_file_save_requested.emit(path)
 

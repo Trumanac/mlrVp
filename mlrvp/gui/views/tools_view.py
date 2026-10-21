@@ -11,8 +11,7 @@ import soundfile as sf
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QFrame, QComboBox, QSpinBox, QDoubleSpinBox,
-    QLineEdit, QCheckBox, QSizePolicy, QFileDialog,
-    QMenu, QScrollArea, QMessageBox, QTableWidget, QTableWidgetItem,
+    QLineEdit, QCheckBox, QSizePolicy, QMenu, QScrollArea, QMessageBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QProgressBar, QListWidget, QAbstractItemView,
     QTreeWidget, QTreeWidgetItem, QStackedWidget, QSlider,
 )
@@ -27,6 +26,7 @@ from mlrvp.gui.styles import (
     ACCENT_BLUE_HOVER, ACCENT_GOLD_HOVER, STATUS_ERROR_HOVER,
 )
 from mlrvp.gui.widgets.fader import HorizontalFader
+from mlrvp.gui import file_dialogs
 from mlrvp.gui.main_thread import run_on_main_thread
 
 log = logging.getLogger("mlrvp")
@@ -95,7 +95,7 @@ def _is_slices_subfolder(path: str) -> bool:
         return False
     return target != root and root in target.parents
 
-AUDIO_EXTENSIONS = {'.wav', '.aiff', '.aif', '.flac', '.ogg', '.mp3'}
+AUDIO_EXTENSIONS = file_dialogs.AUDIO_EXTENSIONS
 
 
 class _AnalysisWorker(QThread):
@@ -1072,10 +1072,8 @@ class SlicePanel(QFrame):
             self.load_file(path)
 
     def _on_load_click(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load Sample for Slicing", "",
-            "Audio Files (*.wav *.aiff *.aif *.flac *.ogg);;All Files (*)"
-        )
+        path = file_dialogs.open_file(self, "Load Sample for Slicing", "samples",
+                                      file_dialogs.AUDIO_FILTER)
         if path:
             self.load_file(path)
 
@@ -4833,7 +4831,7 @@ class _LibrarySamplesTab(_LibraryTableBase):
         )
 
     def _on_add_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "Add Sample Directory")
+        d = file_dialogs.existing_dir(self, "Add Sample Directory", "library")
         if not d:
             return
         if d in self._watched_dirs:
@@ -5617,8 +5615,7 @@ class _LibrarySongsTab(_LibraryTableBase):
         )
 
     def _on_add_dir(self):
-        from PySide6.QtWidgets import QFileDialog
-        d = QFileDialog.getExistingDirectory(self, "Add Songs Directory")
+        d = file_dialogs.existing_dir(self, "Add Songs Directory", "library")
         if d and d not in self._watched_dirs:
             self._watched_dirs.append(d)
             self._dirs_list.addItem(d)

@@ -9,8 +9,7 @@ import math
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
-    QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QFileDialog,
-    QScrollArea, QFrame, QSizePolicy, QMenu
+    QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox, QScrollArea, QFrame, QSizePolicy, QMenu
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
@@ -31,6 +30,7 @@ from mlrvp.gui.styles import (
     STATUS_ERROR_HOVER, STATUS_LEARNING_BG,
     _ARROW_UP, _ARROW_DOWN,
 )
+from mlrvp.gui import file_dialogs
 from mlrvp.gui.widgets.waveform import WaveformWidget
 from mlrvp.gui.widgets.fader import HorizontalFader, RotaryKnob
 from mlrvp.gui.scale import bind_fixed_height, bind_fixed_size, bind_fixed_width, bind_max_width, bind_min_height, bind_min_width
@@ -1116,10 +1116,8 @@ class ChannelStrip(QFrame):
         self._refresh_group_bar()
 
     def _on_load_click(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, f"Load Sample — Channel {self._row + 1}",
-            "", "Audio Files (*.wav *.aiff *.aif *.flac *.ogg);;All Files (*)"
-        )
+        path = file_dialogs.open_file(self, f"Load Sample — Channel {self._row + 1}",
+                                      "samples", file_dialogs.AUDIO_FILTER)
         if path:
             self._add_to_library(path)
             self.sample_load_requested.emit(self._row, path)
@@ -1268,7 +1266,7 @@ class ChannelStrip(QFrame):
 
     # --- Drag and drop ---
 
-    _AUDIO_EXTENSIONS = {'.wav', '.aiff', '.aif', '.flac', '.ogg', '.mp3'}
+    _AUDIO_EXTENSIONS = file_dialogs.AUDIO_EXTENSIONS
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
