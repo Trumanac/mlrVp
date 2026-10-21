@@ -93,6 +93,9 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.zip_name }}
+          # Releases keep their own copy of the zips; the artifacts are only
+          # needed until the release job runs (or for testing a manual build).
+          retention-days: 7
 
   release:
     needs: build

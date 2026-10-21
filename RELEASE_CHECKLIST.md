@@ -28,6 +28,7 @@ Baseline: `c7319d2` (v0.6.9.24)
   - Both setters cache their last state (keyed incl. group color); cache cleared after MIDI-map mode and on manual Link clicks so a failed Link enable still reverts the button. 4 tests. — `5ccd7c3`
 - [x] **B2. Ableton Link tempo** from peers not pushed to engine / BPM display.
   - GUI timer follows `clock.link_tempo` through the normal tempo path (engine, delays, speed spinners, BPM box), with a 0.5 s hold-off after local changes so they aren't undone. Unit-tested; **needs a manual check with a real Link peer** (multicast blocked in the dev sandbox; also `aalink` isn't installed in the local .venv, so the Link button is disabled there — `pip install -r requirements.txt`). — `93f3af5`
+  - Manual Link test **deferred past 1.0** by the owner (2026-10-21) — not a release blocker.
 - [x] **B3. Pan law −3 dB jump** just off center.
   - Decision: balance law — centre unchanged (unity both sides), panning only attenuates the opposite side; no jump, no boost. 2 tests. — `a1f0954`
 - [x] **B4. Plugin scan timeout ineffective** (executor `shutdown(wait=True)` blocks on hung plugin).
@@ -82,7 +83,9 @@ Baseline: `c7319d2` (v0.6.9.24)
 
 ## G. Second full review (pre-tag)
 
-- [ ] **G1. License conflict — needs a decision.** mlrVp is MIT + Commons Clause, but release builds bundle **pedalboard (GPL-3.0)** and **aalink (GPL-3.0+, wraps Ableton Link)**. GPL forbids added restrictions like the Commons Clause, so distributing the bundled binaries under the current license is likely not permitted. Options: relicense to GPL-3.0; or stop bundling both (lose VST/AU hosting + Link in downloads); or ask the authors for an exception. Not legal advice — worth a check before going public.
+- [x] **G1. License conflict — accepted, license kept.** mlrVp is MIT + Commons Clause, but release builds bundle **pedalboard (GPL-3.0)** and **aalink (GPL-3.0+, wraps Ableton Link)**, and the GPL doesn't permit added restrictions like the Commons Clause.
+  - Decision (2026-10-21): keep MIT + Commons Clause (no reselling — the owner wants mlrVp free always; GPLv3 would allow resale) and keep both libraries bundled; accepted as a low practical risk.
+  - **If it ever needs revisiting** (e.g. a request from Spotify/pedalboard, the aalink author or Ableton): ship release builds without pedalboard and aalink — the app already greys out Link and plugin hosting when they're absent, and source users can `pip install` them. Relicensing to GPL-3.0 was considered and rejected because it allows reselling.
 - [x] **G2.** Saved audio device busy/absent or rejecting the saved sample rate/buffer size crashed startup on *every* launch (settings now persist). Falls back to default output, then starts with audio off + explanation. 4 tests. — `90f033b`
 - [x] **G3.** Presets store absolute sample paths → after the data-folder move, every sample under an old `data/slices|songs` broke once the old folder was deleted; a missing sample left its row on "(loading...)" forever. Paths are followed to the new folders; missing ones show "(missing)" + status. 6 tests. — `cc4dd75`
 - [x] **G4.** Fuzzing preset loading: `1e999`/`Infinity`/wrong types raised out of `apply_preset` (OverflowError, control-row block); malformed racks (non-object, bad UTF-8) crashed; case-only rack rename failed. All text files read/written as UTF-8 explicitly. Fuzzer: 1000+ presets × 25 bad values, clean. 5 tests. — `a5d4fe1`
