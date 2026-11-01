@@ -35,7 +35,7 @@ llvmlite==0.50.0
     # via numba
 msgpack==1.2.3
     # via librosa
-narwhals==2.27.1
+narwhals==2.28.0
     # via scikit-learn
 numba==0.68.0
     # via
