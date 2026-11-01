@@ -33,7 +33,7 @@ librosa==1.0.0
     # via -r requirements.txt
 llvmlite==0.50.0
     # via numba
-msgpack==1.2.3
+msgpack==1.2.4
     # via librosa
 narwhals==2.27.1
     # via scikit-learn
