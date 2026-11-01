@@ -9,7 +9,7 @@ audioop-lts==0.2.2 ; python_full_version >= '3.13'
     #   -r requirements.txt
     #   standard-aifc
     #   standard-sunau
-certifi==2026.10.19
+certifi==2026.10.23
     # via requests
 cffi==2.1.1
     # via
