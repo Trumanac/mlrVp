@@ -7,34 +7,26 @@ updates:
       interval: "monthly"
     labels:
       - "dependencies"
+    groups:
+      actions:
+        patterns:
+          - "*"
 
-  # Keep Python dependencies up to date
+  # Keep Python dependencies up to date.
+  #
+  # Dependabot reads both requirements.txt (the loose ranges PR checks test)
+  # and requirements-lock.txt (the pinned set release builds ship — also what
+  # GitHub's security alerts watch).  One grouped PR per month bumps them
+  # together; PR checks install the lock file too, so the update is tested
+  # against exactly what would ship.  Security updates are never grouped away:
+  # they open immediately.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "monthly"
     labels:
       - "dependencies"
-    # Only open PRs for direct dependencies, not transitive ones
-    allow:
-      - dependency-type: "direct"
-    # Group all minor/patch bumps into a single PR to reduce noise
     groups:
-      audio-stack:
+      python:
         patterns:
-          - "sounddevice"
-          - "soundfile"
-          - "resampy"
-          - "librosa"
-          - "numba"
-          - "scipy"
-          - "numpy"
-      gui:
-        patterns:
-          - "PySide6"
-      midi-osc:
-        patterns:
-          - "python-rtmidi"
-          - "python-osc"
-          - "pymonome"
-          - "pyserial"
+          - "*"
