@@ -1,19 +1,30 @@
 # Contributing to mlrVp
 
-Thank you for your interest in contributing! Here's everything you need to know.
+mlrVp is developed and maintained by one person, so **pull requests are not accepted**.
+Bug reports, hardware reports and ideas are very welcome, though — they're the best way
+to help.
 
-## Ways to Contribute
+## How to help
 
-- **Bug reports** — open an issue using the Bug Report template
-- **Hardware compatibility reports** — open an issue using the Hardware Compatibility template
-- **Feature requests** — open an issue using the Feature Request template
-- **Code contributions** — fork, branch, and open a pull request
+- **Something broke** — open an issue with the Bug Report template. Attach the log:
+  **Help → Open Log Folder** in the app, then `mlrvp.log` (and `crash.log` if it exists).
+- **Works / doesn't work with your gear** — open an issue with the Hardware Compatibility
+  template (grid controller, audio interface, driver).
+- **Feature ideas** — open an issue with the Feature Request template.
+- **Questions and general chat** — use
+  [Discussions](https://github.com/Trumanac/mlrVp/discussions).
 
-## Development Setup
+Because there's one maintainer, replies and fixes happen when time allows, and not every
+suggestion will be adopted.
+
+You're free to clone or fork the project and change it for your own use under the terms
+of the [LICENSE](LICENSE) (note the Commons Clause: no selling).
+
+## Running from source
 
 ```bash
-# 1. Fork and clone the repo
-git clone https://github.com/<your-username>/mlrVp.git
+# 1. Clone the repo
+git clone https://github.com/Trumanac/mlrVp.git
 cd mlrVp
 
 # 2. Create a virtual environment
@@ -28,19 +39,24 @@ source .venv/bin/activate
 # 4. Install all dependencies
 pip install -r requirements.txt
 
-# 5. Run the app to verify your setup
+# 5. Run the app
 python -m mlrvp
 ```
 
-## Dependencies
+A source checkout keeps its presets, settings and logs in the repo's `data/` folder (see
+"Where your files are stored" in the README).
 
-- `requirements.txt` (and `pyproject.toml`) list the supported version ranges; PR checks
-  install the latest versions that satisfy them.
-- `requirements-lock.txt` pins the exact versions used for release builds. After changing
-  `requirements.txt`, regenerate it with
+## Maintainer notes
+
+### Dependencies
+
+- `requirements.txt` (and `pyproject.toml`) list the supported version ranges; CI tests the
+  latest versions that satisfy them.
+- `requirements-lock.txt` pins the exact versions used for release builds, and CI tests it
+  too. After changing `requirements.txt`, regenerate it with
   `uv pip compile requirements.txt --universal --python-version 3.12 -o requirements-lock.txt`.
 
-## Coding Conventions
+### Coding conventions
 
 - **Python 3.10+** — use type hints where they aid clarity
 - **PySide6** for all GUI code — no tkinter or other toolkits
@@ -48,23 +64,14 @@ python -m mlrvp
 - Keep the audio callback path (`engine.py`) free of any Python-level blocking — no I/O, no Qt calls, no locks that can be contended from the main thread
 - New rack effect modules go in `mlrvp/gui/rack_modules/` and must register themselves in `mlrvp/gui/rack_modules/__init__.py`
 
-## Submitting a Pull Request
+### Releasing
 
-1. **Open an issue first** for significant changes — discuss the approach before writing code
-2. Branch off `main`: `git checkout -b feature/my-feature`
-3. Keep commits focused and atomic
-4. Fill out the pull request template completely
-5. Make sure the app launches and audio works before submitting
+Bump `__version__` in `mlrvp/__init__.py` (the only place), move the changelog's
+Unreleased entries under the new version, then push a `vX.Y.Z` tag. CI runs the full test
+matrix, builds Windows/macOS/Linux and creates a **draft** release to review and publish.
 
-## Sensitive Data Rules
+### Sensitive data
 
-**Never commit:**
-- Real file paths from your machine (sample paths, plugin paths)
-- Personal presets that contain absolute paths
-- Any file under `data/defaults/sample_favorites.json`, `data/defaults/sample_paths.json`, or `data/defaults/plugin_cache.json` — these are all gitignored for a reason
-
-The `.gitignore` is set up to block most of these automatically, but double-check `git status` before committing.
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the same **MIT with Commons Clause** license as the rest of the project. See [LICENSE](LICENSE) for details.
+Never commit real file paths from your machine, personal presets that contain absolute
+paths, or anything under `data/defaults/` other than `.gitkeep` (the `.gitignore` blocks
+most of it — check `git status` anyway).

@@ -128,12 +128,13 @@ Fixed:
 Do right after flipping to public (I can run all of these):
 - [ ] Private vulnerability reporting (SECURITY.md links to it — 404 until enabled), secret scanning + push protection, Dependabot alerts / security updates.
 - [ ] Actions → "Require approval for all outside collaborators" before workflows run on fork PRs.
-- [ ] Protect `main`: block force-push and deletion (D10). Decide whether to require PRs/checks — owner currently pushes straight to `main`.
+- [ ] Protect `main`: block force-push and deletion (D10). Decision (2026-11-05): single maintainer who pushes straight to `main`, so **no** required PRs/checks — outsiders can't push anyway.
+- [ ] See whether GitHub offers a "pull request creation: collaborators only" setting for the repo and enable it if so (forking can't be disabled on public repos).
 - [ ] Dependabot PRs #9–#13 are superseded by the new grouped config — don't merge #9 (`softprops/action-gh-release` v2→v3) before the 1.0 tag: the release job can't be tested without a tag.
 
 Owner decisions / optional:
-- Collaborators `macwhisperer2` and `zboone93-sudo` both have **write** access — they keep it after going public; confirm intended or downgrade.
-- No `CODE_OF_CONDUCT.md` (community profile 85 %). Optional; needs a contact method for reports.
+- [x] Collaborators `macwhisperer2` and `zboone93-sudo` (added only for private testing) **removed** — owner is the only person with access.
+- [x] Single-maintainer project (owner's decision, 2026-11-05): outside people can clone and use it but not edit. No `CODE_OF_CONDUCT.md`; CONTRIBUTING.md rewritten ("pull requests are not accepted", issues/Discussions welcome); PR template deleted.
 - GitHub shows the license as "Other/NOASSERTION" (Commons Clause isn't a recognised SPDX license) — cosmetic; the README states it.
 - Projects tab enabled but unused — can be turned off.
 
