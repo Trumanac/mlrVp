@@ -86,6 +86,22 @@ mlrVp is a standalone, cross-platform application that recreates the legendary m
 > **macOS:** The app isn't notarized yet. If you get a security warning, go to System Settings → Privacy & Security → Allow (or right-click `mlrVp.app` → **Open**). The macOS download is for **Apple Silicon** Macs; on an Intel Mac, run mlrVp [from source](#quick-start-all-platforms).
 > **Linux:** You may need `chmod +x mlrVp` before running.
 
+#### Antivirus warnings
+
+mlrVp is a Python app packaged into an unsigned `.exe`, and antivirus programs sometimes flag programs like
+that as suspicious (Windows Defender shows names like `Program:Win32/Contebrew.A!ml` — the `!ml` means a
+machine-learning guess, not a known virus). It's a false positive, but you shouldn't have to take my word for it:
+
+- **Check your download.** Every release has a `SHA256SUMS.txt`. In PowerShell, `Get-FileHash mlrVp-windows.zip`
+  must print the same hash as the matching line. A match means the file is exactly what was built from this repo
+  by GitHub's servers.
+- **Check the source.** The whole project is here, and `build.yml` is the exact recipe that builds the releases.
+- **If Defender removes it,** open **Windows Security → Virus & threat protection → Protection history**, choose
+  the item and **Allow on device** (or add an exclusion for the mlrVp folder), then extract again.
+- **Report the false positive** to help everyone: Microsoft takes submissions at
+  <https://www.microsoft.com/wdsi/filesubmission> ("Software developer").
+- Prefer not to trust a binary at all? [Run from source](#quick-start-all-platforms).
+
 ### Where your files are stored
 
 mlrVp keeps your work outside the app folder, so updating never touches it:

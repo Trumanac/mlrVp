@@ -110,10 +110,21 @@ jobs:
         with:
           path: artifacts
 
+      - name: Checksums
+        # Lets users verify their download (README: "Antivirus warnings")
+        run: |
+          cd artifacts
+          for f in */*.zip; do
+            (cd "$(dirname "$f")" && sha256sum "$(basename "$f")")
+          done > ../SHA256SUMS.txt
+          cat ../SHA256SUMS.txt
+
       - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.zip
+          files: |
+            artifacts/**/*.zip
+            SHA256SUMS.txt
           # Draft: review the notes and assets, then press "Publish" on GitHub.
           draft: true
           generate_release_notes: true
@@ -141,5 +152,10 @@ jobs:
             > xattr -dr com.apple.quarantine mlrVp.app
             > ```
             > **Linux**: You may need `chmod +x mlrVp` before running.
+
+            **Antivirus flagged it?** mlrVp is an unsigned Python app, and antivirus programs sometimes
+            guess wrong about those. Verify your download against `SHA256SUMS.txt` (PowerShell:
+            `Get-FileHash mlrVp-windows.zip`) — see
+            [Antivirus warnings](https://github.com/${{ github.repository }}#antivirus-warnings) for what to do.
 
             ---
