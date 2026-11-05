@@ -111,6 +111,32 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **H9.** Only channel/group edits marked the preset unsaved; effects, tempo, quantize, master and recordings were discarded on quit without asking. — `fab3e86`
 - Post-1.0 ideas: sample-accurate trigger timing (triggers land on block boundaries, ±1 block jitter); undo for destructive grid/preset actions; per-row "save recording" button.
 
+## I. Pre-public / pre-tag audit (2026-11-05)
+
+Checked clean:
+- Tracked files + full git history: no local paths/username, personal email, or secret-like tokens. Every commit on every ref uses a GitHub noreply address (one early commit shows the `SuperBirdy` alias on the same account; the rest are `Trumanac`, Copilot and Dependabot).
+- All 24 existing releases (v0.6.9 … v0.6.9.23) become public with the repo — every Windows zip scanned (bundled `data/` files + entry names): no personal strings.
+- Actions: default workflow token is read-only, no secrets/variables/webhooks/deploy keys, no `pull_request_target`, no self-hosted runners.
+- Links in README/CHANGELOG/SECURITY/About: all repo-owned links 404 only while the repo is private (they resolve once public).
+
+Fixed:
+- [x] Default Latency → **Medium** (owner's choice after trying it).
+- [x] Release builds ship `requirements-lock.txt`, but CI only tested the *latest* packages — the shipped set was never tested. Added locked test jobs (Linux/Windows/macOS). — `aa05eda`
+- [x] Dependabot opened one PR per pinned package (certifi, msgpack, narwhals…) against the lock file, untested. Now one grouped monthly PR for Python and one for Actions; the locked CI jobs test it. — `aa05eda`
+- [x] Created the `hardware` and `dependencies` labels (issue templates and Dependabot referenced labels that didn't exist).
+
+Do right after flipping to public (I can run all of these):
+- [ ] Private vulnerability reporting (SECURITY.md links to it — 404 until enabled), secret scanning + push protection, Dependabot alerts / security updates.
+- [ ] Actions → "Require approval for all outside collaborators" before workflows run on fork PRs.
+- [ ] Protect `main`: block force-push and deletion (D10). Decide whether to require PRs/checks — owner currently pushes straight to `main`.
+- [ ] Dependabot PRs #9–#13 are superseded by the new grouped config — don't merge #9 (`softprops/action-gh-release` v2→v3) before the 1.0 tag: the release job can't be tested without a tag.
+
+Owner decisions / optional:
+- Collaborators `macwhisperer2` and `zboone93-sudo` both have **write** access — they keep it after going public; confirm intended or downgrade.
+- No `CODE_OF_CONDUCT.md` (community profile 85 %). Optional; needs a contact method for reports.
+- GitHub shows the license as "Other/NOASSERTION" (Commons Clause isn't a recognised SPDX license) — cosmetic; the README states it.
+- Projects tab enabled but unused — can be turned off.
+
 ## Found during fixes
 
 - [x] **F1.** CI test job failed on first run: `test_rejects_oversized_file` crashed pytest on Python 3.12 (Path.stat patch missing `follow_symlinks`); checkbox click missed hit area on Linux. — `bf142b0`
