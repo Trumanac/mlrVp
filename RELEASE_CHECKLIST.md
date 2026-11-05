@@ -71,15 +71,15 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **D6.** Add `CHANGELOG.md`; adopt semver from 1.0.0.
   - CHANGELOG.md (Keep a Changelog) with an Unreleased section covering this review's changes.
 - [x] **D7.** Remove test rack `data/racks/Updated Names.json`; gitignore user racks; stop tracking runtime-written `startup_settings.json`. _(done with A5; local copies kept as untracked user files)_
-- [~] **D8.** Repo settings: enable Discussions (or drop link), private vulnerability reporting, topics, auto-delete merged branches.
+- [x] **D8.** (all done once public — see section I) Repo settings: enable Discussions (or drop link), private vulnerability reporting, topics, auto-delete merged branches.
   - Done: Discussions enabled, auto-delete merged branches, topics added. **After going public:** enable private vulnerability reporting (SECURITY.md links to it).
 - [x] **D9.** Decide on history scrub (personal paths in deleted presets) before going public.
   - Decision: accept. main + all tags are clean; the only personal data (Windows username + one song filename in an old preset) was in the deleted stale branch and remains reachable only through the permanent refs of merged PRs #1/#2.
-- [ ] **D10.** After public: protect `main` (PR + passing checks, no force-push).
+- [x] **D10.** `main` protected by ruleset `protect-main` (no force-push, no deletion; owner pushes straight to `main`, so no required PRs/checks — decision 2026-11-05).
 - [x] **D13.** macOS CI job queued/cancelled at times — GitHub macOS arm64 *capacity* (annotation: "longer queue times"), not billing. When it runs it passes (~1.5 min). Keeping it.
 - [x] **D11.** Known distribution gaps (document or address): unsigned Windows exe, ad-hoc-signed un-notarized macOS, arm64-only mac build.
   - Documented in README + release body: SmartScreen prompt, Gatekeeper workaround, Apple-Silicon-only macOS download (universal2 not viable: numba/llvmlite). Real signing/notarization needs paid certificates — post-1.0. — `d36b6fe`
-- [ ] **D12.** Tag v1.0.0.
+- [x] **D12.** Tag v1.0.0 — first tag deleted (its Windows exe was flagged by Defender, see J), re-created on `499cf04`; release published 2026-11-05 and repo made public the same day.
 
 ## G. Second full review (pre-tag)
 
@@ -126,11 +126,11 @@ Fixed:
 - [x] Created the `hardware` and `dependencies` labels (issue templates and Dependabot referenced labels that didn't exist).
 
 Do right after flipping to public (I can run all of these):
-- [ ] Private vulnerability reporting (SECURITY.md links to it — 404 until enabled), secret scanning + push protection, Dependabot alerts / security updates.
-- [ ] Actions → "Require approval for all outside collaborators" before workflows run on fork PRs.
-- [ ] Protect `main`: block force-push and deletion (D10). Decision (2026-11-05): single maintainer who pushes straight to `main`, so **no** required PRs/checks — outsiders can't push anyway.
-- [ ] See whether GitHub offers a "pull request creation: collaborators only" setting for the repo and enable it if so (forking can't be disabled on public repos).
-- [ ] Dependabot PRs #9–#13 are superseded by the new grouped config — don't merge #9 (`softprops/action-gh-release` v2→v3) before the 1.0 tag: the release job can't be tested without a tag.
+- [x] Private vulnerability reporting, secret scanning + push protection, Dependabot alerts and security updates — all enabled (2026-11-05).
+- [x] Actions fork-PR approval: `all_external_contributors`.
+- [x] Protect `main`: block force-push and deletion (D10) — ruleset `protect-main`. Decision (2026-11-05): single maintainer who pushes straight to `main`, so **no** required PRs/checks — outsiders can't push anyway.
+- [x] Pull request creation set to **collaborators only** (`pull_request_creation_policy`); forking can't be disabled on public repos. Watch that Dependabot's monthly PR still opens.
+- [x] (Dependabot closed #9–#13 itself when the grouped config landed; #14 is the grouped Python update.) Dependabot PRs #9–#13 were superseded by the new grouped config — don't merge #9 (`softprops/action-gh-release` v2→v3) before the 1.0 tag: the release job can't be tested without a tag.
 
 Owner decisions / optional:
 - [x] Collaborators `macwhisperer2` and `zboone93-sudo` (added only for private testing) **removed** — owner is the only person with access.
