@@ -89,9 +89,9 @@ BUFFER_SIZE_CHOICES = (64, 128, 256, 512, 1024, 2048)
 # Audio blocks the DSP worker renders ahead of the output device.  Each adds
 # one buffer of latency (grid press -> sound) but rides out longer stalls
 # (preset loads, heavy GUI work) without dropouts.  "High" is the pre-1.0
-# behaviour.
+# behaviour; "Medium" is the default.
 LATENCY_QUEUE_BLOCKS = {"Low": 2, "Medium": 4, "High": 7}
-DEFAULT_LATENCY = "High"
+DEFAULT_LATENCY = "Medium"
 
 
 def latency_ms(latency: str, sample_rate: int, buffer_size: int) -> float:

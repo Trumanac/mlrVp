@@ -104,7 +104,7 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **H3.** Tempo limits disagreed (presets 999, clock/UI 300, Link unclamped) → clock and loops on different tempos; NaN over OSC became 300 BPM. One TEMPO_MIN/MAX applied everywhere. — `1342e86`
 - [x] **H4.** Welcome dialog, How-to and README told users to click a nonexistent "Start Engine"; README missed the new File/Help menu items; About now has project link + licenses. — `83b6c87`
 - [x] **H5. Latency.** The DSP worker renders 7 blocks ahead and applies grid triggers when rendering → ~81 ms from press to sound at 512 (comment claimed triggers were unaffected). New Setup → Audio → Latency (Low/Medium/High = 2/4/7 blocks; High = old behaviour). Measured: no underruns at Low with 16 rows + grid-mode/tab stress. — `3aa5852`
-  - [ ] **Decision:** default latency (currently High). Recommendation: Medium (~46 ms at 512).
+  - [x] **Decision (2026-11-05):** default is Medium (~46 ms at 512), chosen by the owner after trying it.
 - [x] **H6.** File dialogs opened in the working directory (install folder) and never remembered folders; MP3 missing from Load dialogs. — `b87afc0`
 - [x] **H7.** Quit → Save → cancelling the name/setlist prompt quit anyway (changes lost). — `5297976`
 - [x] **H8.** Saving a preset didn't save in-memory SAMP/LIVE/studio recordings — reloaded the row's *previous* sample. Now written to Slices/Recordings on save. — `de26bd9`

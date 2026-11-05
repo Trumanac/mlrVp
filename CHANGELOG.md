@@ -33,8 +33,9 @@ project uses [Semantic Versioning](https://semver.org/).
   start in Music / your presets folder the first time, instead of the app's install folder.
   MP3 files can be picked in the Load dialogs (they could already be dragged in).
 - **Setup → Audio → Latency** (Low / Medium / High): how far ahead mlrVp renders audio.
-  The old fixed setting (High) added ~80 ms between a grid press and the sound at a
-  512 buffer; Low adds ~23 ms. Shown in milliseconds, applies immediately.
+  Earlier versions were fixed at what is now High (~80 ms between a grid press and the
+  sound at a 512 buffer); the default is Medium (~46 ms), Low is ~23 ms. Shown in
+  milliseconds, applies immediately.
 - Release downloads include mlrVp's license and the licenses of all bundled third-party
   software (`THIRD_PARTY_LICENSES.txt`, `licenses/`).
 - A status-bar notice when an effect fails and is bypassed.
