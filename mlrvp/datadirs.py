@@ -1,6 +1,6 @@
 """First-run setup of mlrVp's data folders.
 
-- Copies data from the pre-0.6.9.25 location (a data/ folder next to the
+- Copies data from the pre-1.0.0 location (a data/ folder next to the
   package — inside the app bundle for frozen builds) into the per-user
   folders, once, never overwriting anything already there.
 - Seeds the factory racks shipped in mlrvp/resources/factory_racks, once.

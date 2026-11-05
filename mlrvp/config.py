@@ -1343,7 +1343,7 @@ def _standard_location(kind: str, fallback: Path) -> Path:
 
 
 def legacy_data_dir() -> Path:
-    """Where releases before 0.6.9.25 stored data (next to the package)."""
+    """Where releases before 1.0.0 stored data (next to the package)."""
     return get_project_root() / "data"
 
 

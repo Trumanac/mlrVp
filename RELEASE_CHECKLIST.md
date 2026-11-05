@@ -93,7 +93,7 @@ Baseline: `c7319d2` (v0.6.9.24)
 - [x] **G6.** `stop()` ran twice on every quit; quitting could leave a zombie process if another top-level window was open (Qt 6 `quit()` vetoed by the hide-only grid window). — `7be2d85`, `ed041fb`
 - [x] **G7.** Release zips had no license texts (LGPL Qt/soxr/libsndfile, GPL pedalboard/aalink). Generated `THIRD_PARTY_LICENSES.txt` + `LICENSE` + `licenses/` now ship with every build. — `68251e6`
 - [x] **G8.** Depend on PySide6-Essentials (only QtCore/Gui/Widgets used) instead of PySide6 + Addons/WebEngine/Pdf. — `ef5a81b`
-- [ ] **G9.** Before tagging: `Development Status :: 4 - Beta` → `5 - Production/Stable` in pyproject; bump `__version__`; CHANGELOG Unreleased → 1.0.0. _(with D12)_
+- [x] **G9.** Version → **1.0.0** (2026-11-05): `__version__`, pyproject `Production/Stable`, CHANGELOG `[1.0.0]` + compare links (base v0.6.9.23 — there was never a v0.6.9.24 tag), bug-template example, stale "0.6.9.25" comments. The single source feeds the window title, About, log banner, Qt app version, macOS bundle, Inno installer and CI tag check; the Windows exe had **no** version resource — added one (Details tab shows 1.0.0). Verified on the built exe: file/product version, window title, startup log. `tests/unit/test_version.py` keeps everything in agreement. _(tag itself still pending: D12)_
 - Verified clean: OSC binds 127.0.0.1 and is off by default; preset/rack keys are whitelisted (no arbitrary attribute writes); no eval/pickle; packaged Windows build launches, seeds racks, logs correctly.
 - Note: the local `origin` URL uses old casing (`trumanac/mlrVp`); pushes work via redirect — `git remote set-url origin https://github.com/Trumanac/mlrVp.git` to silence the notice.
 

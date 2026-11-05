@@ -6,6 +6,10 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-05
+
+First stable release.
+
 ### Changed
 - **Your files now live outside the app folder**, so updating never touches them.
   Presets, setlists, racks, settings and logs go in the per-user data folder
@@ -101,9 +105,10 @@ project uses [Semantic Versioning](https://semver.org/).
 - Elevated serialosc commands are passed inline instead of via a script file in the
   temp folder that another process could have replaced before the UAC prompt.
 
-## [0.6.9.24] and earlier
+## [0.6.9.23] and earlier
 
 See the [GitHub releases](https://github.com/Trumanac/mlrVp/releases) page.
 
-[Unreleased]: https://github.com/Trumanac/mlrVp/compare/v0.6.9.23...HEAD
-[0.6.9.24]: https://github.com/Trumanac/mlrVp/releases
+[Unreleased]: https://github.com/Trumanac/mlrVp/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Trumanac/mlrVp/compare/v0.6.9.23...v1.0.0
+[0.6.9.23]: https://github.com/Trumanac/mlrVp/releases/tag/v0.6.9.23

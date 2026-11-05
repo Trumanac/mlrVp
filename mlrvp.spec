@@ -18,6 +18,38 @@ VERSION = re.search(
 
 block_cipher = None
 
+
+def _windows_version_file():
+    """Write the Windows file-properties resource (Details tab) from VERSION."""
+    from PyInstaller.utils.win32.versioninfo import (
+        FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+        VarFileInfo, VarStruct, VSVersionInfo,
+    )
+    nums = tuple(int(p) for p in VERSION.split('.')[:4])
+    nums += (0,) * (4 - len(nums))
+    info = VSVersionInfo(
+        ffi=FixedFileInfo(filevers=nums, prodvers=nums, mask=0x3F, flags=0x0,
+                          OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+        kids=[
+            StringFileInfo([StringTable('040904B0', [
+                StringStruct('FileDescription', 'mlrVp'),
+                StringStruct('FileVersion', VERSION),
+                StringStruct('InternalName', 'mlrVp'),
+                StringStruct('LegalCopyright', 'Copyright (c) 2026 Trumanac'),
+                StringStruct('OriginalFilename', 'mlrVp.exe'),
+                StringStruct('ProductName', 'mlrVp'),
+                StringStruct('ProductVersion', VERSION),
+            ])]),
+            VarFileInfo([VarStruct('Translation', [0x0409, 1200])]),
+        ],
+    )
+    path = Path(SPECPATH) / 'build'      # gitignored, PyInstaller's work folder
+    path.mkdir(parents=True, exist_ok=True)
+    path = path / 'mlrvp_version_info.txt'
+    path.write_text(str(info), encoding='utf-8')
+    return str(path)
+
+
 a = Analysis(
     ['mlrvp/main.py'],
     pathex=[],
@@ -80,6 +112,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='mlrvp/resources/icon.ico',
+    version=_windows_version_file() if sys.platform == 'win32' else None,
 )
 
 coll = COLLECT(
